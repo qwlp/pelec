@@ -578,14 +578,6 @@ const boot = async (): Promise<void> => {
     return /\s[•·]\s(?:now|yesterday|\d+\s*(?:s|m|h|d|w|mo|yr)s?)$/i.test(text);
   };
 
-  const buildInstagramWebFallbackNotificationKey = (
-    nextState: InstagramWebFallbackState,
-  ): string => {
-    const preview = sanitizeInstagramNotificationText(nextState.preview);
-    const signature = sanitizeInstagramNotificationText(nextState.signature);
-    return `${nextState.unreadCount}::${preview || '-'}::${signature || '-'}`;
-  };
-
   const buildInstagramWebFallbackNotification = (
     nextState: InstagramWebFallbackState,
     previousState: InstagramWebFallbackState,
@@ -615,6 +607,12 @@ const boot = async (): Promise<void> => {
       body: delta === 1 ? 'New Instagram message' : `${delta} new Instagram messages`,
     };
   };
+
+  const buildInstagramWebFallbackNotificationKey = (
+    unreadCount: number,
+    payload: { title: string; body: string },
+  ): string =>
+    `${unreadCount}::${sanitizeInstagramNotificationText(payload.title)}::${sanitizeInstagramNotificationText(payload.body)}`;
 
   const readInstagramWebFallbackState = async (
     view: Electron.WebviewTag,
@@ -951,6 +949,10 @@ const boot = async (): Promise<void> => {
       return;
     }
 
+    if (nextState.unreadCount < previousState.unreadCount || nextState.unreadCount === 0) {
+      lastInstagramWebFallbackNotificationKey = null;
+    }
+
     const unreadIncreased = nextState.unreadCount > previousState.unreadCount;
     const previewChanged =
       Boolean(nextState.preview) && nextState.preview !== previousState.preview;
@@ -962,9 +964,12 @@ const boot = async (): Promise<void> => {
       (previewChanged || signatureChanged);
 
     if ((unreadIncreased || inboxMeaningfullyChanged) && !isWebFallbackVisible('instagram')) {
-      const notificationKey = buildInstagramWebFallbackNotificationKey(nextState);
+      const payload = buildInstagramWebFallbackNotification(nextState, previousState);
+      const notificationKey = buildInstagramWebFallbackNotificationKey(
+        nextState.unreadCount,
+        payload,
+      );
       if (notificationKey !== lastInstagramWebFallbackNotificationKey) {
-        const payload = buildInstagramWebFallbackNotification(nextState, previousState);
         void window.pelec.showNotification(payload.title, payload.body);
         lastInstagramWebFallbackNotificationKey = notificationKey;
       }
