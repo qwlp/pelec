@@ -99,6 +99,7 @@ export interface Connector {
   startAuth(): Promise<AuthStartResult>;
   submitAuth(payload: AuthSubmission): Promise<ConnectorStatus>;
   resetAuth?(): Promise<ConnectorStatus>;
+  setActiveChat?(chatId?: string | null): Promise<void>;
   listChats?(): Promise<ChatSummary[]>;
   listMessages?(chatId: string): Promise<ChatMessage[]>;
   resolveAudioUrl?(chatId: string, messageId: string): Promise<string | undefined>;

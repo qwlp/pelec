@@ -82,6 +82,14 @@ export class ConnectorManager {
     return connector.listMessages(chatId);
   }
 
+  async setActiveChat(network: NetworkId, chatId?: string | null): Promise<void> {
+    const connector = this.getConnector(network);
+    if (!connector.setActiveChat) {
+      return;
+    }
+    await connector.setActiveChat(chatId);
+  }
+
   async resolveAudioUrl(
     network: NetworkId,
     chatId: string,

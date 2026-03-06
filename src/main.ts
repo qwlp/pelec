@@ -285,6 +285,16 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'connector:set-active-chat',
+  async (_event, network: NetworkId, chatId?: string | null) => {
+    if (!connectorManager) {
+      return;
+    }
+    await connectorManager.setActiveChat(network, chatId);
+  },
+);
+
+ipcMain.handle(
   'connector:resolve-audio-url',
   async (_event, network: NetworkId, chatId: string, messageId: string) => {
     if (!connectorManager) {

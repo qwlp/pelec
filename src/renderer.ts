@@ -287,7 +287,13 @@ const boot = async (): Promise<void> => {
   let telegramNotificationScanInFlight = false;
   let instagramNotificationScanInFlight = false;
   let instagramCheckpointCooldownUntil = readInstagramCooldownUntil();
-  const knownMessageIdsByChat = new Map<string, Set<string>>();
+  type NotificationCursor = {
+    latestMessageId: string;
+    latestTimestamp: number;
+  };
+
+  const notificationCursorByChat = new Map<string, NotificationCursor>();
+  const lastUnreadCountByChat = new Map<string, number>();
   const notificationBaselineReady: Record<NetworkId, boolean> = {
     telegram: false,
     instagram: false,
@@ -298,26 +304,42 @@ const boot = async (): Promise<void> => {
 
   const buildChatKey = (network: NetworkId, chatId: string): string => `${network}:${chatId}`;
 
-  const trimKnownMessages = (known: Set<string>, max = 600): void => {
-    if (known.size <= max) {
-      return;
-    }
-    const excess = known.size - max;
-    const iterator = known.values();
-    for (let i = 0; i < excess; i += 1) {
-      const next = iterator.next();
-      if (next.done) {
-        break;
+  const compareNotificationMessageIds = (a: string, b: string): number => {
+    try {
+      const aInt = BigInt(a);
+      const bInt = BigInt(b);
+      if (aInt < bInt) {
+        return -1;
       }
-      known.delete(next.value);
+      if (aInt > bInt) {
+        return 1;
+      }
+      return 0;
+    } catch {
+      return a.localeCompare(b);
     }
+  };
+
+  const compareNotificationCursorToMessage = (
+    cursor: NotificationCursor,
+    message: ChatMessage,
+  ): number => {
+    if (cursor.latestTimestamp !== message.timestamp) {
+      return cursor.latestTimestamp - message.timestamp;
+    }
+    return compareNotificationMessageIds(cursor.latestMessageId, message.id);
   };
 
   const resetNotificationTracking = (network: NetworkId): void => {
     notificationBaselineReady[network] = false;
-    for (const key of knownMessageIdsByChat.keys()) {
+    for (const key of notificationCursorByChat.keys()) {
       if (key.startsWith(`${network}:`)) {
-        knownMessageIdsByChat.delete(key);
+        notificationCursorByChat.delete(key);
+      }
+    }
+    for (const key of lastUnreadCountByChat.keys()) {
+      if (key.startsWith(`${network}:`)) {
+        lastUnreadCountByChat.delete(key);
       }
     }
   };
@@ -384,20 +406,41 @@ const boot = async (): Promise<void> => {
     suppressNotification = false,
   ): void => {
     const key = buildChatKey(network, chatId);
-    const known = knownMessageIdsByChat.get(key);
-    if (!known) {
-      knownMessageIdsByChat.set(key, new Set(messages.map((message) => message.id)));
+    const latestMessage = messages[messages.length - 1];
+    if (!latestMessage) {
       return;
     }
 
-    const unseenIncoming: ChatMessage[] = [];
-    for (const message of messages) {
-      if (!known.has(message.id) && !message.outgoing) {
-        unseenIncoming.push(message);
-      }
-      known.add(message.id);
+    const cursor = notificationCursorByChat.get(key);
+    if (!cursor) {
+      notificationCursorByChat.set(key, {
+        latestMessageId: latestMessage.id,
+        latestTimestamp: latestMessage.timestamp,
+      });
+      return;
     }
-    trimKnownMessages(known);
+
+    let unseenIncoming: ChatMessage[] = [];
+    const previousLatestIndex = messages.findIndex(
+      (message) =>
+        message.id === cursor.latestMessageId && message.timestamp === cursor.latestTimestamp,
+    );
+
+    if (previousLatestIndex >= 0) {
+      unseenIncoming = messages.slice(previousLatestIndex + 1).filter((message) => !message.outgoing);
+    } else {
+      unseenIncoming = messages.filter(
+        (message) =>
+          !message.outgoing && compareNotificationCursorToMessage(cursor, message) < 0,
+      );
+    }
+
+    if (compareNotificationCursorToMessage(cursor, latestMessage) < 0) {
+      notificationCursorByChat.set(key, {
+        latestMessageId: latestMessage.id,
+        latestTimestamp: latestMessage.timestamp,
+      });
+    }
 
     if (
       suppressNotification ||
@@ -744,23 +787,31 @@ const boot = async (): Promise<void> => {
     activeChatId: string | null,
     suppressNotifications = false,
   ): Promise<void> => {
-    const shouldSkipForVisibility = (chatId: string): boolean =>
-      activeChatId === chatId && isChatCurrentlyVisible(network, chatId);
+    const candidates = chats
+      .filter((chat) => {
+        if (chat.unreadCount < 1 || chat.isMuted || activeChatId === chat.id) {
+          return false;
+        }
+        if (suppressNotifications) {
+          return true;
+        }
+        const key = buildChatKey(network, chat.id);
+        const previousUnreadCount = lastUnreadCountByChat.get(key) ?? 0;
+        return chat.unreadCount > previousUnreadCount;
+      })
+      .sort((a, b) => b.unreadCount - a.unreadCount);
 
-    const unreadChats = chats
-      .filter(
-        (chat) => chat.unreadCount > 0 && !chat.isMuted && !shouldSkipForVisibility(chat.id),
-      )
-      .sort((a, b) => b.unreadCount - a.unreadCount)
-      .slice(0, 6);
-
-    for (const chat of unreadChats) {
+    for (const chat of candidates) {
       try {
         const messages = await fetchChatMessages(network, chat.id);
         maybeNotifyNewMessages(network, chat.id, chat.title, messages, suppressNotifications);
       } catch (error) {
         console.warn(`[${network}] notification scan failed for chat ${chat.id}`, error);
       }
+    }
+
+    for (const chat of chats) {
+      lastUnreadCountByChat.set(buildChatKey(network, chat.id), chat.unreadCount);
     }
   };
 
@@ -1778,6 +1829,7 @@ const boot = async (): Promise<void> => {
     maybeNotifyNewMessages('telegram', chatId, chatTitle, messages, suppressNotification);
     state.telegramMessages = messages;
     state.selectedTelegramMessageId = messages[messages.length - 1]?.id ?? null;
+    await window.pelec.setConnectorActiveChat('telegram', chatId);
     if (changed || forceScroll) {
       telegramForceScrollBottom = true;
       render();
@@ -1801,6 +1853,7 @@ const boot = async (): Promise<void> => {
     const requestSeq = ++telegramChatsRequestSeq;
     const telegramStatus = getStatusByNetwork('telegram');
     if (!(telegramStatus.mode === 'native' && telegramStatus.authState === 'authenticated')) {
+      void window.pelec.setConnectorActiveChat('telegram', null);
       resetNotificationTracking('telegram');
       state.telegramChats = [];
       state.telegramMessages = [];
@@ -1906,6 +1959,7 @@ const boot = async (): Promise<void> => {
     const requestSeq = ++instagramChatsRequestSeq;
     try {
       if (!isInstagramNativeReady()) {
+        resetNotificationTracking('instagram');
         state.instagramChats = [];
         state.instagramMessages = [];
         state.activeInstagramChatId = null;
@@ -1931,6 +1985,7 @@ const boot = async (): Promise<void> => {
       const chatsChanged = !areChatListsEqual(state.instagramChats, chats);
       state.instagramChats = chats;
       state.instagramLoading = false;
+      const suppressNotifications = !notificationBaselineReady.instagram;
 
       if (!state.activeInstagramChatId && chats.length > 0) {
         state.activeInstagramChatId = chats[0].id;
@@ -1954,10 +2009,19 @@ const boot = async (): Promise<void> => {
       if (!instagramNotificationScanInFlight) {
         instagramNotificationScanInFlight = true;
         try {
-          await scanChatsForNotifications('instagram', chats, state.activeInstagramChatId);
+          await scanChatsForNotifications(
+            'instagram',
+            chats,
+            state.activeInstagramChatId,
+            suppressNotifications,
+          );
         } finally {
           instagramNotificationScanInFlight = false;
         }
+      }
+
+      if (suppressNotifications) {
+        notificationBaselineReady.instagram = true;
       }
 
       if (isInstagramNativeReady()) {

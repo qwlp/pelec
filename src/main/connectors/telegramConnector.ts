@@ -112,6 +112,7 @@ export class TelegramConnector implements Connector {
   private tdClient: TdClient | null = null;
   private tdLibReady = false;
   private latestQrLink: string | null = null;
+  private activeChatId: string | null = null;
   private qrWaiters: Array<(link: string | null) => void> = [];
   private userLabelCache = new Map<number, string>();
   private userAvatarCache = new Map<number, string | undefined>();
@@ -149,6 +150,7 @@ export class TelegramConnector implements Connector {
     this.tdClient = null;
     this.tdLibReady = false;
     this.latestQrLink = null;
+    this.activeChatId = null;
     this.resolveQrWaiters(null);
     for (const timer of this.uploadTempCleanupTimers.values()) {
       clearTimeout(timer);
@@ -460,14 +462,36 @@ export class TelegramConnector implements Connector {
       this.status.details = `Failed loading messages: ${this.status.lastError}`;
       return [];
     } finally {
-      try {
-        await client.invoke({
-          _: 'closeChat',
-          chat_id: Number(chatId),
-        });
-      } catch {
-        // Best-effort close; failure is non-fatal for message rendering.
+      if (this.activeChatId !== chatId) {
+        await this.closeChat(client, chatId);
       }
+    }
+  }
+
+  async setActiveChat(chatId?: string | null): Promise<void> {
+    const previousChatId = this.activeChatId;
+    this.activeChatId = chatId?.trim() ? chatId : null;
+
+    const client = this.tdClient;
+    if (!client) {
+      return;
+    }
+
+    if (previousChatId && previousChatId !== this.activeChatId) {
+      await this.closeChat(client, previousChatId);
+    }
+
+    if (!this.activeChatId || this.status.authState !== 'authenticated') {
+      return;
+    }
+
+    try {
+      await client.invoke({
+        _: 'openChat',
+        chat_id: Number(this.activeChatId),
+      });
+    } catch {
+      // Best-effort open; message loading still works without keeping the chat watched.
     }
   }
 
@@ -766,6 +790,18 @@ export class TelegramConnector implements Connector {
     if (state._ === 'authorizationStateClosed') {
       this.status.authState = 'unauthenticated';
       this.status.details = 'TDLib authorization state is closed.';
+      this.activeChatId = null;
+    }
+  }
+
+  private async closeChat(client: TdClient, chatId: string): Promise<void> {
+    try {
+      await client.invoke({
+        _: 'closeChat',
+        chat_id: Number(chatId),
+      });
+    } catch {
+      // Best-effort close; failure is non-fatal for message rendering.
     }
   }
 

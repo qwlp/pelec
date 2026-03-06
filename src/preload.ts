@@ -28,6 +28,8 @@ const api = {
     ipcRenderer.invoke('connector:list-chats', network) as Promise<ChatSummary[]>,
   listConnectorMessages: (network: NetworkId, chatId: string) =>
     ipcRenderer.invoke('connector:list-messages', network, chatId) as Promise<ChatMessage[]>,
+  setConnectorActiveChat: (network: NetworkId, chatId?: string | null) =>
+    ipcRenderer.invoke('connector:set-active-chat', network, chatId) as Promise<void>,
   resolveConnectorAudioUrl: (network: NetworkId, chatId: string, messageId: string) =>
     ipcRenderer.invoke(
       'connector:resolve-audio-url',
