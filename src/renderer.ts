@@ -291,6 +291,11 @@ const boot = async (): Promise<void> => {
     latestMessageId: string;
     latestTimestamp: number;
   };
+  type InstagramWebFallbackState = {
+    unreadCount: number;
+    preview?: string;
+    signature?: string;
+  };
 
   const notificationCursorByChat = new Map<string, NotificationCursor>();
   const lastUnreadCountByChat = new Map<string, number>();
@@ -298,9 +303,8 @@ const boot = async (): Promise<void> => {
     telegram: false,
     instagram: false,
   };
-  let lastInstagramWebFallbackUnreadCount: number | null = null;
-  let lastInstagramWebFallbackPreview: string | null = null;
-  let lastInstagramWebFallbackSignature: string | null = null;
+  let lastInstagramWebFallbackState: InstagramWebFallbackState | null = null;
+  let lastInstagramWebFallbackNotificationKey: string | null = null;
 
   const buildChatKey = (network: NetworkId, chatId: string): string => `${network}:${chatId}`;
 
@@ -478,6 +482,140 @@ const boot = async (): Promise<void> => {
     return Number(match[1]) || 0;
   };
 
+  const sanitizeInstagramNotificationText = (value: string | null | undefined): string =>
+    String(value ?? '')
+      .replace(/[\p{Cc}\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const isUsefulInstagramText = (value: string | null | undefined): boolean => {
+    const text = sanitizeInstagramNotificationText(value);
+    const lowered = text.toLowerCase();
+    if (!text) {
+      return false;
+    }
+    if (lowered === 'instagram') {
+      return false;
+    }
+    if (text === '.' || text === ',' || text === '•') {
+      return false;
+    }
+    if (/^[.:,;!?-]+$/.test(text)) {
+      return false;
+    }
+    if (
+      lowered === 'message' ||
+      lowered === 'messages' ||
+      lowered === 'new message' ||
+      lowered === 'new messages' ||
+      lowered === 'send message' ||
+      lowered === 'messaging' ||
+      lowered === 'chats' ||
+      lowered === 'notes' ||
+      lowered === 'requests' ||
+      lowered === 'search'
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const isInstagramTransientPreview = (value: string | null | undefined): boolean => {
+    const text = sanitizeInstagramNotificationText(value);
+    if (!text) {
+      return false;
+    }
+    const previewText = text.includes(':')
+      ? sanitizeInstagramNotificationText(text.slice(text.indexOf(':') + 1))
+      : text;
+    return /^(typing(?:\.{3}|…)?|active(?: now)?|online|recording voice message(?:\.{3}|…)?)$/i.test(
+      previewText,
+    );
+  };
+
+  const isInstagramMetadataText = (value: string | null | undefined): boolean => {
+    const text = sanitizeInstagramNotificationText(value);
+    if (!text) {
+      return false;
+    }
+    return (
+      /^\d+$/.test(text) ||
+      /^(?:now|yesterday)$/i.test(text) ||
+      /^\d+\s*(?:s|m|h|d|w|mo|yr)s?$/i.test(text) ||
+      /^(?:seen|sent|delivered|read)$/i.test(text) ||
+      isInstagramTransientPreview(text)
+    );
+  };
+
+  const isUsefulInstagramPreview = (value: string | null | undefined): boolean => {
+    const text = sanitizeInstagramNotificationText(value);
+    const lowered = text.toLowerCase();
+    if (!isUsefulInstagramText(text) || isInstagramTransientPreview(text)) {
+      return false;
+    }
+    if (text.startsWith('.') || text.startsWith('•') || text.startsWith(',')) {
+      return false;
+    }
+    if (
+      lowered === '. message' ||
+      lowered === '. messages' ||
+      lowered === 'instagram . message' ||
+      lowered === 'instagram . messages'
+    ) {
+      return false;
+    }
+    if (/^[^a-zA-Z0-9]*message(s)?$/.test(lowered)) {
+      return false;
+    }
+    return true;
+  };
+
+  const isInstagramTitleStatusText = (value: string | null | undefined): boolean => {
+    const text = sanitizeInstagramNotificationText(value);
+    if (!text) {
+      return false;
+    }
+    return /\s[•·]\s(?:now|yesterday|\d+\s*(?:s|m|h|d|w|mo|yr)s?)$/i.test(text);
+  };
+
+  const buildInstagramWebFallbackNotificationKey = (
+    nextState: InstagramWebFallbackState,
+  ): string => {
+    const preview = sanitizeInstagramNotificationText(nextState.preview);
+    const signature = sanitizeInstagramNotificationText(nextState.signature);
+    return `${nextState.unreadCount}::${preview || '-'}::${signature || '-'}`;
+  };
+
+  const buildInstagramWebFallbackNotification = (
+    nextState: InstagramWebFallbackState,
+    previousState: InstagramWebFallbackState,
+  ): { title: string; body: string } => {
+    const preview = sanitizeInstagramNotificationText(nextState.preview);
+    if (preview) {
+      const separatorIndex = preview.indexOf(':');
+      if (separatorIndex > 0) {
+        const sender = sanitizeInstagramNotificationText(preview.slice(0, separatorIndex));
+        const body = sanitizeInstagramNotificationText(preview.slice(separatorIndex + 1));
+        if (sender && body) {
+          return {
+            title: `Instagram • ${sender}`,
+            body,
+          };
+        }
+      }
+      return {
+        title: 'Instagram',
+        body: preview,
+      };
+    }
+
+    const delta = Math.max(1, nextState.unreadCount - previousState.unreadCount);
+    return {
+      title: 'Instagram',
+      body: delta === 1 ? 'New Instagram message' : `${delta} new Instagram messages`,
+    };
+  };
+
   const readInstagramWebFallbackState = async (
     view: Electron.WebviewTag,
   ): Promise<{ unreadCount: number; preview?: string; signature?: string } | null> => {
@@ -488,13 +626,36 @@ const boot = async (): Promise<void> => {
             const title = typeof document.title === 'string' ? document.title.trim() : '';
             const normalize = (value) =>
               String(value || '')
+                .replace(/[\\p{Cc}\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\uFEFF]/gu, '')
                 .replace(/\\s+/g, ' ')
                 .trim();
+
+            const isTransientStatus = (value) =>
+              /^(typing(?:\\.{3}|…)?|active(?: now)?|online|recording voice message(?:\\.{3}|…)?)$/i.test(
+                normalize(value),
+              );
+
+            const isMetadataText = (value) => {
+              const text = normalize(value);
+              if (!text) {
+                return false;
+              }
+              return (
+                /^\\d+$/.test(text) ||
+                /^(?:now|yesterday)$/i.test(text) ||
+                /^\\d+\\s*(?:s|m|h|d|w|mo|yr)s?$/i.test(text) ||
+                /^(?:seen|sent|delivered|read)$/i.test(text) ||
+                isTransientStatus(text)
+              );
+            };
 
             const isUsefulText = (value) => {
               const text = normalize(value);
               const lowered = text.toLowerCase();
               if (!text) {
+                return false;
+              }
+              if (isTransientStatus(text)) {
                 return false;
               }
               if (lowered === 'instagram') {
@@ -548,6 +709,40 @@ const boot = async (): Promise<void> => {
               return true;
             };
 
+            const stripSenderPrefix = (sender, value) => {
+              const normalizedSender = normalize(sender);
+              const text = normalize(value);
+              if (!normalizedSender || !text) {
+                return text;
+              }
+              if (!text.toLowerCase().startsWith(normalizedSender.toLowerCase())) {
+                return text;
+              }
+              return text
+                .slice(normalizedSender.length)
+                .replace(/^[\\s:\\-•.,]+/, '')
+                .trim();
+            };
+
+            const cleanSenderText = (value) => {
+              let text = normalize(value);
+              if (!text) {
+                return '';
+              }
+
+              text = text
+                .replace(/^(?:active(?: now)?|online|typing(?:\\.{3}|…)?)[\\s:\\-•.,]*/i, '')
+                .trim();
+
+              const segments = text.split(/\\s+[•·]\\s+/).map((entry) => normalize(entry)).filter(Boolean);
+              if (segments.length > 1 && isMetadataText(segments[segments.length - 1])) {
+                segments.pop();
+                text = segments.join(' • ').trim();
+              }
+
+              return text.trim();
+            };
+
             const titlePreview = normalize(title.replace(/^\\(\\d+\\)\\s*/, ''));
 
             const isUnreadCandidate = (element) => {
@@ -559,116 +754,143 @@ const boot = async (): Promise<void> => {
               return fontWeight >= 600 || style.fontWeight === 'bold';
             };
 
-            const extractThreadPreview = () => {
-              const rows = Array.from(
+            const getInboxRows = () =>
+              Array.from(
                 document.querySelectorAll('a[href*="/direct/t/"], div[role="link"], div[role="button"], li'),
-              );
-              for (const row of rows) {
+              ).filter((row) => {
                 if (!(row instanceof HTMLElement)) {
-                  continue;
+                  return false;
                 }
                 const rect = row.getBoundingClientRect();
-                if (
+                return !(
                   rect.width < 120 ||
                   rect.height < 36 ||
                   rect.top < 0 ||
                   rect.top > window.innerHeight ||
                   rect.left > window.innerWidth * 0.7
-                ) {
-                  continue;
-                }
+                );
+              });
 
-                const textNodes = Array.from(row.querySelectorAll('span, div, p'))
-                  .filter((node) => node instanceof HTMLElement)
-                  .map((node) => {
-                    const element = node;
-                    const style = window.getComputedStyle(element);
-                    const fontWeight = Number.parseInt(style.fontWeight || '400', 10);
-                    return {
-                      text: normalize(element.textContent),
-                      unread: isUnreadCandidate(element),
-                      bold: fontWeight >= 600 || style.fontWeight === 'bold',
-                    };
-                  })
-                  .filter((entry) => isUsefulText(entry.text));
+            const describeRow = (row) => {
+              if (!(row instanceof HTMLElement)) {
+                return null;
+              }
 
-                if (textNodes.length < 1) {
-                  continue;
-                }
+              const textNodes = Array.from(row.querySelectorAll('span, div, p'))
+                .filter((node) => node instanceof HTMLElement)
+                .map((node) => {
+                  const element = node;
+                  const style = window.getComputedStyle(element);
+                  const fontWeight = Number.parseInt(style.fontWeight || '400', 10);
+                  return {
+                    text: normalize(element.textContent),
+                    unread: isUnreadCandidate(element),
+                    bold: fontWeight >= 600 || style.fontWeight === 'bold',
+                  };
+                })
+                .filter((entry) => isUsefulText(entry.text));
 
-                const unreadTexts = textNodes
-                  .filter((entry) => entry.unread)
-                  .map((entry) => entry.text)
-                  .filter((text, index, array) => array.indexOf(text) === index);
+              if (textNodes.length < 1) {
+                return null;
+              }
 
-                const boldTexts = textNodes
-                  .filter((entry) => entry.bold)
-                  .map((entry) => entry.text)
-                  .filter((text, index, array) => array.indexOf(text) === index);
+              const unreadTexts = textNodes
+                .filter((entry) => entry.unread)
+                .map((entry) => entry.text)
+                .filter((text, index, array) => array.indexOf(text) === index);
 
-                const allTexts = textNodes
-                  .map((entry) => entry.text)
-                  .filter((text, index, array) => array.indexOf(text) === index);
+              const boldTexts = textNodes
+                .filter((entry) => entry.bold)
+                .map((entry) => entry.text)
+                .filter((text, index, array) => array.indexOf(text) === index);
 
-                const unreadBadge = allTexts.find((text) => /^\\d+$/.test(text));
-                const rowLooksUnread = unreadTexts.length > 0 || Boolean(unreadBadge);
+              const allTexts = textNodes
+                .map((entry) => entry.text)
+                .filter((text, index, array) => array.indexOf(text) === index);
 
-                if (!rowLooksUnread && allTexts.length < 2) {
-                  continue;
-                }
+              const unreadBadge = allTexts.find((text) => /^\\d+$/.test(text));
+              const rowLooksUnread = unreadTexts.length > 0 || Boolean(unreadBadge);
 
-                const sender = unreadTexts[0] || boldTexts[0] || allTexts[0] || '';
-                const message =
-                  unreadTexts.find((text) => text !== sender) ||
-                  allTexts.find((text) => text !== sender) ||
-                  '';
+              if (!rowLooksUnread && allTexts.length < 2) {
+                return null;
+              }
 
-                if (sender && message) {
-                  return sender + ': ' + message;
-                }
+              const contentTexts = allTexts.filter((text) => !isMetadataText(text));
+              const senderCandidates = [
+                ...unreadTexts.filter((text) => !isMetadataText(text)),
+                ...boldTexts.filter((text) => !isMetadataText(text)),
+                ...contentTexts,
+              ]
+                .map((text) => cleanSenderText(text))
+                .filter((text, index, array) => Boolean(text) && array.indexOf(text) === index);
+              const sender = senderCandidates[0] || '';
+              const messageCandidates = [
+                ...unreadTexts.filter((text) => text !== sender && !isMetadataText(text)),
+                ...contentTexts.filter((text) => text !== sender),
+              ];
+              const message = messageCandidates.find((text) => {
+                const next = stripSenderPrefix(sender, text);
+                return Boolean(next) && !isMetadataText(next) && isUsefulPreview(next);
+              }) || '';
+              const ariaLabel = normalize(row.getAttribute('aria-label'));
 
-                const ariaLabel = normalize(row.getAttribute('aria-label'));
-                if (sender && isUsefulText(ariaLabel) && ariaLabel !== sender) {
-                  return sender + ': ' + ariaLabel;
-                }
-
-                const rowText = normalize(row.innerText || row.textContent);
-                if (isUsefulText(rowText)) {
-                  return rowText;
+              let preview = '';
+              if (sender && message) {
+                const cleanedMessage = stripSenderPrefix(sender, message);
+                if (cleanedMessage && isUsefulPreview(cleanedMessage)) {
+                  preview = sender + ': ' + cleanedMessage;
                 }
               }
-              return '';
+
+              if (!preview && sender && isUsefulText(ariaLabel) && ariaLabel !== sender) {
+                const cleanedAria = stripSenderPrefix(sender, ariaLabel);
+                if (cleanedAria && !isMetadataText(cleanedAria) && isUsefulPreview(cleanedAria)) {
+                  preview = sender + ': ' + cleanedAria;
+                }
+              }
+
+              const signatureParts = [];
+              if (rowLooksUnread) {
+                signatureParts.push('u=1');
+              }
+              if (sender) {
+                signatureParts.push('s=' + sender);
+              }
+              if (preview) {
+                signatureParts.push('p=' + preview);
+              }
+              if (unreadBadge) {
+                signatureParts.push('b=' + unreadBadge);
+              }
+              if (signatureParts.length < 1) {
+                return null;
+              }
+
+              return {
+                unread: rowLooksUnread,
+                preview,
+                signature: signatureParts.join('|'),
+              };
             };
 
             const extractInboxSignature = () => {
-              const rows = Array.from(
-                document.querySelectorAll('a[href*="/direct/t/"], div[role="link"], div[role="button"], li'),
-              );
-              const normalizedRows = [];
-              for (const row of rows) {
-                if (!(row instanceof HTMLElement)) {
-                  continue;
-                }
-                const rect = row.getBoundingClientRect();
-                if (
-                  rect.width < 120 ||
-                  rect.height < 36 ||
-                  rect.top < 0 ||
-                  rect.top > window.innerHeight ||
-                  rect.left > window.innerWidth * 0.7
-                ) {
-                  continue;
-                }
-                const rowText = normalize(row.innerText || row.textContent);
-                if (!rowText) {
-                  continue;
-                }
-                normalizedRows.push(rowText);
-                if (normalizedRows.length >= 8) {
-                  break;
-                }
+              const descriptions = getInboxRows()
+                .map((row) => describeRow(row))
+                .filter(Boolean)
+                .slice(0, 8);
+              return descriptions.map((entry) => entry.signature).join(' || ');
+            };
+
+            const extractThreadPreview = () => {
+              const descriptions = getInboxRows()
+                .map((row) => describeRow(row))
+                .filter(Boolean);
+              const unreadPreview = descriptions.find((entry) => entry.unread && entry.preview);
+              if (unreadPreview && isUsefulPreview(unreadPreview.preview)) {
+                return unreadPreview.preview;
               }
-              return normalizedRows.join(' || ');
+              const firstPreview = descriptions.find((entry) => entry.preview);
+              return firstPreview?.preview || '';
             };
 
             return {
@@ -684,15 +906,21 @@ const boot = async (): Promise<void> => {
 
       const title = result?.title?.trim() ?? '';
       const unreadCount = parseUnreadCountFromTitle(title);
-      const titlePreview = result?.titlePreview?.trim() ?? '';
-      const rowPreview = result?.rowPreview?.trim() ?? '';
-      const signature = result?.signature?.trim() ?? '';
-      const preview =
-        rowPreview ||
-        (titlePreview &&
-        isUsefulPreview(titlePreview)
+      const titlePreview = sanitizeInstagramNotificationText(result?.titlePreview);
+      const rowPreview = sanitizeInstagramNotificationText(result?.rowPreview);
+      const signature = sanitizeInstagramNotificationText(result?.signature);
+      const previewFromRow =
+        rowPreview && isUsefulInstagramPreview(rowPreview)
+          ? rowPreview
+          : undefined;
+      const previewFromTitle =
+        titlePreview &&
+        !isInstagramMetadataText(titlePreview) &&
+        !isInstagramTitleStatusText(titlePreview) &&
+        isUsefulInstagramPreview(titlePreview)
           ? titlePreview
-          : undefined);
+          : undefined;
+      const preview = previewFromRow || previewFromTitle;
       return { unreadCount, preview, signature: signature || undefined };
     } catch (error) {
       console.warn('Failed to inspect Instagram web fallback title.', error);
@@ -703,9 +931,8 @@ const boot = async (): Promise<void> => {
   const pollInstagramWebFallbackNotifications = async (): Promise<void> => {
     const instagramStatus = getStatusByNetwork('instagram');
     if (instagramStatus.mode !== 'web-fallback') {
-      lastInstagramWebFallbackUnreadCount = null;
-      lastInstagramWebFallbackPreview = null;
-      lastInstagramWebFallbackSignature = null;
+      lastInstagramWebFallbackState = null;
+      lastInstagramWebFallbackNotificationKey = null;
       return;
     }
 
@@ -718,39 +945,32 @@ const boot = async (): Promise<void> => {
     if (nextState === null) {
       return;
     }
-    const { unreadCount, preview, signature } = nextState;
-
-    if (lastInstagramWebFallbackUnreadCount === null) {
-      lastInstagramWebFallbackUnreadCount = unreadCount;
-      lastInstagramWebFallbackPreview = preview ?? null;
-      lastInstagramWebFallbackSignature = signature ?? null;
+    const previousState = lastInstagramWebFallbackState;
+    if (previousState === null) {
+      lastInstagramWebFallbackState = nextState;
       return;
     }
 
-    const unreadIncreased = unreadCount > lastInstagramWebFallbackUnreadCount;
+    const unreadIncreased = nextState.unreadCount > previousState.unreadCount;
     const previewChanged =
-      unreadCount > 0 &&
-      Boolean(preview) &&
-      preview !== lastInstagramWebFallbackPreview;
+      Boolean(nextState.preview) && nextState.preview !== previousState.preview;
     const signatureChanged =
-      unreadCount > 0 &&
-      Boolean(signature) &&
-      signature !== lastInstagramWebFallbackSignature;
+      Boolean(nextState.signature) && nextState.signature !== previousState.signature;
+    const inboxMeaningfullyChanged =
+      nextState.unreadCount > 0 &&
+      nextState.unreadCount >= previousState.unreadCount &&
+      (previewChanged || signatureChanged);
 
-    if ((unreadIncreased || previewChanged || signatureChanged) && !isWebFallbackVisible('instagram')) {
-      const delta = Math.max(1, unreadCount - lastInstagramWebFallbackUnreadCount);
-      const body =
-        preview ||
-        (delta === 1 ? 'New Instagram message' : `${delta} new Instagram messages`);
-      void window.pelec.showNotification(
-        'Instagram',
-        body,
-      );
+    if ((unreadIncreased || inboxMeaningfullyChanged) && !isWebFallbackVisible('instagram')) {
+      const notificationKey = buildInstagramWebFallbackNotificationKey(nextState);
+      if (notificationKey !== lastInstagramWebFallbackNotificationKey) {
+        const payload = buildInstagramWebFallbackNotification(nextState, previousState);
+        void window.pelec.showNotification(payload.title, payload.body);
+        lastInstagramWebFallbackNotificationKey = notificationKey;
+      }
     }
 
-    lastInstagramWebFallbackUnreadCount = unreadCount;
-    lastInstagramWebFallbackPreview = preview ?? null;
-    lastInstagramWebFallbackSignature = signature ?? null;
+    lastInstagramWebFallbackState = nextState;
   };
 
   const ensureInstagramWebFallbackMonitor = (): void => {
@@ -760,9 +980,8 @@ const boot = async (): Promise<void> => {
         window.clearInterval(instagramWebFallbackMonitorTimer);
         instagramWebFallbackMonitorTimer = null;
       }
-      lastInstagramWebFallbackUnreadCount = null;
-      lastInstagramWebFallbackPreview = null;
-      lastInstagramWebFallbackSignature = null;
+      lastInstagramWebFallbackState = null;
+      lastInstagramWebFallbackNotificationKey = null;
       return;
     }
 
@@ -1346,313 +1565,32 @@ const boot = async (): Promise<void> => {
   };
 
   const INSTAGRAM_WEBVIEW_THEME_CSS = `
-    :root {
-      --pelec-bg-0: #050607;
-      --pelec-bg-1: #090b0d;
-      --pelec-bg-2: #0d1013;
-      --pelec-bg-3: #12161a;
-      --pelec-bg-4: #171c21;
-      --pelec-line: rgba(255, 255, 255, 0.08);
-      --pelec-line-strong: rgba(255, 255, 255, 0.16);
-      --pelec-ink: #f1f3f4;
-      --pelec-muted: #9aa0a6;
-      --pelec-accent: #d1d5db;
-      --pelec-accent-soft: rgba(255, 255, 255, 0.04);
-      --pelec-accent-strong: #e5e7eb;
-    }
-
-    html, body {
-      background: var(--pelec-bg-0) !important;
-      color: var(--pelec-ink) !important;
-    }
-
-    * {
-      font-family: "Iosevka", "Iosevka Mono", "JetBrains Mono", "IBM Plex Mono", monospace !important;
-      border-radius: 0 !important;
-    }
-
-    html {
-      font-size: 15px !important;
-    }
-
-    body {
-      font-size: 1rem !important;
-      line-height: 1.38 !important;
-    }
-
+    html,
+    body,
     input,
     textarea,
     button,
     [role="button"],
     [role="link"],
     [contenteditable="true"],
+    div,
     span,
-    a,
     p,
-    h1,
-    h2,
-    h3,
-    h4,
-    li,
-    div {
-      font-size: inherit !important;
-    }
-
-    body, input, textarea, button, div, section, main, nav, header, footer, aside, article {
-      scrollbar-width: none !important;
-    }
-
-    body::-webkit-scrollbar, *::-webkit-scrollbar {
-      width: 0 !important;
-      height: 0 !important;
-      display: none !important;
-    }
-
-    nav,
-    header,
-    section,
-    main,
-    article,
-    aside,
-    ul,
-    li,
-    [role="main"],
-    [role="dialog"],
-    [role="menu"],
-    [role="presentation"],
-    [role="listbox"],
-    [role="grid"],
-    [role="list"],
-    [role="textbox"],
-    [aria-label="Inbox"],
-    [aria-label="Direct"],
-    [aria-label="Chats"] {
-      border-color: var(--pelec-line) !important;
-    }
-
-    nav,
-    header,
-    li,
-    [role="dialog"] > div,
-    [role="menu"] > div,
-    form,
-    textarea,
-    input,
-    button {
-      border-radius: 0 !important;
-    }
-
-    input,
-    textarea,
-    [contenteditable="true"] {
-      background: var(--pelec-bg-1) !important;
-      color: var(--pelec-ink) !important;
-      border-color: var(--pelec-line) !important;
-      box-shadow: none !important;
-      padding-top: 0.7rem !important;
-      padding-bottom: 0.7rem !important;
-    }
-
-    input::placeholder,
-    textarea::placeholder {
-      color: #7f868d !important;
-    }
-
     a,
-    a:visited {
-      color: #f1f3f4 !important;
-    }
-
-    button,
-    [role="button"] {
-      transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease !important;
-    }
-
-    button:hover,
-    [role="button"]:hover {
-      background: var(--pelec-accent-soft) !important;
-    }
-
-    button,
-    [role="button"],
-    [role="link"] {
-      color: var(--pelec-ink) !important;
-      border-color: var(--pelec-line) !important;
-    }
-
-    button:focus,
-    [role="button"]:focus,
-    input:focus,
-    textarea:focus,
-    [contenteditable="true"]:focus {
-      outline: none !important;
-      border-color: var(--pelec-line-strong) !important;
-      box-shadow: inset 2px 0 0 var(--pelec-accent) !important;
-    }
-
-    main,
-    nav,
+    li,
     section,
     article,
     header,
-    aside,
-    form,
-    [role="main"],
-    [role="dialog"] > div,
-    [role="menu"] > div,
-    [role="listbox"],
-    [role="grid"],
-    [role="list"],
-    [role="presentation"] {
-      background-color: var(--pelec-bg-0) !important;
-    }
-
     nav,
     aside,
-    header {
-      background:
-        linear-gradient(180deg, rgba(9, 11, 13, 0.98) 0%, rgba(5, 6, 7, 0.98) 100%) !important;
+    main {
+      font-family: "Ioskeley Mono", "Iosevka Mono", "Iosevka", monospace !important;
     }
 
-    main,
-    section,
-    article,
-    [role="main"] {
-      background: var(--pelec-bg-0) !important;
-    }
-
-    input,
-    textarea,
-    [role="textbox"],
-    [contenteditable="true"] {
-      background: rgba(9, 11, 13, 0.96) !important;
-    }
-
-    button,
-    [role="button"] {
-      background: rgba(13, 16, 19, 0.96) !important;
-      min-height: 2.4rem !important;
-    }
-
-    [aria-selected="true"],
-    [aria-current="page"],
-    [aria-current="true"],
-    [role="tab"][aria-selected="true"] {
-      background: rgba(18, 22, 26, 0.98) !important;
-      box-shadow: inset 2px 0 0 var(--pelec-accent) !important;
-    }
-
-    [href="/direct/inbox/"],
-    a[href*="/direct/"],
-    [aria-label*="Messages"],
-    [aria-label*="Direct"] {
-      color: #f3f4f6 !important;
-    }
-
-    svg,
-    path {
-      color: currentColor !important;
-    }
-
-    [style*="background-color: rgb(255, 255, 255)"],
-    [style*="background: rgb(255, 255, 255)"],
-    [style*="background-color:#fff"],
-    [style*="background:#fff"],
-    [style*="background-color: white"],
-    [style*="background: white"] {
-      background: var(--pelec-bg-1) !important;
-      color: var(--pelec-ink) !important;
-    }
-
-    [style*="border-color: rgb(219, 219, 219)"],
-    [style*="border-top-color: rgb(219, 219, 219)"],
-    [style*="border-right-color: rgb(219, 219, 219)"],
-    [style*="border-bottom-color: rgb(219, 219, 219)"],
-    [style*="border-left-color: rgb(219, 219, 219)"] {
-      border-color: var(--pelec-line) !important;
-    }
-
-    [style*="color: rgb(38, 38, 38)"],
-    [style*="color: rgb(0, 0, 0)"] {
-      color: var(--pelec-ink) !important;
-    }
-
-    [style*="color: rgb(115, 115, 115)"],
-    [style*="color: rgb(142, 142, 142)"] {
-      color: var(--pelec-muted) !important;
-    }
-
-    [style*="background-color: rgb(239, 239, 239)"],
-    [style*="background: rgb(239, 239, 239)"] {
-      background: var(--pelec-bg-2) !important;
-    }
-
-    [style*="background-color: rgb(18, 18, 18)"],
-    [style*="background: rgb(18, 18, 18)"],
-    [style*="background-color: rgb(0, 0, 0)"],
-    [style*="background: rgb(0, 0, 0)"] {
-      background: var(--pelec-bg-0) !important;
-    }
-
-    [style*="background-color: rgb(0, 149, 246)"],
-    [style*="background: rgb(0, 149, 246)"],
-    [style*="color: rgb(0, 149, 246)"] {
-      background: rgba(18, 22, 26, 0.96) !important;
-      border-color: rgba(255, 255, 255, 0.14) !important;
-      color: #f3f4f6 !important;
-    }
-
-    [style*="background-color: rgb(54, 54, 54)"],
-    [style*="background: rgb(54, 54, 54)"],
-    [style*="background-color: rgb(38, 38, 38)"],
-    [style*="background: rgb(38, 38, 38)"] {
-      background: var(--pelec-bg-1) !important;
-    }
-
-    [style*="background-color: rgb(32, 32, 32)"],
-    [style*="background: rgb(32, 32, 32)"],
-    [style*="background-color: rgb(30, 30, 30)"],
-    [style*="background: rgb(30, 30, 30)"],
-    [style*="background-color: rgb(28, 28, 28)"],
-    [style*="background: rgb(28, 28, 28)"] {
-      background: var(--pelec-bg-1) !important;
-    }
-
-    [style*="background-color: rgb(23, 23, 23)"],
-    [style*="background: rgb(23, 23, 23)"],
-    [style*="background-color: rgb(26, 26, 26)"],
-    [style*="background: rgb(26, 26, 26)"] {
-      background: var(--pelec-bg-0) !important;
-    }
-
-    [style*="background-color: rgb(250, 250, 250)"],
-    [style*="background: rgb(250, 250, 250)"],
-    [style*="background-color: rgb(239, 239, 239)"],
-    [style*="background: rgb(239, 239, 239)"] {
-      background: var(--pelec-bg-2) !important;
-    }
-
-    /* Story/note tiles at the top should use the same flat panel background. */
-    a:has(img),
-    div:has(> img),
-    button:has(img) {
-      background-color: transparent !important;
-    }
-
-    a:has(img) > div,
-    button:has(img) > div,
-    div:has(> img) > div {
-      background: var(--pelec-bg-1) !important;
-    }
-
-    [style*="background: linear-gradient"] {
-      filter: saturate(0.88) contrast(0.98) brightness(0.96) !important;
-    }
-
-    svg[aria-label="Instagram"],
-    svg[aria-label="Home"],
-    svg[aria-label="Search"] {
-      color: var(--pelec-ink) !important;
+    *,
+    *::before,
+    *::after {
+      border-radius: 0 !important;
     }
   `;
 
@@ -1665,6 +1603,23 @@ const boot = async (): Promise<void> => {
             const STYLE_ID = 'pelec-instagram-theme';
             const css = ${JSON.stringify(INSTAGRAM_WEBVIEW_THEME_CSS)};
 
+            const getScope = () => {
+              const path = window.location.pathname.toLowerCase();
+              if (path.startsWith('/direct')) {
+                return 'dm';
+              }
+              if (
+                path.startsWith('/accounts/login') ||
+                path.includes('/challenge') ||
+                path.includes('/checkpoint') ||
+                path.includes('/two_factor') ||
+                path.includes('/login')
+              ) {
+                return 'auth';
+              }
+              return 'neutral';
+            };
+
             const install = () => {
               let style = document.getElementById(STYLE_ID);
               if (!style) {
@@ -1676,9 +1631,15 @@ const boot = async (): Promise<void> => {
                 style.textContent = css;
               }
 
-              document.documentElement.style.background = '#0d0a12';
-              document.body && (document.body.style.background = '#0d0a12');
+              const scope = getScope();
+              document.documentElement.style.removeProperty('background');
+              document.body && document.body.style.removeProperty('background');
               document.documentElement.setAttribute('data-pelec-instagram-theme', '1');
+              document.documentElement.setAttribute('data-pelec-instagram-scope', scope);
+
+              if (scope !== 'dm') {
+                return;
+              }
 
               const candidates = Array.from(document.querySelectorAll('nav, section, div')).filter((element) => {
                 if (!(element instanceof HTMLElement)) {
@@ -1894,11 +1855,21 @@ const boot = async (): Promise<void> => {
     ) {
       state.selectedTelegramChatId = chats[0]?.id ?? null;
     }
+    if (
+      state.activeTelegramChatId &&
+      !chats.some((chat) => chat.id === state.activeTelegramChatId)
+    ) {
+      state.activeTelegramChatId = chats[0]?.id ?? null;
+      state.telegramMessages = [];
+      state.selectedTelegramMessageId = null;
+    }
+
+    if (chatsChanged) {
+      render();
+    }
 
     if (state.activeTelegramChatId) {
       await loadTelegramMessages(state.activeTelegramChatId, 0, false, suppressNotifications);
-    } else if (chatsChanged) {
-      render();
     }
 
     if (!telegramNotificationScanInFlight) {
@@ -1999,11 +1970,21 @@ const boot = async (): Promise<void> => {
       ) {
         state.selectedInstagramChatId = chats[0]?.id ?? null;
       }
+      if (
+        state.activeInstagramChatId &&
+        !chats.some((chat) => chat.id === state.activeInstagramChatId)
+      ) {
+        state.activeInstagramChatId = chats[0]?.id ?? null;
+        state.instagramMessages = [];
+        state.selectedInstagramMessageId = null;
+      }
+
+      if (chatsChanged) {
+        render();
+      }
 
       if (state.activeInstagramChatId) {
         await loadInstagramMessages(state.activeInstagramChatId);
-      } else if (chatsChanged) {
-        render();
       }
 
       if (!instagramNotificationScanInFlight) {
@@ -2598,8 +2579,11 @@ const boot = async (): Promise<void> => {
       setMode('insert');
       await refreshConnectorStatuses();
       if (result.network === 'instagram') {
-        stopInstagramBrowserSessionPolling();
-        setMode('normal');
+        const status = getStatusByNetwork('instagram');
+        if (status.authState === 'authenticated') {
+          stopInstagramBrowserSessionPolling();
+          setMode('normal');
+        }
       }
       render();
       return;
@@ -2671,13 +2655,20 @@ const boot = async (): Promise<void> => {
         render();
         return;
       }
-      await window.pelec.submitConnectorAuth(result.network, {
+      const submittedStatus = await window.pelec.submitConnectorAuth(result.network, {
         type: 'code',
         value: code,
       });
+      statusBar.textContent = submittedStatus.lastError ?? submittedStatus.details;
       await refreshConnectorStatuses();
       if (result.network === 'instagram') {
-        stopInstagramBrowserSessionPolling();
+        if (submittedStatus.authState === 'authenticated') {
+          stopInstagramBrowserSessionPolling();
+          setMode('normal');
+        } else if (submittedStatus.mode === 'web-fallback') {
+          activateNetwork('instagram');
+          startInstagramBrowserSessionPolling();
+        }
       }
       render();
       return;

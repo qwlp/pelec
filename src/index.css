@@ -249,15 +249,14 @@ textarea {
   position: relative;
   overflow: hidden;
   min-width: 0;
-  background: #100c18;
+  background: #111110;
 }
 
 .instagram-web-shell {
   position: absolute;
   inset: 0;
   display: block;
-  background:
-    linear-gradient(180deg, rgba(14, 10, 22, 0.98) 0%, rgba(10, 8, 18, 0.98) 100%);
+  background: transparent;
   z-index: 2;
 }
 
@@ -276,8 +275,8 @@ textarea {
 .instagram-web-frame {
   position: relative;
   height: 100%;
-  border: 1px solid rgba(255, 124, 193, 0.14);
-  background: rgba(8, 7, 15, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
   box-shadow: none;
   overflow: hidden;
 }
@@ -286,14 +285,14 @@ textarea {
   content: '';
   position: absolute;
   inset: 0;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.03);
   pointer-events: none;
 }
 
 .instagram-webview-host {
   position: relative;
   min-height: 0;
-  background: #0f0c16;
+  background: transparent;
   height: 100%;
 }
 

@@ -74,6 +74,22 @@ const clearPendingChallengeSession = async (
   }
 };
 
+const hasCheckpointState = (state: Record<string, unknown> | undefined): boolean =>
+  Boolean(state && typeof state === 'object' && state.checkpoint);
+
+const clearPendingChallengeArtifacts = async (
+  userDataPath: string,
+  partition: string,
+  meta?: InstagramMetaState,
+): Promise<void> => {
+  await clearPendingChallengeSession(userDataPath, partition);
+  const nextMeta = meta ?? (await getMetaState(userDataPath, partition));
+  await saveMetaState(userDataPath, partition, {
+    ...nextMeta,
+    pendingChallenge: undefined,
+  });
+};
+
 const isCheckpointError = (message: string): boolean => {
   const lowered = message.toLowerCase();
   return lowered.includes('checkpoint_required') || lowered.includes('checkpoint required');
@@ -310,6 +326,17 @@ export const verifyInstagramCapability = async (
         };
       }
       if (meta.pendingChallenge) {
+        const pendingState = await readJsonFile<Record<string, unknown>>(
+          getPendingChallengeSessionPath(userDataPath, partition),
+        );
+        if (!hasCheckpointState(pendingState)) {
+          await clearPendingChallengeArtifacts(userDataPath, partition, meta);
+          return {
+            ok: false,
+            details:
+              'Instagram checkpoint session expired. Complete the challenge in Instagram web/app, then retry auth.',
+          };
+        }
         const target = meta.pendingChallenge.contactPoint
           ? ` sent to ${meta.pendingChallenge.contactPoint}`
           : ' from Instagram via email, SMS, or the Instagram app/web checkpoint flow';
@@ -415,6 +442,13 @@ export const loginInstagram = async (
 
     const message = formatErrorMessage(error) || 'Instagram login failed.';
     if (isCheckpointError(message)) {
+      if (!ig.state.checkpoint) {
+        return {
+          ok: false,
+          details:
+            'Instagram checkpoint requires web/app review. Native challenge state was not available, so complete the challenge in Instagram web/app and retry auth.',
+        };
+      }
       let challengeState: any;
       try {
         challengeState = await ig.challenge.auto(true);
@@ -431,6 +465,13 @@ export const loginInstagram = async (
         };
       }
       const serialized = await ig.state.serialize();
+      if (!hasCheckpointState(serialized as Record<string, unknown>)) {
+        return {
+          ok: false,
+          details:
+            'Instagram checkpoint could not be resumed natively. Complete the challenge in Instagram web/app, then retry auth.',
+        };
+      }
       const { constants, ...pendingState } = serialized as Record<string, unknown>;
       void constants;
       await writeJsonFile(getPendingChallengeSessionPath(userDataPath, partition), pendingState);
@@ -740,8 +781,24 @@ export const submitInstagramChallengeCode = async (
   const pendingState = await readJsonFile<Record<string, unknown>>(
     getPendingChallengeSessionPath(userDataPath, partition),
   );
+  if (!hasCheckpointState(pendingState)) {
+    await clearPendingChallengeArtifacts(userDataPath, partition, meta);
+    return {
+      ok: false,
+      details:
+        'Instagram checkpoint session expired. Complete the challenge in Instagram web/app, then retry auth.',
+    };
+  }
   if (pendingState) {
     await ig.state.deserialize(pendingState);
+  }
+  if (!ig.state.checkpoint) {
+    await clearPendingChallengeArtifacts(userDataPath, partition, meta);
+    return {
+      ok: false,
+      details:
+        'Instagram checkpoint session expired. Complete the challenge in Instagram web/app, then retry auth.',
+    };
   }
 
   try {
