@@ -2,6 +2,7 @@ import type {
   AuthStartResult,
   AuthSubmission,
   ChatMessage,
+  ResolvedDocument,
   ChatSummary,
   Connector,
   ConnectorUpdateEvent,
@@ -100,6 +101,18 @@ export class ConnectorManager {
       return undefined;
     }
     return connector.resolveAudioUrl(chatId, messageId);
+  }
+
+  async resolveDocument(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+  ): Promise<ResolvedDocument | undefined> {
+    const connector = this.getConnector(network);
+    if (!connector.resolveDocument) {
+      return undefined;
+    }
+    return connector.resolveDocument(chatId, messageId);
   }
 
   async sendMessage(

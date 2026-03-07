@@ -7,7 +7,7 @@ import type {
   ConnectorUpdateEvent,
   ConnectorStatus,
 } from './shared/connectors';
-import type { AppMode, NetworkDefinition, NetworkId } from './shared/types';
+import type { AppActivity, AppMode, NetworkDefinition, NetworkId } from './shared/types';
 
 interface AppState {
   mode: AppMode;
@@ -95,6 +95,48 @@ const formatDuration = (seconds: number): string => {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 };
 
+const formatFileSize = (bytes?: number): string | undefined => {
+  if (!bytes || bytes < 1) {
+    return undefined;
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  const precision = value >= 100 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+};
+
+const formatTelegramDocumentKind = (fileName: string, mimeType?: string): string => {
+  const ext = fileName.split('.').pop()?.trim();
+  if (ext && ext !== fileName) {
+    return ext.slice(0, 8).toUpperCase();
+  }
+  if (mimeType) {
+    return mimeType.split('/').pop()?.slice(0, 8).toUpperCase() || 'FILE';
+  }
+  return 'FILE';
+};
+
+const isTelegramDocumentFallbackText = (message: ChatMessage): boolean => {
+  if (!message.document) {
+    return false;
+  }
+
+  const text = message.text.trim().toLowerCase();
+  if (!text) {
+    return false;
+  }
+
+  return text === 'document' || text === `document: ${message.document.fileName}`.toLowerCase();
+};
+
 const formatMessageTime = (timestamp: number): string =>
   new Date(timestamp).toLocaleTimeString([], {
     hour: '2-digit',
@@ -155,6 +197,67 @@ const renderStatusLine = (statusBar: HTMLElement, line: string): void => {
 
   shell.replaceChildren(left, right);
   statusBar.append(shell);
+};
+
+const renderStatusToast = (
+  host: HTMLElement,
+  activity?: AppActivity | null,
+): void => {
+  host.replaceChildren();
+  host.classList.toggle('hidden', !activity);
+  if (!activity) {
+    return;
+  }
+
+  const card = document.createElement('aside');
+  card.className = 'status-toast';
+  card.classList.add(`state-${activity.state}`);
+  if (activity.indeterminate) {
+    card.classList.add('indeterminate');
+  }
+
+  const eyebrow = document.createElement('div');
+  eyebrow.className = 'status-toast-eyebrow';
+  eyebrow.textContent =
+    activity.state === 'running'
+      ? 'Background task'
+      : activity.state === 'success'
+        ? 'Completed'
+        : 'Attention';
+
+  const header = document.createElement('div');
+  header.className = 'status-toast-header';
+
+  const label = document.createElement('div');
+  label.className = 'status-toast-label';
+  label.textContent = activity.label;
+
+  const value = document.createElement('div');
+  value.className = 'status-toast-value';
+  if (typeof activity.progress === 'number' && Number.isFinite(activity.progress)) {
+    value.textContent = `${Math.round(Math.max(0, Math.min(activity.progress, 1)) * 100)}%`;
+  } else if (activity.state === 'running') {
+    value.textContent = 'WORKING';
+  } else {
+    value.textContent = activity.state.toUpperCase();
+  }
+
+  const detail = document.createElement('div');
+  detail.className = 'status-toast-detail';
+  detail.textContent = activity.detail?.trim() || '\u00a0';
+
+  const track = document.createElement('div');
+  track.className = 'status-toast-track';
+  const bar = document.createElement('div');
+  bar.className = 'status-toast-bar';
+  if (!activity.indeterminate && typeof activity.progress === 'number' && Number.isFinite(activity.progress)) {
+    bar.style.width = `${Math.max(0, Math.min(activity.progress, 1)) * 100}%`;
+  }
+  track.append(bar);
+
+  header.replaceChildren(label, value);
+  card.replaceChildren(eyebrow, header, detail, track);
+  host.append(card);
 };
 
 const buildVoiceBarHeights = (seed: string, count = 38): number[] => {
@@ -248,6 +351,9 @@ const boot = async (): Promise<void> => {
   `;
 
   appEl.append(commandPalette);
+  const statusToastHost = document.createElement('div');
+  statusToastHost.className = 'status-toast-host hidden';
+  appEl.append(statusToastHost);
 
   const networkList = document.querySelector<HTMLElement>('#network-list');
   const shellEl = document.querySelector<HTMLElement>('.shell');
@@ -276,7 +382,6 @@ const boot = async (): Promise<void> => {
   let telegramScrollFollowupTimer: number | null = null;
   let instagramChatsRequestSeq = 0;
   let instagramMessagesRequestSeq = 0;
-  let instagramForceScrollBottom = false;
   let instagramChatsRefreshTimer: number | null = null;
   let instagramMessagesRefreshTimer: number | null = null;
   let instagramChatsInFlight = false;
@@ -287,6 +392,8 @@ const boot = async (): Promise<void> => {
   let telegramNotificationScanInFlight = false;
   let instagramNotificationScanInFlight = false;
   let instagramCheckpointCooldownUntil = readInstagramCooldownUntil();
+  let statusActivity: AppActivity | null = null;
+  let statusActivityClearTimer: number | null = null;
   type NotificationCursor = {
     latestMessageId: string;
     latestTimestamp: number;
@@ -1272,6 +1379,72 @@ const boot = async (): Promise<void> => {
     statusBar.textContent = 'Failed to copy image.';
   };
 
+  const downloadTelegramDocument = async (
+    chatId: string,
+    message: ChatMessage,
+    button: HTMLButtonElement,
+  ): Promise<void> => {
+    if (!message.document) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      setStatusActivity({
+        id: `pending-download:${message.id}`,
+        label: `Preparing ${message.document.fileName}`,
+        detail: 'Fetching the document from Telegram…',
+        indeterminate: true,
+        state: 'running',
+      });
+      render();
+      await window.pelec.downloadConnectorDocument('telegram', chatId, message.id);
+    } catch (error) {
+      setStatusActivity({
+        id: `download-error:${message.id}`,
+        label: 'Download failed',
+        detail: error instanceof Error ? error.message : `Could not download ${message.document.fileName}.`,
+        state: 'error',
+      });
+      render();
+    } finally {
+      button.disabled = false;
+    }
+  };
+
+  const copyTelegramDocument = async (
+    chatId: string,
+    message: ChatMessage,
+    button: HTMLButtonElement,
+  ): Promise<void> => {
+    if (!message.document) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      setStatusActivity({
+        id: `pending-copy:${message.id}`,
+        label: `Preparing ${message.document.fileName}`,
+        detail: 'Resolving the document for clipboard copy…',
+        indeterminate: true,
+        state: 'running',
+      });
+      render();
+      await window.pelec.copyConnectorDocument('telegram', chatId, message.id);
+    } catch (error) {
+      setStatusActivity({
+        id: `copy-error:${message.id}`,
+        label: 'Copy failed',
+        detail: error instanceof Error ? error.message : `Could not copy ${message.document.fileName}.`,
+        state: 'error',
+      });
+      render();
+    } finally {
+      button.disabled = false;
+    }
+  };
+
   const openTelegramImagePreview = (url: string): void => {
     activeTelegramImageUrl = url;
     telegramImagePreviewEl.src = url;
@@ -1478,6 +1651,43 @@ const boot = async (): Promise<void> => {
       };
     }
     return status;
+  };
+
+  const setStatusActivity = (activity: AppActivity | null): void => {
+    statusActivity = activity;
+
+    if (statusActivityClearTimer !== null) {
+      window.clearTimeout(statusActivityClearTimer);
+      statusActivityClearTimer = null;
+    }
+
+    if (activity && activity.state !== 'running') {
+      statusActivityClearTimer = window.setTimeout(() => {
+        statusActivityClearTimer = null;
+        if (statusActivity?.id === activity.id) {
+          statusActivity = null;
+          render();
+        }
+      }, 4200);
+    }
+  };
+
+  const buildCurrentStatusLine = (): string => {
+    const selectedNetwork = getNetworkById(state.selectedNetwork);
+    const activeNetwork = getNetworkById(state.activeNetwork);
+    if (state.activeNetwork === 'telegram') {
+      return `pane:${state.vimPane} | ${selectedNetwork.name} selected | ${activeNetwork.name} active | ${state.mode} mode`;
+    }
+    if (state.activeNetwork === 'instagram') {
+      const status = getStatusByNetwork('instagram');
+      return `pane:web-app | ${selectedNetwork.name} selected | ${activeNetwork.name} active | ${status.authState} | ${status.lastError ?? status.details}`;
+    }
+    return `${selectedNetwork.name} selected | ${activeNetwork.name} active | ${state.mode} mode`;
+  };
+
+  const renderCurrentStatusBar = (): void => {
+    renderStatusLine(statusBar, buildCurrentStatusLine());
+    renderStatusToast(statusToastHost, statusActivity);
   };
 
   const buildStatusText = (id: NetworkId): string => {
@@ -1919,7 +2129,6 @@ const boot = async (): Promise<void> => {
       state.instagramMessages = messages;
       state.selectedInstagramMessageId = messages[messages.length - 1]?.id ?? null;
       if (changed) {
-        instagramForceScrollBottom = true;
         render();
       }
     } finally {
@@ -3052,6 +3261,7 @@ const boot = async (): Promise<void> => {
       const wasNearBottom =
         telegramMessageListEl.scrollHeight - telegramMessageListEl.scrollTop - telegramMessageListEl.clientHeight < 84;
       const activeChatChanged = lastRenderedTelegramChatId !== state.activeTelegramChatId;
+      const renderChatId = state.activeTelegramChatId;
 
       telegramMessageListEl.replaceChildren(
         ...state.telegramMessages.map((message, index, messages) => {
@@ -3239,12 +3449,63 @@ const boot = async (): Promise<void> => {
           voiceNote.replaceChildren(playButton, wave, duration);
           bodyNodes.push(voiceNote, audio);
         }
+        if (message.document) {
+          const documentCard = document.createElement('section');
+          documentCard.className = 'telegram-message-document';
+          const kind = document.createElement('div');
+          kind.className = 'telegram-message-document-kind';
+          kind.textContent = formatTelegramDocumentKind(
+            message.document.fileName,
+            message.document.mimeType,
+          );
+          const info = document.createElement('div');
+          info.className = 'telegram-message-document-info';
+          const name = document.createElement('div');
+          name.className = 'telegram-message-document-name';
+          name.textContent = message.document.fileName;
+          const meta = document.createElement('div');
+          meta.className = 'telegram-message-document-meta';
+          const metaParts = [
+            message.document.mimeType,
+            formatFileSize(message.document.sizeBytes),
+          ].filter((value): value is string => !!value);
+          meta.textContent = metaParts.join(' • ') || 'Telegram document';
+          info.replaceChildren(name, meta);
+          const actions = document.createElement('div');
+          actions.className = 'telegram-message-document-actions';
+          const copyButton = document.createElement('button');
+          copyButton.type = 'button';
+          copyButton.className = 'ghost-button';
+          copyButton.textContent = 'Copy';
+          copyButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (!renderChatId) {
+              return;
+            }
+            void copyTelegramDocument(renderChatId, message, copyButton);
+          });
+          const downloadButton = document.createElement('button');
+          downloadButton.type = 'button';
+          downloadButton.className = 'ghost-button';
+          downloadButton.textContent = 'Download';
+          downloadButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (!renderChatId) {
+              return;
+            }
+            void downloadTelegramDocument(renderChatId, message, downloadButton);
+          });
+          actions.replaceChildren(copyButton, downloadButton);
+          documentCard.replaceChildren(kind, info, actions);
+          bodyNodes.push(documentCard);
+        }
         const textTrimmed = message.text.trim().toLowerCase();
         const shouldRenderText =
           !!message.text.trim() &&
           !(message.animationUrl && textTrimmed === 'gif/animation') &&
           !(message.stickerUrl && (textTrimmed === 'sticker' || textTrimmed.startsWith('sticker '))) &&
-          !((message.audioUrl || message.hasAudio) && textTrimmed === 'voice message');
+          !((message.audioUrl || message.hasAudio) && textTrimmed === 'voice message') &&
+          !isTelegramDocumentFallbackText(message);
         if (shouldRenderText) {
           bodyNodes.push(text);
         }
@@ -3374,8 +3635,6 @@ const boot = async (): Promise<void> => {
       state.selectedNetwork = networks[0]?.id ?? state.selectedNetwork;
     }
 
-    const selectedNetwork = getNetworkById(state.selectedNetwork);
-    const activeNetwork = getNetworkById(state.activeNetwork);
     shellEl.classList.remove('telegram-focus');
     shellEl.classList.add('sidebar-collapsed');
 
@@ -3427,14 +3686,7 @@ const boot = async (): Promise<void> => {
     renderTelegramNative();
     renderInstagramWeb();
 
-    let statusLine = `${selectedNetwork.name} selected | ${activeNetwork.name} active | ${state.mode} mode`;
-    if (state.activeNetwork === 'telegram') {
-      statusLine = `pane:${state.vimPane} | ${selectedNetwork.name} selected | ${activeNetwork.name} active | ${state.mode} mode`;
-    } else if (state.activeNetwork === 'instagram') {
-      const status = getStatusByNetwork('instagram');
-      statusLine = `pane:web-app | ${selectedNetwork.name} selected | ${activeNetwork.name} active | ${status.authState} | ${status.lastError ?? status.details}`;
-    }
-    renderStatusLine(statusBar, statusLine);
+    renderCurrentStatusBar();
 
     commandPalette.classList.toggle('hidden', !state.commandPaletteOpen);
     renderCommandPalette();
@@ -3528,6 +3780,11 @@ const boot = async (): Promise<void> => {
 
   window.pelec.onForceNormalMode(() => {
     setMode('normal');
+  });
+
+  window.pelec.onAppActivity((activity) => {
+    setStatusActivity(activity);
+    render();
   });
 
   window.pelec.onConnectorUpdate((event: ConnectorUpdateEvent) => {

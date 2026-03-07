@@ -7,7 +7,7 @@ import type {
   ConnectorUpdateEvent,
   ConnectorStatus,
 } from './shared/connectors';
-import type { AppConfig, NetworkId } from './shared/types';
+import type { AppActivity, AppConfig, NetworkId } from './shared/types';
 
 const api = {
   getConfig: () => ipcRenderer.invoke('app:get-config') as Promise<AppConfig>,
@@ -37,6 +37,15 @@ const api = {
       chatId,
       messageId,
     ) as Promise<string | undefined>,
+  downloadConnectorDocument: (network: NetworkId, chatId: string, messageId: string) =>
+    ipcRenderer.invoke(
+      'connector:download-document',
+      network,
+      chatId,
+      messageId,
+    ) as Promise<string | undefined>,
+  copyConnectorDocument: (network: NetworkId, chatId: string, messageId: string) =>
+    ipcRenderer.invoke('connector:copy-document', network, chatId, messageId) as Promise<boolean>,
   sendConnectorMessage: (
     network: NetworkId,
     chatId: string,
@@ -77,6 +86,12 @@ const api = {
     const wrapped = () => handler();
     ipcRenderer.on('app:force-normal-mode', wrapped);
     return () => ipcRenderer.removeListener('app:force-normal-mode', wrapped);
+  },
+  onAppActivity: (handler: (activity: AppActivity) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: AppActivity) =>
+      handler(payload);
+    ipcRenderer.on('app:activity', wrapped);
+    return () => ipcRenderer.removeListener('app:activity', wrapped);
   },
 };
 

@@ -63,6 +63,16 @@ export interface ChatReaction {
   chosen?: boolean;
 }
 
+export interface ChatDocument {
+  fileName: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
+export interface ResolvedDocument extends ChatDocument {
+  filePath: string;
+}
+
 export interface ChatMessage {
   id: string;
   sender: string;
@@ -84,6 +94,7 @@ export interface ChatMessage {
   audioUrl?: string;
   audioDurationSeconds?: number;
   senderAvatarUrl?: string;
+  document?: ChatDocument;
 }
 
 export interface ConnectorUpdateEvent {
@@ -103,6 +114,7 @@ export interface Connector {
   listChats?(): Promise<ChatSummary[]>;
   listMessages?(chatId: string): Promise<ChatMessage[]>;
   resolveAudioUrl?(chatId: string, messageId: string): Promise<string | undefined>;
+  resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;
   sendImageMessage?(
     chatId: string,
     dataUrl: string,

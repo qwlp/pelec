@@ -6,12 +6,14 @@ import { pathToFileURL } from 'node:url';
 import type {
   AuthStartResult,
   AuthSubmission,
+  ChatDocument,
   ChatReaction,
   ChatMessage,
   ChatSummary,
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  ResolvedDocument,
 } from '../../shared/connectors';
 import type { NetworkDefinition } from '../../shared/types';
 
@@ -105,6 +107,13 @@ type TdChat = {
 
 type TdScopeNotificationSettings = {
   mute_for?: number;
+};
+
+type TdFileRef = {
+  id?: number;
+  size?: number;
+  expected_size?: number;
+  local?: { path?: string };
 };
 
 export class TelegramConnector implements Connector {
@@ -446,6 +455,7 @@ export class TelegramConnector implements Connector {
             reactions: this.extractReactions(message.interaction_info),
             audioDurationSeconds: this.extractVoiceDurationSeconds(message.content),
             senderAvatarUrl: await this.resolveSenderAvatar(client, message.sender_id),
+            document: this.extractDocumentMetadata(message.content),
           };
         }),
       );
@@ -682,6 +692,30 @@ export class TelegramConnector implements Connector {
         message_id: tdMessageId,
       })) as { content?: unknown };
       return this.extractVoiceNoteUrl(this.tdClient, message.content);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async resolveDocument(
+    chatId: string,
+    messageId: string,
+  ): Promise<ResolvedDocument | undefined> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return undefined;
+    }
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return undefined;
+    }
+
+    try {
+      const message = (await this.tdClient.invoke({
+        _: 'getMessage',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+      })) as { content?: unknown };
+      return this.extractResolvedDocument(this.tdClient, message.content);
     } catch {
       return undefined;
     }
@@ -1120,6 +1154,89 @@ export class TelegramConnector implements Connector {
     return this.resolveTdFileUrl(client, container.voice_note?.voice, 'audio/ogg;codecs=opus');
   }
 
+  private extractDocumentMetadata(content: unknown): ChatDocument | undefined {
+    const document = this.getTelegramDocument(content);
+    if (!document) {
+      return undefined;
+    }
+
+    return {
+      fileName: document.fileName,
+      mimeType: document.mimeType,
+      sizeBytes: document.sizeBytes,
+    };
+  }
+
+  private async extractResolvedDocument(
+    client: TdClient,
+    content: unknown,
+  ): Promise<ResolvedDocument | undefined> {
+    const document = this.getTelegramDocument(content);
+    if (!document) {
+      return undefined;
+    }
+
+    const filePath = await this.resolveTdFilePath(client, document.file);
+    if (!filePath) {
+      return undefined;
+    }
+
+    return {
+      filePath,
+      fileName:
+        document.fileName && document.fileName !== 'Document'
+          ? document.fileName
+          : path.basename(filePath),
+      mimeType: document.mimeType,
+      sizeBytes: document.sizeBytes,
+    };
+  }
+
+  private getTelegramDocument(
+    content: unknown,
+  ):
+    | {
+        file: TdFileRef | undefined;
+        fileName: string;
+        mimeType?: string;
+        sizeBytes?: number;
+      }
+    | undefined {
+    if (!content || typeof content !== 'object') {
+      return undefined;
+    }
+
+    const container = content as {
+      _?: string;
+      document?: {
+        file_name?: string;
+        mime_type?: string;
+        document?: TdFileRef;
+      };
+    };
+
+    if (container._ !== 'messageDocument') {
+      return undefined;
+    }
+
+    const mimeType = container.document?.mime_type?.trim().toLowerCase() || undefined;
+    if (mimeType?.startsWith('image/')) {
+      return undefined;
+    }
+
+    const file = container.document?.document;
+    const fileName = container.document?.file_name?.trim() || 'Document';
+    const rawSize = Number(file?.size ?? file?.expected_size ?? 0);
+    const sizeBytes = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : undefined;
+
+    return {
+      file,
+      fileName,
+      mimeType,
+      sizeBytes,
+    };
+  }
+
   private extractVoiceDurationSeconds(content: unknown): number | undefined {
     if (!content || typeof content !== 'object') {
       return undefined;
@@ -1233,12 +1350,24 @@ export class TelegramConnector implements Connector {
 
   private async resolveTdFileUrl(
     client: TdClient,
-    file: { id?: number; local?: { path?: string } } | undefined,
+    file: TdFileRef | undefined,
     preferredMimeType?: string,
+  ): Promise<string | undefined> {
+    const localPath = await this.resolveTdFilePath(client, file);
+    if (!localPath) {
+      return undefined;
+    }
+
+    return this.localPathToDataUrl(localPath, preferredMimeType);
+  }
+
+  private async resolveTdFilePath(
+    client: TdClient,
+    file: TdFileRef | undefined,
   ): Promise<string | undefined> {
     const localPath = file?.local?.path?.trim();
     if (localPath) {
-      return this.localPathToDataUrl(localPath, preferredMimeType);
+      return localPath;
     }
 
     const fileId = file?.id;
@@ -1255,11 +1384,7 @@ export class TelegramConnector implements Connector {
         limit: 0,
         synchronous: true,
       })) as { local?: { path?: string } };
-      const downloadedPath = downloaded.local?.path?.trim();
-      if (!downloadedPath) {
-        return undefined;
-      }
-      return this.localPathToDataUrl(downloadedPath, preferredMimeType);
+      return downloaded.local?.path?.trim() || undefined;
     } catch {
       return undefined;
     }

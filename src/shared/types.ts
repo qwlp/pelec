@@ -18,3 +18,14 @@ export interface AppConfig {
     forceNormalMode: string;
   };
 }
+
+export type AppActivityState = 'running' | 'success' | 'error';
+
+export interface AppActivity {
+  id: string;
+  label: string;
+  detail?: string;
+  progress?: number;
+  indeterminate?: boolean;
+  state: AppActivityState;
+}

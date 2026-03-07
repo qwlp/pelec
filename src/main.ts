@@ -1,11 +1,14 @@
 import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, nativeImage, Notification, shell } from 'electron';
 import dotenv from 'dotenv';
-import fs from 'node:fs';
+import fs, { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { mkdir, rm } from 'node:fs/promises';
+import { finished } from 'node:stream/promises';
+import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
-import type { AuthSubmission, ConnectorUpdateEvent } from './shared/connectors';
-import type { AppConfig, NetworkId } from './shared/types';
+import type { AuthSubmission, ConnectorUpdateEvent, ResolvedDocument } from './shared/connectors';
+import type { AppActivity, AppConfig, NetworkId } from './shared/types';
 import { ConnectorManager } from './main/connectors/connectorManager';
 
 if (started) {
@@ -82,6 +85,212 @@ const showLinuxNotification = (title: string, body: string): boolean => {
       { stdio: 'ignore' },
     );
     return result.status === 0;
+  } catch {
+    return false;
+  }
+};
+
+const emitAppActivity = (activity: AppActivity): void => {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send('app:activity', activity);
+  }
+};
+
+const commandExists = (command: string): boolean => {
+  try {
+    return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
+  } catch {
+    return false;
+  }
+};
+
+const writeLinuxClipboardWithUtility = (fileUrl: string): boolean => {
+  const payload = `copy\n${fileUrl}\n`;
+
+  if (process.env.WAYLAND_DISPLAY && commandExists('wl-copy')) {
+    try {
+      return (
+        spawnSync('wl-copy', ['--type', 'x-special/gnome-copied-files'], {
+          input: payload,
+          stdio: ['pipe', 'ignore', 'ignore'],
+        }).status === 0
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  if (commandExists('xclip')) {
+    try {
+      return (
+        spawnSync(
+          'xclip',
+          ['-selection', 'clipboard', '-t', 'x-special/gnome-copied-files', '-i'],
+          {
+            input: payload,
+            stdio: ['pipe', 'ignore', 'ignore'],
+          },
+        ).status === 0
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+};
+
+const sanitizeDownloadFileName = (value: string | undefined, fallback = 'telegram-document'): string => {
+  const base = path
+    .basename(value?.trim() || fallback)
+    .replace(/[<>:"/\\|?*]/g, '_')
+    .replaceAll(/[\n\r\t]/g, '_');
+  const cleaned = [...base].map((char) => (char.charCodeAt(0) < 32 ? '_' : char)).join('');
+  return cleaned || fallback;
+};
+
+const resolveUniqueDownloadPath = (downloadsDir: string, fileName: string): string => {
+  const parsed = path.parse(fileName);
+  const stem = parsed.name || 'telegram-document';
+  const ext = parsed.ext || '';
+  let attempt = path.join(downloadsDir, `${stem}${ext}`);
+  let index = 1;
+
+  while (fs.existsSync(attempt)) {
+    attempt = path.join(downloadsDir, `${stem} (${index})${ext}`);
+    index += 1;
+  }
+
+  return attempt;
+};
+
+const saveResolvedDocumentToDownloads = async (
+  document: ResolvedDocument,
+  onProgress?: (progress: number) => void,
+): Promise<string | undefined> => {
+  const sourcePath = document.filePath.trim();
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    return undefined;
+  }
+
+  const downloadsDir = app.getPath('downloads');
+  await mkdir(downloadsDir, { recursive: true });
+  const preferredName =
+    document.fileName && document.fileName !== 'Document'
+      ? document.fileName
+      : path.basename(sourcePath);
+
+  const targetPath = resolveUniqueDownloadPath(
+    downloadsDir,
+    sanitizeDownloadFileName(preferredName, path.basename(sourcePath)),
+  );
+
+  if (path.resolve(sourcePath) !== path.resolve(targetPath)) {
+    const totalBytes = Math.max(document.sizeBytes ?? fs.statSync(sourcePath).size, 0);
+    await new Promise<void>((resolve, reject) => {
+      let copiedBytes = 0;
+      let lastReportedProgress = -1;
+      let lastReportAt = 0;
+      const reader = createReadStream(sourcePath);
+      const writer = createWriteStream(targetPath, { flags: 'wx' });
+
+      reader.on('data', (chunk: Buffer | string) => {
+        copiedBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
+        if (totalBytes > 0) {
+          const progress = Math.min(copiedBytes / totalBytes, 1);
+          const now = Date.now();
+          if (
+            progress === 1 ||
+            progress - lastReportedProgress >= 0.02 ||
+            now - lastReportAt >= 90
+          ) {
+            lastReportedProgress = progress;
+            lastReportAt = now;
+            onProgress?.(progress);
+          }
+        }
+      });
+
+      const fail = (error: unknown) => {
+        reader.destroy();
+        writer.destroy();
+        void rm(targetPath, { force: true }).catch(() => {
+          // Best-effort cleanup for partial files.
+        });
+        reject(error);
+      };
+
+      reader.on('error', fail);
+      writer.on('error', fail);
+
+      reader.pipe(writer);
+      void finished(writer)
+        .then(() => {
+          onProgress?.(1);
+          resolve();
+        })
+        .catch(fail);
+    });
+  } else {
+    onProgress?.(1);
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    return undefined;
+  }
+
+  try {
+    app.addRecentDocument(targetPath);
+  } catch {
+    // Best-effort OS integration only.
+  }
+
+  return targetPath;
+};
+
+const copyResolvedDocumentToClipboard = async (
+  document: ResolvedDocument,
+): Promise<boolean> => {
+  const sourcePath = document.filePath.trim();
+  if (!sourcePath || !fs.existsSync(sourcePath)) {
+    return false;
+  }
+
+  const fileUrl = pathToFileURL(sourcePath).toString();
+
+  try {
+    clipboard.clear();
+    clipboard.write({ text: sourcePath });
+    clipboard.writeBuffer('text/plain', Buffer.from(sourcePath, 'utf8'));
+    clipboard.writeBuffer('text/plain;charset=utf-8', Buffer.from(sourcePath, 'utf8'));
+    clipboard.writeBuffer('text/uri-list', Buffer.from(`${fileUrl}\n`, 'utf8'));
+
+    if (process.platform === 'linux') {
+      const linuxCopyPayload = Buffer.from(`copy\n${fileUrl}\n`, 'utf8');
+      clipboard.writeBuffer(
+        'x-special/gnome-copied-files',
+        linuxCopyPayload,
+      );
+      clipboard.writeBuffer('x-special/nautilus-clipboard', linuxCopyPayload);
+    }
+
+    if (process.platform === 'darwin' || process.platform === 'win32') {
+      clipboard.writeBookmark(path.basename(sourcePath), fileUrl);
+    }
+
+    if (process.platform !== 'linux') {
+      return true;
+    }
+
+    const formats = clipboard.availableFormats();
+    if (
+      formats.includes('x-special/gnome-copied-files') ||
+      formats.includes('x-special/nautilus-clipboard')
+    ) {
+      return true;
+    }
+
+    return writeLinuxClipboardWithUtility(fileUrl);
   } catch {
     return false;
   }
@@ -301,6 +510,121 @@ ipcMain.handle(
       return undefined;
     }
     return connectorManager.resolveAudioUrl(network, chatId, messageId);
+  },
+);
+
+ipcMain.handle(
+  'connector:download-document',
+  async (_event, network: NetworkId, chatId: string, messageId: string) => {
+    if (!connectorManager) {
+      return undefined;
+    }
+    const activityId = `document-download:${network}:${chatId}:${messageId}:${Date.now()}`;
+    emitAppActivity({
+      id: activityId,
+      label: 'Preparing download',
+      detail: 'Fetching the document from Telegram…',
+      indeterminate: true,
+      state: 'running',
+    });
+    const document = await connectorManager.resolveDocument(network, chatId, messageId);
+    if (!document) {
+      emitAppActivity({
+        id: activityId,
+        label: 'Download failed',
+        detail: 'Telegram did not return a document file.',
+        state: 'error',
+      });
+      return undefined;
+    }
+    emitAppActivity({
+      id: activityId,
+      label: `Downloading ${document.fileName}`,
+      detail: 'Saving into Downloads…',
+      progress: 0,
+      state: 'running',
+    });
+    try {
+      const savedPath = await saveResolvedDocumentToDownloads(document, (progress) => {
+        emitAppActivity({
+          id: activityId,
+          label: `Downloading ${document.fileName}`,
+          detail: 'Saving into Downloads…',
+          progress,
+          state: 'running',
+        });
+      });
+      if (!savedPath) {
+        emitAppActivity({
+          id: activityId,
+          label: 'Download failed',
+          detail: `Could not save ${document.fileName}.`,
+          state: 'error',
+        });
+        return undefined;
+      }
+      emitAppActivity({
+        id: activityId,
+        label: `Downloaded ${document.fileName}`,
+        detail: path.join('Downloads', path.basename(savedPath)),
+        progress: 1,
+        state: 'success',
+      });
+      return savedPath;
+    } catch (error) {
+      emitAppActivity({
+        id: activityId,
+        label: 'Download failed',
+        detail: error instanceof Error ? error.message : `Could not save ${document.fileName}.`,
+        state: 'error',
+      });
+      return undefined;
+    }
+  },
+);
+
+ipcMain.handle(
+  'connector:copy-document',
+  async (_event, network: NetworkId, chatId: string, messageId: string) => {
+    if (!connectorManager) {
+      return false;
+    }
+    const activityId = `document-copy:${network}:${chatId}:${messageId}:${Date.now()}`;
+    emitAppActivity({
+      id: activityId,
+      label: 'Preparing copy',
+      detail:
+        process.platform === 'linux'
+          ? 'Building a Linux file-manager clipboard payload…'
+          : 'Resolving the document file…',
+      indeterminate: true,
+      state: 'running',
+    });
+    const document = await connectorManager.resolveDocument(network, chatId, messageId);
+    if (!document) {
+      emitAppActivity({
+        id: activityId,
+        label: 'Copy failed',
+        detail: 'Telegram did not return a document file.',
+        state: 'error',
+      });
+      return false;
+    }
+    const copied = await copyResolvedDocumentToClipboard(document);
+    emitAppActivity({
+      id: activityId,
+      label: copied ? `Copied ${document.fileName}` : 'Copy failed',
+      detail: copied
+        ? process.platform === 'linux'
+          ? 'Linux file clipboard is ready.'
+          : 'The document is ready on the system clipboard.'
+        : process.platform === 'linux'
+          ? 'Could not publish a Linux file clipboard payload.'
+          : 'Could not copy the document to the clipboard.',
+      progress: copied ? 1 : undefined,
+      state: copied ? 'success' : 'error',
+    });
+    return copied;
   },
 );
 
