@@ -2,6 +2,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+if (!process.versions.bun) {
+  console.error('[appimage] This script must be run with Bun.');
+  process.exit(1);
+}
+
 const rootDir = path.resolve(__dirname, '..');
 const outDir = path.join(rootDir, 'out');
 const args = new Set(process.argv.slice(2));
@@ -77,11 +82,6 @@ const ensureTdlibResource = (prepackagedPath) => {
 };
 
 const runBuilder = (prepackagedPath, appName) => {
-  const localBuilder =
-    process.platform === 'win32'
-      ? path.join(rootDir, 'node_modules', '.bin', 'electron-builder.cmd')
-      : path.join(rootDir, 'node_modules', '.bin', 'electron-builder');
-
   const builderArgs = [
     '--linux',
     'AppImage',
@@ -99,12 +99,7 @@ const runBuilder = (prepackagedPath, appName) => {
     CSC_IDENTITY_AUTO_DISCOVERY: 'false',
   };
 
-  if (fs.existsSync(localBuilder)) {
-    run(localBuilder, builderArgs, { env });
-    return;
-  }
-
-  run('npx', ['--yes', 'electron-builder', ...builderArgs], { env });
+  run(process.execPath, ['x', 'electron-builder', ...builderArgs], { env });
 };
 
 if (process.platform !== 'linux') {
@@ -116,7 +111,7 @@ let prepackagedPath = findPrepackagedLinuxApp(name);
 
 if (args.has('--fresh') || !prepackagedPath) {
   console.log('[appimage] Packaging Linux app with Electron Forge...');
-  run('npm', ['run', 'package', '--', '--platform=linux', '--arch=x64']);
+  run(process.execPath, [path.join('scripts', 'run-forge.js'), 'package', '--platform=linux', '--arch=x64']);
   prepackagedPath = findPrepackagedLinuxApp(name);
 } else {
   console.log('[appimage] Reusing existing prepackaged Linux app.');

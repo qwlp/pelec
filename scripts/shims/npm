@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if [ "$1" = "--version" ]; then
+  echo "11.10.1"
+  exit 0
+fi
+
+echo "This npm shim only supports --version. Use Bun for project commands." >&2
+exit 1

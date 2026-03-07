@@ -2,6 +2,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
+if (!process.versions.bun) {
+  console.error('[rebuild:start] This script must be run with Bun.');
+  process.exit(1);
+}
+
 const rootDir = path.resolve(__dirname, '..');
 const removeTargets = ['.vite', 'out'];
 
@@ -10,12 +15,7 @@ for (const rel of removeTargets) {
   fs.rmSync(target, { recursive: true, force: true });
 }
 
-const forgeBin =
-  process.platform === 'win32'
-    ? path.join(rootDir, 'node_modules', '.bin', 'electron-forge.cmd')
-    : path.join(rootDir, 'node_modules', '.bin', 'electron-forge');
-
-const child = spawn(forgeBin, ['start'], {
+const child = spawn(process.execPath, [path.join('scripts', 'run-forge.js'), 'start'], {
   cwd: rootDir,
   stdio: 'inherit',
   detached: process.platform !== 'win32',
