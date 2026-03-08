@@ -74,6 +74,40 @@ let connectorManager: ConnectorManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let appShutdownStarted = false;
 
+const resolveNetworkShortcutTarget = (input: Electron.Input): NetworkId | null => {
+  if (
+    input.type !== 'keyDown' ||
+    !input.alt ||
+    input.control ||
+    input.meta ||
+    input.shift
+  ) {
+    return null;
+  }
+
+  if (input.key === '1') {
+    return 'telegram';
+  }
+
+  if (input.key === '2') {
+    return 'instagram';
+  }
+
+  return null;
+};
+
+const wireNetworkShortcutHandling = (contents: Electron.WebContents): void => {
+  contents.on('before-input-event', (event, input) => {
+    const target = resolveNetworkShortcutTarget(input);
+    if (!target) {
+      return;
+    }
+
+    event.preventDefault();
+    mainWindow?.webContents.send('app:activate-network', target);
+  });
+};
+
 const showLinuxNotification = (title: string, body: string): boolean => {
   if (process.platform !== 'linux') {
     return false;
@@ -347,6 +381,13 @@ app.whenReady().then(() => {
   void connectorManager.initAll();
 
   mainWindow = createWindow();
+  wireNetworkShortcutHandling(mainWindow.webContents);
+
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() === 'webview') {
+      wireNetworkShortcutHandling(contents);
+    }
+  });
 
   const shortcut = appConfig.shortcuts.forceNormalMode;
   const registered = globalShortcut.register(shortcut, () => {
@@ -361,6 +402,7 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createWindow();
+      wireNetworkShortcutHandling(mainWindow.webContents);
     }
   });
 });

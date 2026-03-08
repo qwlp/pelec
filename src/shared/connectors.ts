@@ -52,6 +52,7 @@ export interface ChatSummary {
   id: string;
   title: string;
   lastMessagePreview: string;
+  lastMessageTimestamp?: number;
   unreadCount: number;
   avatarUrl?: string;
   isMuted?: boolean;
@@ -67,6 +68,12 @@ export interface ChatDocument {
   fileName: string;
   mimeType?: string;
   sizeBytes?: number;
+}
+
+export interface ChatCall {
+  isVideo?: boolean;
+  durationSeconds?: number;
+  discardReason?: 'missed' | 'declined' | 'disconnected' | 'hung_up' | 'empty';
 }
 
 export interface ResolvedDocument extends ChatDocument {
@@ -95,6 +102,7 @@ export interface ChatMessage {
   audioDurationSeconds?: number;
   senderAvatarUrl?: string;
   document?: ChatDocument;
+  call?: ChatCall;
 }
 
 export interface ConnectorUpdateEvent {

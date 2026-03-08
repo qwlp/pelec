@@ -390,11 +390,27 @@ textarea {
 .telegram-chat-name {
   font-size: 14px;
   font-weight: 700;
-  margin-bottom: 3px;
+  margin-bottom: 0;
 }
 
 .telegram-chat-content {
   min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.telegram-chat-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.telegram-chat-date {
+  font-size: 11px;
+  color: #9f90b6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .telegram-chat-preview {
@@ -407,6 +423,10 @@ textarea {
 
 .telegram-chat-item.active .telegram-chat-preview {
   color: #ffe7f4;
+}
+
+.telegram-chat-item.active .telegram-chat-date {
+  color: #f8dceb;
 }
 
 .telegram-chat-pane {
@@ -434,6 +454,18 @@ textarea {
   align-content: start;
   min-height: 0;
   min-width: 0;
+}
+
+.telegram-message-day-divider {
+  justify-self: center;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 124, 193, 0.18);
+  border-radius: 999px;
+  background: rgba(19, 14, 29, 0.92);
+  color: #bfaed2;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .telegram-message-item {
@@ -645,6 +677,73 @@ textarea {
 .telegram-message-reaction-count {
   color: #d5c4e6;
   font-variant-numeric: tabular-nums;
+}
+
+.telegram-call-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  width: min(360px, 100%);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 124, 193, 0.2);
+  background: linear-gradient(180deg, rgba(18, 14, 28, 0.95), rgba(13, 10, 22, 0.95));
+}
+
+.telegram-call-card.is-connected {
+  border-color: rgba(109, 222, 179, 0.24);
+  background: linear-gradient(180deg, rgba(15, 28, 26, 0.9), rgba(12, 20, 22, 0.92));
+}
+
+.telegram-call-card.is-missed {
+  border-color: rgba(255, 124, 193, 0.28);
+}
+
+.telegram-message-item.outgoing .telegram-call-card.is-connected {
+  background: linear-gradient(180deg, rgba(46, 90, 76, 0.24), rgba(26, 55, 48, 0.2));
+}
+
+.telegram-message-item.outgoing .telegram-call-card.is-missed {
+  background: linear-gradient(180deg, rgba(255, 79, 167, 0.18), rgba(255, 79, 167, 0.08));
+  border-color: rgba(255, 124, 193, 0.36);
+}
+
+.telegram-call-badge {
+  min-width: 58px;
+  padding: 8px 6px;
+  border: 1px solid rgba(255, 124, 193, 0.24);
+  background: rgba(255, 79, 167, 0.12);
+  color: #ffd5ea;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.telegram-call-card.is-connected .telegram-call-badge {
+  border-color: rgba(109, 222, 179, 0.28);
+  background: rgba(109, 222, 179, 0.12);
+  color: #d4fff0;
+}
+
+.telegram-call-content {
+  min-width: 0;
+}
+
+.telegram-call-title {
+  color: #f8eefc;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.telegram-call-meta {
+  margin-top: 3px;
+  color: #baaed0;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .telegram-message-audio {

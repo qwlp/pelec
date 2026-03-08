@@ -87,6 +87,12 @@ const api = {
     ipcRenderer.on('app:force-normal-mode', wrapped);
     return () => ipcRenderer.removeListener('app:force-normal-mode', wrapped);
   },
+  onActivateNetwork: (handler: (network: NetworkId) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: NetworkId) =>
+      handler(payload);
+    ipcRenderer.on('app:activate-network', wrapped);
+    return () => ipcRenderer.removeListener('app:activate-network', wrapped);
+  },
   onAppActivity: (handler: (activity: AppActivity) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: AppActivity) =>
       handler(payload);

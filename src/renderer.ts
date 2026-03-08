@@ -2,6 +2,7 @@ import './index.css';
 import QRCode from 'qrcode';
 import type {
   AuthStartResult,
+  ChatCall,
   ChatMessage,
   ChatSummary,
   ConnectorUpdateEvent,
@@ -90,8 +91,12 @@ const formatCooldownRemaining = (untilMs: number): string => {
 
 const formatDuration = (seconds: number): string => {
   const total = Math.max(0, Math.floor(seconds));
-  const mins = Math.floor(total / 60);
+  const hours = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
   const secs = total % 60;
+  if (hours > 0) {
+    return `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
   return `${mins}:${String(secs).padStart(2, '0')}`;
 };
 
@@ -137,11 +142,188 @@ const isTelegramDocumentFallbackText = (message: ChatMessage): boolean => {
   return text === 'document' || text === `document: ${message.document.fileName}`.toLowerCase();
 };
 
-const formatMessageTime = (timestamp: number): string =>
+const hasValidTimestamp = (timestamp?: number): timestamp is number =>
+  typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0;
+
+const isSameCalendarDay = (left: Date, right: Date): boolean =>
+  left.getFullYear() === right.getFullYear() &&
+  left.getMonth() === right.getMonth() &&
+  left.getDate() === right.getDate();
+
+const formatShortTime = (timestamp: number): string =>
   new Date(timestamp).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
   });
+
+const formatFullDateTime = (timestamp: number): string =>
+  new Date(timestamp).toLocaleString([], {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+
+const formatChatTimestamp = (timestamp?: number): string => {
+  if (!hasValidTimestamp(timestamp)) {
+    return '';
+  }
+
+  const date = new Date(timestamp);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  if (isSameCalendarDay(date, now)) {
+    return formatShortTime(timestamp);
+  }
+  if (isSameCalendarDay(date, yesterday)) {
+    return 'Yesterday';
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    return date.toLocaleDateString([], {
+      month: 'short',
+      day: 'numeric',
+    });
+  }
+  return date.toLocaleDateString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+};
+
+const formatMessageTimestamp = (timestamp: number): string => {
+  if (!hasValidTimestamp(timestamp)) {
+    return '';
+  }
+
+  const date = new Date(timestamp);
+  const now = new Date();
+  if (isSameCalendarDay(date, now)) {
+    return formatShortTime(timestamp);
+  }
+
+  return `${date.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+  })}, ${formatShortTime(timestamp)}`;
+};
+
+const formatMessageDayLabel = (timestamp: number): string => {
+  if (!hasValidTimestamp(timestamp)) {
+    return '';
+  }
+
+  const date = new Date(timestamp);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  if (isSameCalendarDay(date, now)) {
+    return 'Today';
+  }
+  if (isSameCalendarDay(date, yesterday)) {
+    return 'Yesterday';
+  }
+  return date.toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+  });
+};
+
+const formatCallDurationMeta = (seconds?: number): string | undefined => {
+  if (!seconds || seconds < 1) {
+    return undefined;
+  }
+  return `Duration ${formatDuration(seconds)}`;
+};
+
+const describeTelegramCall = (
+  call: ChatCall | undefined,
+  outgoing: boolean | undefined,
+): {
+  badge: string;
+  title: string;
+  meta: string;
+  preview: string;
+  tone: 'connected' | 'missed';
+} => {
+  const isVideo = call?.isVideo === true;
+  const kind = isVideo ? 'video call' : 'voice call';
+  const badge = isVideo ? 'VIDEO' : 'VOICE';
+  const durationMeta = formatCallDurationMeta(call?.durationSeconds);
+
+  if (call?.discardReason === 'missed') {
+    return {
+      badge,
+      title: outgoing ? `Unanswered ${kind}` : `Missed ${kind}`,
+      meta: 'No answer',
+      preview: outgoing ? `Unanswered ${kind}` : `Missed ${kind}`,
+      tone: 'missed',
+    };
+  }
+
+  if (call?.discardReason === 'declined') {
+    return {
+      badge,
+      title: isVideo ? 'Video call' : 'Voice call',
+      meta: outgoing ? 'Declined' : 'You declined',
+      preview: outgoing ? `Declined ${kind}` : `You declined ${kind}`,
+      tone: 'missed',
+    };
+  }
+
+  if (call?.discardReason === 'disconnected') {
+    return {
+      badge,
+      title: isVideo ? 'Video call' : 'Voice call',
+      meta: durationMeta ? `Dropped, ${durationMeta.toLowerCase()}` : 'Connection dropped',
+      preview: durationMeta
+        ? `${isVideo ? 'Video' : 'Voice'} call (${formatDuration(call.durationSeconds ?? 0)})`
+        : `Dropped ${kind}`,
+      tone: 'missed',
+    };
+  }
+
+  return {
+    badge,
+    title: isVideo ? 'Video call' : 'Voice call',
+    meta: durationMeta ?? (outgoing ? 'Outgoing' : 'Incoming'),
+    preview: durationMeta
+      ? `${isVideo ? 'Video' : 'Voice'} call (${formatDuration(call?.durationSeconds ?? 0)})`
+      : `${isVideo ? 'Video' : 'Voice'} call`,
+    tone: 'connected',
+  };
+};
+
+const createTelegramCallCard = (message: ChatMessage): HTMLElement => {
+  const details = describeTelegramCall(message.call, message.outgoing);
+  const card = document.createElement('section');
+  card.className = 'telegram-call-card';
+  card.classList.add(details.tone === 'missed' ? 'is-missed' : 'is-connected');
+  if (message.call?.isVideo) {
+    card.classList.add('is-video');
+  }
+
+  const badge = document.createElement('div');
+  badge.className = 'telegram-call-badge';
+  badge.textContent = details.badge;
+
+  const content = document.createElement('div');
+  content.className = 'telegram-call-content';
+  const title = document.createElement('div');
+  title.className = 'telegram-call-title';
+  title.textContent = details.title;
+  const meta = document.createElement('div');
+  meta.className = 'telegram-call-meta';
+  meta.textContent = details.meta;
+  content.replaceChildren(title, meta);
+
+  card.replaceChildren(badge, content);
+  return card;
+};
 
 const renderStatusLine = (statusBar: HTMLElement, line: string): void => {
   const text = line.trim();
@@ -485,6 +667,9 @@ const boot = async (): Promise<void> => {
   const buildNotificationPreview = (message: ChatMessage): string => {
     const text = message.text.trim();
     const textLower = text.toLowerCase();
+    if (message.call) {
+      return `${message.sender}: [${describeTelegramCall(message.call, message.outgoing).preview}]`;
+    }
     if (message.stickerUrl && (textLower === 'sticker' || textLower.startsWith('sticker '))) {
       return `${message.sender}: [sticker${message.stickerEmoji ? ` ${message.stickerEmoji}` : ''}]`;
     }
@@ -3226,13 +3411,22 @@ const boot = async (): Promise<void> => {
         const avatar = createAvatarNode(chat.title, chat.avatarUrl, 'telegram-avatar');
         const content = document.createElement('div');
         content.className = 'telegram-chat-content';
+        const top = document.createElement('div');
+        top.className = 'telegram-chat-top';
         const name = document.createElement('div');
         name.className = 'telegram-chat-name';
         name.textContent = chat.title;
+        const date = document.createElement('div');
+        date.className = 'telegram-chat-date';
+        date.textContent = formatChatTimestamp(chat.lastMessageTimestamp);
+        if (hasValidTimestamp(chat.lastMessageTimestamp)) {
+          date.title = formatFullDateTime(chat.lastMessageTimestamp);
+        }
         const preview = document.createElement('div');
         preview.className = 'telegram-chat-preview';
         preview.textContent = chat.lastMessagePreview || 'No preview';
-        content.replaceChildren(name, preview);
+        top.replaceChildren(name, date);
+        content.replaceChildren(top, preview);
         button.replaceChildren(avatar, content);
         button.addEventListener('click', () => {
           state.selectedTelegramChatId = chat.id;
@@ -3264,11 +3458,24 @@ const boot = async (): Promise<void> => {
       const renderChatId = state.activeTelegramChatId;
 
       telegramMessageListEl.replaceChildren(
-        ...state.telegramMessages.map((message, index, messages) => {
+        ...state.telegramMessages.flatMap((message, index, messages) => {
+        const nodes: HTMLElement[] = [];
+        const previousMessage = index > 0 ? messages[index - 1] : null;
+        if (
+          hasValidTimestamp(message.timestamp) &&
+          (!previousMessage ||
+            !hasValidTimestamp(previousMessage.timestamp) ||
+            formatMessageDayLabel(previousMessage.timestamp) !== formatMessageDayLabel(message.timestamp))
+        ) {
+          const dayDivider = document.createElement('div');
+          dayDivider.className = 'telegram-message-day-divider';
+          dayDivider.textContent = formatMessageDayLabel(message.timestamp);
+          dayDivider.title = formatFullDateTime(message.timestamp);
+          nodes.push(dayDivider);
+        }
         const item = document.createElement('article');
         item.className = 'telegram-message-item';
         item.classList.add(message.outgoing ? 'outgoing' : 'incoming');
-        const previousMessage = index > 0 ? messages[index - 1] : null;
         const isContinuation =
           !!previousMessage &&
           previousMessage.sender === message.sender &&
@@ -3311,6 +3518,9 @@ const boot = async (): Promise<void> => {
           replyText.textContent = message.replyToText?.trim() || '[message]';
           reply.replaceChildren(replySender, replyText);
           bodyNodes.push(reply);
+        }
+        if (message.call) {
+          bodyNodes.push(createTelegramCallCard(message));
         }
         if (message.imageUrl) {
           const image = document.createElement('img');
@@ -3502,6 +3712,7 @@ const boot = async (): Promise<void> => {
         const textTrimmed = message.text.trim().toLowerCase();
         const shouldRenderText =
           !!message.text.trim() &&
+          !message.call &&
           !(message.animationUrl && textTrimmed === 'gif/animation') &&
           !(message.stickerUrl && (textTrimmed === 'sticker' || textTrimmed.startsWith('sticker '))) &&
           !((message.audioUrl || message.hasAudio) && textTrimmed === 'voice message') &&
@@ -3536,7 +3747,10 @@ const boot = async (): Promise<void> => {
         footer.className = 'telegram-message-footer';
         const time = document.createElement('span');
         time.className = 'telegram-message-time';
-        time.textContent = formatMessageTime(message.timestamp);
+        time.textContent = formatMessageTimestamp(message.timestamp);
+        if (hasValidTimestamp(message.timestamp)) {
+          time.title = formatFullDateTime(message.timestamp);
+        }
         footer.append(time);
         if (message.outgoing) {
           const receipt = document.createElement('span');
@@ -3565,7 +3779,8 @@ const boot = async (): Promise<void> => {
           state.selectedTelegramMessageId = message.id;
           render();
         });
-        return item;
+        nodes.push(item);
+        return nodes;
         }),
       );
       if (
@@ -3780,6 +3995,15 @@ const boot = async (): Promise<void> => {
 
   window.pelec.onForceNormalMode(() => {
     setMode('normal');
+  });
+
+  window.pelec.onActivateNetwork((network) => {
+    state.commandPaletteOpen = false;
+    state.commandQuery = '';
+    commandInput.value = '';
+    clearGPending();
+    setMode('normal');
+    activateNetwork(network);
   });
 
   window.pelec.onAppActivity((activity) => {

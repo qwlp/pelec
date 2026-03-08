@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import type {
   AuthStartResult,
   AuthSubmission,
+  ChatCall,
   ChatDocument,
   ChatReaction,
   ChatMessage,
@@ -319,7 +320,10 @@ export class TelegramConnector implements Connector {
             id: String(chat.id ?? chatId),
             title: chat.title ?? 'Untitled chat',
             unreadCount: chat.unread_count ?? 0,
-            lastMessagePreview: this.extractMessageText(chat.last_message?.content),
+            lastMessagePreview: this.extractMessageText(chat.last_message?.content, {
+              outgoing: chat.last_message?.is_outgoing === true,
+            }),
+            lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
             isMuted,
           } as ChatSummary;
@@ -413,7 +417,9 @@ export class TelegramConnector implements Connector {
         if (localMessage) {
           replyContextById.set(replyTargetId, {
             sender: await this.resolveSenderLabel(client, localMessage.sender_id),
-            text: this.extractMessageText(localMessage.content),
+            text: this.extractMessageText(localMessage.content, {
+              outgoing: localMessage.is_outgoing === true,
+            }),
           });
           continue;
         }
@@ -424,7 +430,9 @@ export class TelegramConnector implements Connector {
         }
         replyContextById.set(replyTargetId, {
           sender: await this.resolveSenderLabel(client, remoteMessage.sender_id),
-          text: this.extractMessageText(remoteMessage.content),
+          text: this.extractMessageText(remoteMessage.content, {
+            outgoing: remoteMessage.is_outgoing === true,
+          }),
         });
       }
 
@@ -435,7 +443,9 @@ export class TelegramConnector implements Connector {
           return {
             id: String(message.id ?? ''),
             sender: await this.resolveSenderLabel(client, message.sender_id),
-            text: this.extractMessageText(message.content),
+            text: this.extractMessageText(message.content, {
+              outgoing: message.is_outgoing === true,
+            }),
             timestamp: (message.date ?? 0) * 1000,
             outgoing: Boolean(message.is_outgoing),
             readByPeer:
@@ -456,6 +466,7 @@ export class TelegramConnector implements Connector {
             audioDurationSeconds: this.extractVoiceDurationSeconds(message.content),
             senderAvatarUrl: await this.resolveSenderAvatar(client, message.sender_id),
             document: this.extractDocumentMetadata(message.content),
+            call: this.extractCallInfo(message.content),
           };
         }),
       );
@@ -1516,7 +1527,73 @@ export class TelegramConnector implements Connector {
     this.uploadTempCleanupTimers.set(tempDir, timer);
   }
 
-  private extractMessageText(content: unknown): string {
+  private formatCallDuration(seconds: number): string {
+    const total = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+
+    if (hours > 0) {
+      return `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+  }
+
+  private extractCallInfo(content: unknown): ChatCall | undefined {
+    if (!content || typeof content !== 'object') {
+      return undefined;
+    }
+
+    const container = content as {
+      _?: string;
+      is_video?: boolean;
+      duration?: number;
+      discard_reason?: { _?: string };
+    };
+
+    if (container._ !== 'messageCall') {
+      return undefined;
+    }
+
+    let discardReason: ChatCall['discardReason'];
+    switch (container.discard_reason?._) {
+      case 'callDiscardReasonMissed':
+        discardReason = 'missed';
+        break;
+      case 'callDiscardReasonDeclined':
+        discardReason = 'declined';
+        break;
+      case 'callDiscardReasonDisconnected':
+        discardReason = 'disconnected';
+        break;
+      case 'callDiscardReasonHungUp':
+        discardReason = 'hung_up';
+        break;
+      case 'callDiscardReasonEmpty':
+        discardReason = 'empty';
+        break;
+      default:
+        discardReason = undefined;
+        break;
+    }
+
+    return {
+      isVideo: container.is_video === true,
+      durationSeconds:
+        typeof container.duration === 'number' && container.duration > 0
+          ? Math.floor(container.duration)
+          : undefined,
+      discardReason,
+    };
+  }
+
+  private extractMessageText(
+    content: unknown,
+    options?: {
+      outgoing?: boolean;
+    },
+  ): string {
     if (!content || typeof content !== 'object') {
       return '';
     }
@@ -1594,7 +1671,23 @@ export class TelegramConnector implements Connector {
       return 'Location';
     }
     if (container._ === 'messageCall') {
-      return 'Call';
+      const call = this.extractCallInfo(content);
+      const kind = call?.isVideo ? 'video call' : 'voice call';
+      if (call?.discardReason === 'missed') {
+        return options?.outgoing ? `Unanswered ${kind}` : `Missed ${kind}`;
+      }
+      if (call?.discardReason === 'declined') {
+        return options?.outgoing ? `Declined ${kind}` : `You declined ${kind}`;
+      }
+      if (call?.discardReason === 'disconnected') {
+        return call.durationSeconds
+          ? `${call.isVideo ? 'Video' : 'Voice'} call (${this.formatCallDuration(call.durationSeconds)})`
+          : `Dropped ${kind}`;
+      }
+      if (call?.durationSeconds) {
+        return `${call.isVideo ? 'Video' : 'Voice'} call (${this.formatCallDuration(call.durationSeconds)})`;
+      }
+      return `${call?.isVideo ? 'Video' : 'Voice'} call`;
     }
     if (container._ === 'messageChatAddMembers') {
       return 'Members added';
