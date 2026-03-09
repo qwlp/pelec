@@ -193,7 +193,7 @@ textarea {
 
 .content {
   display: grid;
-  grid-template-rows: 1fr 34px;
+  grid-template-rows: 1fr;
   min-width: 0;
 }
 
@@ -1342,93 +1342,22 @@ textarea {
   transform: translateY(0) scale(1);
 }
 
-.status {
-  border-top: 1px solid rgba(255, 124, 193, 0.2);
+.status-live-region {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   padding: 0;
-  background:
-    linear-gradient(180deg, rgba(28, 19, 41, 0.95) 0%, rgba(18, 13, 30, 0.95) 100%);
-  color: #c9badc;
+  margin: -1px;
   overflow: hidden;
-  font-size: 12px;
-}
-
-.status-shell {
-  height: 100%;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-}
-
-.status-left,
-.status-right {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.status-right {
-  margin-left: auto;
-}
-
-.status-segment {
-  display: inline-flex;
-  align-items: center;
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0 0 0 0);
   white-space: nowrap;
-  padding: 3px 8px;
-  border: 1px solid rgba(255, 124, 193, 0.16);
-  background: rgba(33, 24, 47, 0.68);
-  color: #c9bada;
-  font-size: 11px;
-  letter-spacing: 0.02em;
-}
-
-.status-segment.pane {
-  border-color: rgba(255, 124, 193, 0.6);
-  background: rgba(255, 79, 167, 0.2);
-  color: #ffd1e9;
-  font-weight: 600;
-}
-
-.status-segment.selected {
-  border-color: rgba(255, 154, 197, 0.35);
-}
-
-.status-segment.active {
-  color: #ffe7f4;
-}
-
-.status-segment.mode {
-  font-weight: 700;
-  border-color: transparent;
-}
-
-.status-segment.mode-normal {
-  background: rgba(252, 124, 122, 0.9);
-  color: #2f1312;
-}
-
-.status-segment.mode-insert {
-  background: rgba(129, 221, 128, 0.9);
-  color: #10250f;
-}
-
-.status-segment.error {
-  border-color: rgba(255, 153, 153, 0.48);
-  background: rgba(84, 30, 40, 0.85);
-  color: #ffd2d2;
+  border: 0;
 }
 
 .status-toast-host {
   position: fixed;
   right: 18px;
-  bottom: 52px;
+  bottom: 18px;
   z-index: 35;
   width: min(380px, calc(100vw - 36px));
   pointer-events: none;
