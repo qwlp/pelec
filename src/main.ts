@@ -1,4 +1,14 @@
-import { app, BrowserWindow, clipboard, globalShortcut, ipcMain, nativeImage, Notification, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  globalShortcut,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  shell,
+} from 'electron';
 import dotenv from 'dotenv';
 import fs, { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
@@ -172,6 +182,127 @@ const writeLinuxClipboardWithUtility = (fileUrl: string): boolean => {
   }
 
   return false;
+};
+
+const buildWebviewContextMenu = (
+  contents: Electron.WebContents,
+  params: Electron.ContextMenuParams,
+): Menu => {
+  const history = contents.navigationHistory;
+  const hasSelection = params.selectionText.trim().length > 0;
+  const hasLink = params.linkURL.trim().length > 0;
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Back',
+      enabled: history.canGoBack(),
+      click: () => {
+        if (!contents.isDestroyed() && contents.navigationHistory.canGoBack()) {
+          contents.navigationHistory.goBack();
+        }
+      },
+    },
+    {
+      label: 'Forward',
+      enabled: history.canGoForward(),
+      click: () => {
+        if (!contents.isDestroyed() && contents.navigationHistory.canGoForward()) {
+          contents.navigationHistory.goForward();
+        }
+      },
+    },
+    {
+      label: 'Reload',
+      click: () => {
+        if (!contents.isDestroyed()) {
+          contents.reload();
+        }
+      },
+    },
+  ];
+
+  if (hasLink || hasSelection || params.isEditable) {
+    template.push({ type: 'separator' });
+  }
+
+  if (hasLink) {
+    template.push(
+      {
+        label: 'Open Link in Browser',
+        click: () => {
+          void shell.openExternal(params.linkURL);
+        },
+      },
+      {
+        label: 'Copy Link Address',
+        click: () => {
+          clipboard.writeText(params.linkURL);
+        },
+      },
+    );
+  }
+
+  if (params.isEditable) {
+    template.push(
+      {
+        label: 'Cut',
+        enabled: params.editFlags.canCut,
+        click: () => {
+          if (!contents.isDestroyed()) {
+            contents.cut();
+          }
+        },
+      },
+      {
+        label: 'Copy',
+        enabled: params.editFlags.canCopy,
+        click: () => {
+          if (!contents.isDestroyed()) {
+            contents.copy();
+          }
+        },
+      },
+      {
+        label: 'Paste',
+        enabled: params.editFlags.canPaste,
+        click: () => {
+          if (!contents.isDestroyed()) {
+            contents.paste();
+          }
+        },
+      },
+      {
+        label: 'Select All',
+        enabled: params.editFlags.canSelectAll,
+        click: () => {
+          if (!contents.isDestroyed()) {
+            contents.selectAll();
+          }
+        },
+      },
+    );
+  } else if (hasSelection) {
+    template.push({
+      label: 'Copy',
+      enabled: params.editFlags.canCopy,
+      click: () => {
+        if (!contents.isDestroyed()) {
+          contents.copy();
+        }
+      },
+    });
+  }
+
+  return Menu.buildFromTemplate(template);
+};
+
+const installWebviewContextMenu = (contents: Electron.WebContents): void => {
+  contents.on('context-menu', (event, params) => {
+    event.preventDefault();
+    const ownerWindow = BrowserWindow.fromWebContents(contents.hostWebContents ?? contents);
+    buildWebviewContextMenu(contents, params).popup({
+      window: ownerWindow ?? undefined,
+    });
+  });
 };
 
 const sanitizeDownloadFileName = (value: string | undefined, fallback = 'telegram-document'): string => {
@@ -386,6 +517,7 @@ app.whenReady().then(() => {
   app.on('web-contents-created', (_event, contents) => {
     if (contents.getType() === 'webview') {
       wireNetworkShortcutHandling(contents);
+      installWebviewContextMenu(contents);
     }
   });
 
@@ -622,6 +754,22 @@ ipcMain.handle(
       });
       return undefined;
     }
+  },
+);
+
+ipcMain.handle(
+  'connector:forward-message',
+  async (
+    _event,
+    network: NetworkId,
+    fromChatId: string,
+    toChatId: string,
+    messageId: string,
+  ) => {
+    if (!connectorManager) {
+      return false;
+    }
+    return connectorManager.forwardMessage(network, fromChatId, toChatId, messageId);
   },
 );
 

@@ -54,6 +54,21 @@ type AppCommand = {
   run: () => void;
 };
 
+type TelegramContextMenuState = {
+  visible: boolean;
+  messageId: string | null;
+  x: number;
+  y: number;
+};
+
+type TelegramForwardState = {
+  visible: boolean;
+  messageId: string | null;
+  fromChatId: string | null;
+  query: string;
+  sending: boolean;
+};
+
 const appEl = document.querySelector<HTMLDivElement>('#app');
 
 if (!appEl) {
@@ -62,6 +77,7 @@ if (!appEl) {
 
 const INSTAGRAM_CHECKPOINT_COOLDOWN_MS = 48 * 60 * 60 * 1000;
 const INSTAGRAM_CHECKPOINT_COOLDOWN_KEY = 'pelec.instagramCheckpointCooldownUntil';
+const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
 
 const readInstagramCooldownUntil = (): number => {
   const raw = window.localStorage.getItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY);
@@ -1484,16 +1500,405 @@ const boot = async (): Promise<void> => {
     throw new Error('Telegram image modal elements missing');
   }
 
+  const telegramForwardModal = document.createElement('div');
+  telegramForwardModal.className = 'qr-modal hidden';
+  telegramForwardModal.innerHTML = `
+    <div class="telegram-forward-card">
+      <header class="telegram-forward-header">
+        <button
+          id="telegram-forward-close"
+          class="telegram-forward-close"
+          type="button"
+          aria-label="Close forward picker"
+        >
+          x
+        </button>
+        <div class="telegram-forward-title">Forward to...</div>
+      </header>
+      <div class="telegram-forward-search-shell">
+        <input
+          id="telegram-forward-search"
+          class="telegram-forward-search"
+          type="text"
+          placeholder="Search chats"
+        />
+      </div>
+      <div id="telegram-forward-list" class="telegram-forward-list"></div>
+    </div>
+  `;
+  appEl.append(telegramForwardModal);
+
+  const telegramForwardCloseEl =
+    telegramForwardModal.querySelector<HTMLButtonElement>('#telegram-forward-close');
+  const telegramForwardSearchEl =
+    telegramForwardModal.querySelector<HTMLInputElement>('#telegram-forward-search');
+  const telegramForwardListEl =
+    telegramForwardModal.querySelector<HTMLElement>('#telegram-forward-list');
+
+  if (!telegramForwardCloseEl || !telegramForwardSearchEl || !telegramForwardListEl) {
+    throw new Error('Telegram forward modal elements missing');
+  }
+
   let qrStatusPollTimer: number | null = null;
   let qrStatusPollBusy = false;
   let instagramBrowserSessionPollTimer: number | null = null;
   let instagramBrowserSessionPollBusy = false;
   let activeTelegramImageUrl: string | null = null;
+  let telegramContextMenuOpenedAt = 0;
+  let telegramContextMenuState: TelegramContextMenuState = {
+    visible: false,
+    messageId: null,
+    x: 0,
+    y: 0,
+  };
+  let telegramForwardState: TelegramForwardState = {
+    visible: false,
+    messageId: null,
+    fromChatId: null,
+    query: '',
+    sending: false,
+  };
+
+  const telegramContextMenu = document.createElement('div');
+  telegramContextMenu.className = 'telegram-context-menu hidden';
+  telegramContextMenu.setAttribute('role', 'menu');
+  appEl.append(telegramContextMenu);
 
   const closeTelegramImagePreview = (): void => {
     activeTelegramImageUrl = null;
     telegramImagePreviewEl.removeAttribute('src');
     telegramImageModal.classList.add('hidden');
+  };
+
+  const closeTelegramForwardMenu = (shouldRender = true): void => {
+    if (
+      !telegramForwardState.visible &&
+      !telegramForwardState.messageId &&
+      !telegramForwardState.fromChatId &&
+      !telegramForwardState.query
+    ) {
+      return;
+    }
+
+    telegramForwardState = {
+      visible: false,
+      messageId: null,
+      fromChatId: null,
+      query: '',
+      sending: false,
+    };
+
+    if (shouldRender) {
+      render();
+    }
+  };
+
+  const findTelegramMessageById = (messageId: string | null): ChatMessage | undefined => {
+    if (!messageId) {
+      return undefined;
+    }
+    return state.telegramMessages.find((message) => message.id === messageId);
+  };
+
+  const closeTelegramContextMenu = (shouldRender = true): void => {
+    if (!telegramContextMenuState.visible && !telegramContextMenuState.messageId) {
+      return;
+    }
+    telegramContextMenuState = {
+      visible: false,
+      messageId: null,
+      x: 0,
+      y: 0,
+    };
+    if (shouldRender) {
+      render();
+    }
+  };
+
+  const isTelegramContextMenuGuardActive = (): boolean =>
+    telegramContextMenuState.visible &&
+    performance.now() - telegramContextMenuOpenedAt < TELEGRAM_CONTEXT_MENU_GUARD_MS;
+
+  const isSecondaryTelegramPointerEvent = (event: MouseEvent | PointerEvent): boolean =>
+    event.button === 2 || (event.button === 0 && event.ctrlKey);
+
+  const selectTelegramMessage = (messageId: string): void => {
+    state.vimPane = 'telegram-messages';
+    state.selectedTelegramMessageId = messageId;
+  };
+
+  const openTelegramContextMenu = (messageId: string, x: number, y: number): void => {
+    selectTelegramMessage(messageId);
+    telegramContextMenuOpenedAt = performance.now();
+    telegramContextMenuState = {
+      visible: true,
+      messageId,
+      x,
+      y,
+    };
+    render();
+  };
+
+  const openTelegramForwardMenu = (messageId: string): void => {
+    if (!state.activeTelegramChatId) {
+      statusBar.textContent = 'Open a Telegram chat before forwarding.';
+      return;
+    }
+
+    selectTelegramMessage(messageId);
+    telegramForwardState = {
+      visible: true,
+      messageId,
+      fromChatId: state.activeTelegramChatId,
+      query: '',
+      sending: false,
+    };
+    render();
+    window.setTimeout(() => {
+      telegramForwardSearchEl.focus();
+      telegramForwardSearchEl.select();
+    }, 0);
+  };
+
+  const buildTelegramMessageActionText = (message: ChatMessage): string => {
+    const text = safeText(message.text).trim();
+    if (text) {
+      return text;
+    }
+    if (message.call) {
+      return describeTelegramCall(message.call, message.outgoing).preview;
+    }
+    if (message.document) {
+      return safeLabel(message.document.fileName, 'Document');
+    }
+    if (message.imageUrl) {
+      return 'Photo';
+    }
+    if (message.animationUrl) {
+      return 'Animation';
+    }
+    if (message.stickerUrl) {
+      return message.stickerEmoji ? `Sticker ${message.stickerEmoji}` : 'Sticker';
+    }
+    if (message.hasAudio || message.audioUrl) {
+      return 'Voice message';
+    }
+    return '[message]';
+  };
+
+  const writeTextToClipboard = async (value: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      const helper = document.createElement('textarea');
+      helper.value = value;
+      helper.setAttribute('readonly', 'true');
+      helper.style.position = 'fixed';
+      helper.style.opacity = '0';
+      helper.style.pointerEvents = 'none';
+      document.body.append(helper);
+      helper.select();
+      const copied = document.execCommand('copy');
+      helper.remove();
+      return copied;
+    }
+  };
+
+  const copyTelegramMessageText = async (message: ChatMessage): Promise<void> => {
+    const copied = await writeTextToClipboard(buildTelegramMessageActionText(message));
+    statusBar.textContent = copied ? 'Message copied.' : 'Copy failed.';
+  };
+
+  const beginReplyToTelegramMessage = (message: ChatMessage): void => {
+    state.replyingToMessageId = message.id;
+    state.replyingToSender = message.sender;
+    setMode('insert');
+    statusBar.textContent = `Replying to ${message.sender}`;
+  };
+
+  const forwardTelegramMessageToChat = async (chat: ChatSummary): Promise<void> => {
+    const messageId = telegramForwardState.messageId;
+    const fromChatId = telegramForwardState.fromChatId;
+    const message = findTelegramMessageById(messageId);
+
+    if (!messageId || !fromChatId || !message) {
+      closeTelegramForwardMenu();
+      return;
+    }
+
+    telegramForwardState = {
+      ...telegramForwardState,
+      sending: true,
+    };
+    statusBar.textContent = `Forwarding to ${safeLabel(chat.title, 'chat')}...`;
+    render();
+
+    const forwarded = await window.pelec.forwardConnectorMessage(
+      'telegram',
+      fromChatId,
+      chat.id,
+      messageId,
+    );
+
+    if (!forwarded) {
+      await refreshConnectorStatuses();
+      const status = getStatusByNetwork('telegram');
+      telegramForwardState = {
+        ...telegramForwardState,
+        sending: false,
+      };
+      statusBar.textContent = `Forward failed: ${status.lastError ?? status.details}`;
+      render();
+      return;
+    }
+
+    closeTelegramForwardMenu(false);
+    state.selectedTelegramChatId = chat.id;
+    state.replyingToMessageId = null;
+    state.replyingToSender = null;
+    state.pendingTelegramImageDataUrls = [];
+    state.vimPane = 'telegram-chats';
+    await loadTelegramChats();
+    await loadTelegramMessages(chat.id, 0, true, true, true);
+    statusBar.textContent = `Forwarded to ${safeLabel(chat.title, 'chat')}.`;
+    render();
+  };
+
+  const renderTelegramForwardMenu = (): void => {
+    const message = findTelegramMessageById(telegramForwardState.messageId);
+    if (
+      !telegramForwardState.visible ||
+      state.activeNetwork !== 'telegram' ||
+      getStatusByNetwork('telegram').authState !== 'authenticated' ||
+      !telegramForwardState.fromChatId ||
+      !message
+    ) {
+      if (telegramForwardState.visible || telegramForwardState.messageId || telegramForwardState.fromChatId) {
+        telegramForwardState = {
+          visible: false,
+          messageId: null,
+          fromChatId: null,
+          query: '',
+          sending: false,
+        };
+      }
+      telegramForwardModal.classList.add('hidden');
+      telegramForwardListEl.replaceChildren();
+      telegramForwardSearchEl.value = '';
+      return;
+    }
+
+    telegramForwardSearchEl.value = telegramForwardState.query;
+    const chats = filterChatsByQuery(state.telegramChats, telegramForwardState.query).filter(
+      (chat) => chat.id !== telegramForwardState.fromChatId,
+    );
+
+    if (chats.length < 1) {
+      const empty = document.createElement('div');
+      empty.className = 'telegram-forward-empty';
+      empty.textContent = telegramForwardState.query.trim()
+        ? 'No chats match your search.'
+        : 'No other Telegram chats are available.';
+      telegramForwardListEl.replaceChildren(empty);
+    } else {
+      telegramForwardListEl.replaceChildren(
+        ...chats.map((chat) => {
+          const title = safeLabel(chat.title, 'Untitled chat');
+          const preview = safeText(chat.lastMessagePreview).trim() || 'No recent activity';
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'telegram-forward-chat-item';
+          button.disabled = telegramForwardState.sending;
+
+          const avatar = createAvatarNode(title, chat.avatarUrl, 'telegram-avatar');
+          const content = document.createElement('div');
+          content.className = 'telegram-forward-chat-copy';
+          const heading = document.createElement('div');
+          heading.className = 'telegram-forward-chat-title';
+          heading.textContent = title;
+          const detail = document.createElement('div');
+          detail.className = 'telegram-forward-chat-preview';
+          detail.textContent = preview;
+
+          content.replaceChildren(heading, detail);
+          button.replaceChildren(avatar, content);
+          button.addEventListener('click', () => {
+            void forwardTelegramMessageToChat(chat);
+          });
+          return button;
+        }),
+      );
+    }
+
+    telegramForwardCloseEl.disabled = telegramForwardState.sending;
+    telegramForwardSearchEl.disabled = telegramForwardState.sending;
+    telegramForwardModal.classList.remove('hidden');
+  };
+
+  const renderTelegramContextMenu = (): void => {
+    const message = findTelegramMessageById(telegramContextMenuState.messageId);
+    if (
+      !telegramContextMenuState.visible ||
+      state.activeNetwork !== 'telegram' ||
+      getStatusByNetwork('telegram').authState !== 'authenticated' ||
+      !message
+    ) {
+      telegramContextMenu.classList.add('hidden');
+      telegramContextMenu.replaceChildren();
+      telegramContextMenu.removeAttribute('style');
+      return;
+    }
+
+    const buildAction = (
+      label: string,
+      onSelect: (message: ChatMessage) => void | Promise<void>,
+    ): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'telegram-context-menu-item';
+      button.setAttribute('role', 'menuitem');
+      button.textContent = label;
+      button.addEventListener('click', () => {
+        closeTelegramContextMenu(false);
+        void onSelect(message);
+        render();
+      });
+      return button;
+    };
+
+    telegramContextMenu.replaceChildren(
+      buildAction('Copy', async (selectedMessage) => {
+        await copyTelegramMessageText(selectedMessage);
+      }),
+      buildAction('Select', (selectedMessage) => {
+        selectTelegramMessage(selectedMessage.id);
+        statusBar.textContent = `Selected message from ${safeLabel(selectedMessage.sender, 'Unknown')}.`;
+      }),
+      buildAction('Forward', (selectedMessage) => {
+        openTelegramForwardMenu(selectedMessage.id);
+      }),
+      buildAction('Reply', (selectedMessage) => {
+        beginReplyToTelegramMessage(selectedMessage);
+      }),
+    );
+
+    telegramContextMenu.classList.remove('hidden');
+    telegramContextMenu.style.left = `${telegramContextMenuState.x}px`;
+    telegramContextMenu.style.top = `${telegramContextMenuState.y}px`;
+
+    const menuRect = telegramContextMenu.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(12, telegramContextMenuState.x),
+      Math.max(12, window.innerWidth - menuRect.width - 12),
+    );
+    const top = Math.min(
+      Math.max(12, telegramContextMenuState.y),
+      Math.max(12, window.innerHeight - menuRect.height - 12),
+    );
+
+    telegramContextMenu.style.left = `${left}px`;
+    telegramContextMenu.style.top = `${top}px`;
   };
 
   const downloadTelegramImage = (url: string): void => {
@@ -1618,6 +2023,61 @@ const boot = async (): Promise<void> => {
     if (event.target === telegramImageModal) {
       closeTelegramImagePreview();
     }
+  });
+
+  telegramForwardCloseEl.addEventListener('click', () => {
+    closeTelegramForwardMenu();
+  });
+
+  telegramForwardSearchEl.addEventListener('input', () => {
+    telegramForwardState = {
+      ...telegramForwardState,
+      query: telegramForwardSearchEl.value,
+    };
+    render();
+  });
+
+  telegramForwardModal.addEventListener('click', (event) => {
+    if (event.target === telegramForwardModal && !telegramForwardState.sending) {
+      closeTelegramForwardMenu();
+    }
+  });
+
+  telegramContextMenu.addEventListener('click', (event) => {
+    event.stopPropagation();
+  });
+
+  telegramContextMenu.addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+
+  telegramMessageListEl.addEventListener('scroll', () => {
+    if (isTelegramContextMenuGuardActive()) {
+      return;
+    }
+    closeTelegramContextMenu();
+  });
+
+  telegramChatListEl.addEventListener('scroll', () => {
+    if (isTelegramContextMenuGuardActive()) {
+      return;
+    }
+    closeTelegramContextMenu();
+  });
+
+  document.addEventListener('pointerdown', (event) => {
+    if (!telegramContextMenuState.visible) {
+      return;
+    }
+    if (telegramContextMenu.contains(event.target as Node)) {
+      return;
+    }
+    closeTelegramContextMenu();
+  }, true);
+
+  window.addEventListener('resize', () => {
+    closeTelegramContextMenu();
   });
 
   const requestAuthInput = async ({
@@ -1882,6 +2342,7 @@ const boot = async (): Promise<void> => {
         a[i].timestamp !== b[i].timestamp ||
         a[i].outgoing !== b[i].outgoing ||
         a[i].readByPeer !== b[i].readByPeer ||
+        a[i].forwardedFrom !== b[i].forwardedFrom ||
         a[i].imageUrl !== b[i].imageUrl ||
         a[i].animationUrl !== b[i].animationUrl ||
         a[i].animationMimeType !== b[i].animationMimeType ||
@@ -2891,10 +3352,7 @@ const boot = async (): Promise<void> => {
   };
 
   const findSelectedTelegramMessage = (): ChatMessage | undefined => {
-    if (!state.selectedTelegramMessageId) {
-      return undefined;
-    }
-    return state.telegramMessages.find((message) => message.id === state.selectedTelegramMessageId);
+    return findTelegramMessageById(state.selectedTelegramMessageId);
   };
 
   const deleteSelectedTelegramMessage = async (): Promise<void> => {
@@ -2935,10 +3393,7 @@ const boot = async (): Promise<void> => {
     if (!selected) {
       return;
     }
-    state.replyingToMessageId = selected.id;
-    state.replyingToSender = selected.sender;
-    setMode('insert');
-    statusBar.textContent = `Replying to ${selected.sender}`;
+    beginReplyToTelegramMessage(selected);
   };
 
   const applyAuthResult = async (result: AuthStartResult): Promise<void> => {
@@ -3423,6 +3878,7 @@ const boot = async (): Promise<void> => {
             content.replaceChildren(top, preview);
             button.replaceChildren(avatar, content);
             button.addEventListener('click', () => {
+              closeTelegramContextMenu(false);
               state.selectedTelegramChatId = chat.id;
               state.replyingToMessageId = null;
               state.replyingToSender = null;
@@ -3510,6 +3966,12 @@ const boot = async (): Promise<void> => {
             const bodyNodes: HTMLElement[] = [];
             if (!isContinuation) {
               bodyNodes.push(header);
+            }
+            if (message.forwardedFrom) {
+              const forwarded = document.createElement('div');
+              forwarded.className = 'telegram-message-forwarded';
+              forwarded.textContent = `Forwarded from ${safeLabel(message.forwardedFrom, 'Unknown')}`;
+              bodyNodes.push(forwarded);
             }
             if (message.replyToSender || message.replyToText) {
               const reply = document.createElement('div');
@@ -3779,9 +4241,30 @@ const boot = async (): Promise<void> => {
             bodyNodes.push(footer);
             item.replaceChildren(...bodyNodes);
             item.addEventListener('click', () => {
-              state.vimPane = 'telegram-messages';
-              state.selectedTelegramMessageId = message.id;
+              if (isTelegramContextMenuGuardActive()) {
+                return;
+              }
+              closeTelegramContextMenu(false);
+              selectTelegramMessage(message.id);
               render();
+            });
+            item.addEventListener('pointerdown', (event) => {
+              if (isSecondaryTelegramPointerEvent(event)) {
+                event.preventDefault();
+                event.stopPropagation();
+                openTelegramContextMenu(message.id, event.clientX, event.clientY);
+                return;
+              }
+              if (telegramContextMenuState.visible) {
+                closeTelegramContextMenu(false);
+              }
+            });
+            item.addEventListener('contextmenu', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!telegramContextMenuState.visible || telegramContextMenuState.messageId !== message.id) {
+                openTelegramContextMenu(message.id, event.clientX, event.clientY);
+              }
             });
             nodes.push(item);
             return nodes;
@@ -3796,7 +4279,7 @@ const boot = async (): Promise<void> => {
           telegramForceScrollBottom = false;
         }
 
-        if (state.vimPane === 'telegram-messages') {
+        if (state.vimPane === 'telegram-messages' && !telegramContextMenuState.visible) {
           telegramMessageListEl
             .querySelector<HTMLElement>('.telegram-message-item.selected')
             ?.scrollIntoView({ block: 'nearest' });
@@ -3912,6 +4395,8 @@ const boot = async (): Promise<void> => {
     }
 
     renderTelegramNative();
+    renderTelegramContextMenu();
+    renderTelegramForwardMenu();
     renderInstagramWeb();
 
     renderCurrentStatusBar();
@@ -4103,6 +4588,24 @@ const boot = async (): Promise<void> => {
     if (event.key === 'Escape' && !telegramImageModal.classList.contains('hidden')) {
       event.preventDefault();
       closeTelegramImagePreview();
+      return;
+    }
+
+    if (event.key === 'Escape' && !telegramForwardModal.classList.contains('hidden')) {
+      event.preventDefault();
+      if (!telegramForwardState.sending) {
+        closeTelegramForwardMenu();
+      }
+      return;
+    }
+
+    if (!telegramForwardModal.classList.contains('hidden')) {
+      return;
+    }
+
+    if (event.key === 'Escape' && telegramContextMenuState.visible) {
+      event.preventDefault();
+      closeTelegramContextMenu();
       return;
     }
 

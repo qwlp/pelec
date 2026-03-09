@@ -142,6 +142,19 @@ export class ConnectorManager {
     return connector.sendImageMessage(chatId, dataUrl, caption, replyToMessageId);
   }
 
+  async forwardMessage(
+    network: NetworkId,
+    fromChatId: string,
+    toChatId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.forwardMessage) {
+      return false;
+    }
+    return connector.forwardMessage(fromChatId, toChatId, messageId);
+  }
+
   async deleteMessage(network: NetworkId, chatId: string, messageId: string): Promise<boolean> {
     const connector = this.getConnector(network);
     if (!connector.deleteMessage) {

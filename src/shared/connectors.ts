@@ -87,6 +87,7 @@ export interface ChatMessage {
   timestamp: number;
   outgoing?: boolean;
   readByPeer?: boolean;
+  forwardedFrom?: string;
   replyToMessageId?: string;
   replyToSender?: string;
   replyToText?: string;
@@ -130,6 +131,7 @@ export interface Connector {
     replyToMessageId?: string,
   ): Promise<boolean>;
   sendMessage?(chatId: string, text: string, replyToMessageId?: string): Promise<boolean>;
+  forwardMessage?(fromChatId: string, toChatId: string, messageId: string): Promise<boolean>;
   deleteMessage?(chatId: string, messageId: string): Promise<boolean>;
   onUpdate?(handler: (event: ConnectorUpdateEvent) => void): () => void;
 }

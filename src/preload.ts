@@ -74,6 +74,19 @@ const api = {
       caption,
       replyToMessageId,
     ) as Promise<boolean>,
+  forwardConnectorMessage: (
+    network: NetworkId,
+    fromChatId: string,
+    toChatId: string,
+    messageId: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:forward-message',
+      network,
+      fromChatId,
+      toChatId,
+      messageId,
+    ) as Promise<boolean>,
   deleteConnectorMessage: (network: NetworkId, chatId: string, messageId: string) =>
     ipcRenderer.invoke('connector:delete-message', network, chatId, messageId) as Promise<boolean>,
   onConnectorUpdate: (handler: (event: ConnectorUpdateEvent) => void) => {

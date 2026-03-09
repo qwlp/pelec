@@ -84,6 +84,16 @@ type TdMessage = {
   id?: number | string | bigint;
   date?: number;
   is_outgoing?: boolean;
+  forward_info?: {
+    origin?: {
+      _?: string;
+      sender_user_id?: number;
+      sender_name?: string;
+      sender_chat_id?: number;
+      chat_id?: number;
+      author_signature?: string;
+    };
+  };
   reply_to?: {
     message_id?: number | string | bigint;
   };
@@ -452,6 +462,7 @@ export class TelegramConnector implements Connector {
               message.is_outgoing === true
                 ? this.isMessageReadByPeer(message.id, lastReadOutboxMessageId)
                 : undefined,
+            forwardedFrom: await this.resolveForwardOriginLabel(client, message.forward_info),
             replyToMessageId: replyTargetId,
             replyToSender: replyContext?.sender,
             replyToText: replyContext?.text,
@@ -645,6 +656,36 @@ export class TelegramConnector implements Connector {
           // Best-effort temp cleanup.
         });
       }
+    }
+  }
+
+  async forwardMessage(fromChatId: string, toChatId: string, messageId: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return false;
+    }
+
+    try {
+      await this.tdClient.invoke({
+        _: 'forwardMessages',
+        chat_id: Number(toChatId),
+        topic_id: null,
+        from_chat_id: Number(fromChatId),
+        message_ids: [tdMessageId],
+        options: null,
+        send_copy: false,
+        remove_caption: false,
+      });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown forwardMessage error';
+      this.status.details = `Failed forwarding message: ${this.status.lastError}`;
+      return false;
     }
   }
 
@@ -891,6 +932,49 @@ export class TelegramConnector implements Connector {
     if (sender.chat_id) {
       return this.resolveChatAvatar(client, sender.chat_id);
     }
+    return undefined;
+  }
+
+  private async resolveForwardOriginLabel(
+    client: TdClient,
+    forwardInfo:
+      | {
+          origin?: {
+            _?: string;
+            sender_user_id?: number;
+            sender_name?: string;
+            sender_chat_id?: number;
+            chat_id?: number;
+            author_signature?: string;
+          };
+        }
+      | undefined,
+  ): Promise<string | undefined> {
+    const origin = forwardInfo?.origin;
+    if (!origin?._) {
+      return undefined;
+    }
+
+    if (origin._ === 'messageOriginUser' && origin.sender_user_id) {
+      return this.resolveUserLabel(client, origin.sender_user_id);
+    }
+
+    if (origin._ === 'messageOriginHiddenUser') {
+      return origin.sender_name?.trim() || 'Hidden user';
+    }
+
+    if (origin._ === 'messageOriginChat' && origin.sender_chat_id) {
+      const chatTitle = await this.resolveChatTitle(client, origin.sender_chat_id);
+      const signature = origin.author_signature?.trim();
+      return signature ? `${chatTitle} (${signature})` : chatTitle;
+    }
+
+    if (origin._ === 'messageOriginChannel' && origin.chat_id) {
+      const chatTitle = await this.resolveChatTitle(client, origin.chat_id);
+      const signature = origin.author_signature?.trim();
+      return signature ? `${chatTitle} (${signature})` : chatTitle;
+    }
+
     return undefined;
   }
 
