@@ -54,6 +54,16 @@ type AppCommand = {
   run: () => void;
 };
 
+type RenderableTelegramMessage = ChatMessage & {
+  pendingState?: 'sending';
+};
+
+type PendingTelegramMessage = RenderableTelegramMessage & {
+  pendingState: 'sending';
+  chatId: string;
+  signature: string;
+};
+
 type TelegramContextMenuState = {
   visible: boolean;
   messageId: string | null;
@@ -628,6 +638,7 @@ const boot = async (): Promise<void> => {
   let telegramMessagesRequestSeq = 0;
   let telegramChatsVersion = 0;
   let telegramMessagesVersion = 0;
+  const pendingTelegramMessagesByChat = new Map<string, PendingTelegramMessage[]>();
   let lastRenderedTelegramChatId: string | null = null;
   let lastRenderedTelegramChatsVersion = -1;
   let lastRenderedTelegramMessagesVersion = -1;
@@ -1700,11 +1711,161 @@ const boot = async (): Promise<void> => {
     }
   };
 
-  const findTelegramMessageById = (messageId: string | null): ChatMessage | undefined => {
+  const buildPendingTelegramSignature = (message: Partial<ChatMessage>): string => {
+    const text = safeText(message.text).trim();
+    return [
+      text,
+      message.replyToMessageId ?? '',
+      message.imageUrl ? 'image' : '',
+      message.animationUrl ? 'animation' : '',
+      message.stickerUrl ? 'sticker' : '',
+      message.audioUrl || message.hasAudio ? 'audio' : '',
+      message.document?.fileName ?? '',
+      message.call ? 'call' : '',
+    ].join('|');
+  };
+
+  const isPendingTelegramMessage = (
+    message: RenderableTelegramMessage | ChatMessage | undefined,
+  ): message is PendingTelegramMessage => Boolean(message && 'pendingState' in message && message.pendingState === 'sending');
+
+  const bumpTelegramMessagesVersion = (): void => {
+    telegramMessagesVersion += 1;
+  };
+
+  const getPendingTelegramMessages = (chatId: string | null): PendingTelegramMessage[] => {
+    if (!chatId) {
+      return [];
+    }
+    return pendingTelegramMessagesByChat.get(chatId) ?? [];
+  };
+
+  const getVisibleTelegramMessages = (
+    chatId: string | null = state.activeTelegramChatId,
+  ): RenderableTelegramMessage[] => {
+    const pending = getPendingTelegramMessages(chatId);
+    if (pending.length < 1) {
+      return state.telegramMessages;
+    }
+    return [...state.telegramMessages, ...pending];
+  };
+
+  const addPendingTelegramMessages = (...messages: PendingTelegramMessage[]): void => {
+    if (messages.length < 1) {
+      return;
+    }
+    const chatId = messages[0].chatId;
+    const current = pendingTelegramMessagesByChat.get(chatId) ?? [];
+    pendingTelegramMessagesByChat.set(chatId, [...current, ...messages]);
+    bumpTelegramMessagesVersion();
+  };
+
+  const removePendingTelegramMessages = (
+    chatId: string,
+    predicate: (message: PendingTelegramMessage) => boolean,
+  ): boolean => {
+    const current = pendingTelegramMessagesByChat.get(chatId) ?? [];
+    if (current.length < 1) {
+      return false;
+    }
+    const next = current.filter((message) => !predicate(message));
+    if (next.length === current.length) {
+      return false;
+    }
+    if (next.length < 1) {
+      pendingTelegramMessagesByChat.delete(chatId);
+    } else {
+      pendingTelegramMessagesByChat.set(chatId, next);
+    }
+    bumpTelegramMessagesVersion();
+    return true;
+  };
+
+  const createPendingTelegramMessage = (
+    chatId: string,
+    message: Partial<ChatMessage>,
+  ): PendingTelegramMessage => {
+    const timestamp = hasValidTimestamp(message.timestamp) ? message.timestamp : Date.now();
+    return {
+      id: `pending:${chatId}:${timestamp}:${Math.random().toString(36).slice(2, 10)}`,
+      sender: safeLabel(message.sender, 'You'),
+      text: safeText(message.text),
+      timestamp,
+      outgoing: true,
+      readByPeer: false,
+      replyToMessageId: message.replyToMessageId,
+      replyToSender: message.replyToSender,
+      replyToText: message.replyToText,
+      imageUrl: message.imageUrl,
+      animationUrl: message.animationUrl,
+      animationMimeType: message.animationMimeType,
+      stickerUrl: message.stickerUrl,
+      stickerEmoji: message.stickerEmoji,
+      stickerIsAnimated: message.stickerIsAnimated,
+      hasAudio: message.hasAudio,
+      audioUrl: message.audioUrl,
+      audioDurationSeconds: message.audioDurationSeconds,
+      document: message.document,
+      call: message.call,
+      pendingState: 'sending',
+      chatId,
+      signature: buildPendingTelegramSignature(message),
+    };
+  };
+
+  const matchesPendingTelegramMessage = (
+    pendingMessage: PendingTelegramMessage,
+    message: ChatMessage,
+  ): boolean => {
+    if (!message.outgoing) {
+      return false;
+    }
+    if (buildPendingTelegramSignature(message) !== pendingMessage.signature) {
+      return false;
+    }
+    const delta = message.timestamp - pendingMessage.timestamp;
+    return delta >= -60000 && delta <= 5 * 60 * 1000;
+  };
+
+  const reconcilePendingTelegramMessages = (chatId: string, messages: ChatMessage[]): boolean => {
+    const pending = pendingTelegramMessagesByChat.get(chatId) ?? [];
+    if (pending.length < 1) {
+      return false;
+    }
+
+    const matchedIndexes = new Set<number>();
+    const remaining = pending.filter((pendingMessage) => {
+      const matchIndex = messages.findIndex(
+        (message, index) =>
+          !matchedIndexes.has(index) && matchesPendingTelegramMessage(pendingMessage, message),
+      );
+      if (matchIndex === -1) {
+        return true;
+      }
+      matchedIndexes.add(matchIndex);
+      return false;
+    });
+
+    if (remaining.length === pending.length) {
+      return false;
+    }
+
+    if (remaining.length < 1) {
+      pendingTelegramMessagesByChat.delete(chatId);
+    } else {
+      pendingTelegramMessagesByChat.set(chatId, remaining);
+    }
+    bumpTelegramMessagesVersion();
+    return true;
+  };
+
+  const findTelegramMessageById = (
+    messageId: string | null,
+  ): RenderableTelegramMessage | undefined => {
     if (!messageId) {
       return undefined;
     }
-    return state.telegramMessages.find((message) => message.id === messageId);
+    return getVisibleTelegramMessages().find((message) => message.id === messageId);
   };
 
   const closeTelegramContextMenu = (shouldRender = true): void => {
@@ -1735,6 +1896,10 @@ const boot = async (): Promise<void> => {
   };
 
   const openTelegramContextMenu = (messageId: string, x: number, y: number): void => {
+    const message = findTelegramMessageById(messageId);
+    if (isPendingTelegramMessage(message)) {
+      return;
+    }
     selectTelegramMessage(messageId);
     telegramContextMenuOpenedAt = performance.now();
     telegramContextMenuState = {
@@ -1818,6 +1983,10 @@ const boot = async (): Promise<void> => {
   };
 
   const beginReplyToTelegramMessage = (message: ChatMessage): void => {
+    if (isPendingTelegramMessage(message)) {
+      statusBar.textContent = 'Wait for the message to finish sending.';
+      return;
+    }
     state.replyingToMessageId = message.id;
     state.replyingToSender = message.sender;
     setMode('insert');
@@ -1879,7 +2048,8 @@ const boot = async (): Promise<void> => {
       state.activeNetwork !== 'telegram' ||
       getStatusByNetwork('telegram').authState !== 'authenticated' ||
       !telegramForwardState.fromChatId ||
-      !message
+      !message ||
+      isPendingTelegramMessage(message)
     ) {
       if (telegramForwardState.visible || telegramForwardState.messageId || telegramForwardState.fromChatId) {
         telegramForwardState = {
@@ -1949,7 +2119,8 @@ const boot = async (): Promise<void> => {
       !telegramContextMenuState.visible ||
       state.activeNetwork !== 'telegram' ||
       getStatusByNetwork('telegram').authState !== 'authenticated' ||
-      !message
+      !message ||
+      isPendingTelegramMessage(message)
     ) {
       telegramContextMenu.classList.add('hidden');
       telegramContextMenu.replaceChildren();
@@ -2705,8 +2876,10 @@ const boot = async (): Promise<void> => {
     showLoadingState = false,
   ): Promise<void> => {
     const requestSeq = ++telegramMessagesRequestSeq;
+    const hasVisibleMessages = getVisibleTelegramMessages(chatId).length > 0;
+    const shouldShowLoadingIndicator = showLoadingState || !hasVisibleMessages;
     state.activeTelegramChatId = chatId;
-    state.telegramMessagesLoading = true;
+    state.telegramMessagesLoading = shouldShowLoadingIndicator;
     state.telegramLoadError = null;
     if (showLoadingState) {
       state.telegramMessages = [];
@@ -2721,6 +2894,7 @@ const boot = async (): Promise<void> => {
         return;
       }
       const changed = !areMessageListsEqual(state.telegramMessages, messages);
+      const pendingChanged = reconcilePendingTelegramMessages(chatId, messages);
       const chatTitle = safeLabel(
         state.telegramChats.find((chat) => chat.id === chatId)?.title,
         'Telegram',
@@ -2731,13 +2905,15 @@ const boot = async (): Promise<void> => {
         telegramMessagesVersion += 1;
       }
       const currentSelectedMessageId = state.selectedTelegramMessageId;
+      const visibleMessages = getVisibleTelegramMessages(chatId);
       state.selectedTelegramMessageId =
-        currentSelectedMessageId && messages.some((message) => message.id === currentSelectedMessageId)
+        currentSelectedMessageId &&
+        visibleMessages.some((message) => message.id === currentSelectedMessageId)
           ? currentSelectedMessageId
           : messages[messages.length - 1]?.id ?? null;
       await window.pelec.setConnectorActiveChat('telegram', chatId);
       state.telegramMessagesLoading = false;
-      if (changed || forceScroll || showLoadingState) {
+      if (changed || pendingChanged || forceScroll || showLoadingState) {
         telegramForceScrollBottom = true;
         render();
       }
@@ -2780,6 +2956,7 @@ const boot = async (): Promise<void> => {
       resetNotificationTracking('telegram');
       state.telegramChats = [];
       state.telegramMessages = [];
+      pendingTelegramMessagesByChat.clear();
       telegramChatsVersion += 1;
       telegramMessagesVersion += 1;
       state.activeTelegramChatId = null;
@@ -3139,6 +3316,33 @@ const boot = async (): Promise<void> => {
 
     telegramSendButton.disabled = true;
     try {
+      const replyToMessageId = state.replyingToMessageId ?? undefined;
+      const replyTarget = findTelegramMessageById(replyToMessageId ?? null);
+      const previousComposeValue = telegramComposeInput.value;
+      const previousPendingImages = [...state.pendingTelegramImageDataUrls];
+      const previousReplyingToMessageId = state.replyingToMessageId;
+      const previousReplyingToSender = state.replyingToSender;
+      const pendingMessage = !hasImage
+        ? createPendingTelegramMessage(chatId, {
+            sender: 'You',
+            text,
+            timestamp: Date.now(),
+            replyToMessageId,
+            replyToSender: replyTarget?.sender,
+            replyToText: replyTarget ? buildTelegramMessageActionText(replyTarget) : undefined,
+          })
+        : null;
+
+      if (pendingMessage) {
+        addPendingTelegramMessages(pendingMessage);
+        telegramComposeInput.value = '';
+        state.replyingToMessageId = null;
+        state.replyingToSender = null;
+        state.selectedTelegramMessageId = pendingMessage.id;
+        telegramForceScrollBottom = true;
+        render();
+      }
+
       let sent = true;
       if (hasImage) {
         for (let index = 0; index < state.pendingTelegramImageDataUrls.length; index += 1) {
@@ -3149,7 +3353,7 @@ const boot = async (): Promise<void> => {
             chatId,
             imageDataUrl,
             caption,
-            state.replyingToMessageId ?? undefined,
+            replyToMessageId,
           );
           if (!imageSent) {
             sent = false;
@@ -3161,23 +3365,36 @@ const boot = async (): Promise<void> => {
           'telegram',
           chatId,
           text,
-          state.replyingToMessageId ?? undefined,
+          replyToMessageId,
         );
       }
       if (!sent) {
+        if (pendingMessage) {
+          removePendingTelegramMessages(chatId, (message) => message.id === pendingMessage.id);
+          telegramComposeInput.value = previousComposeValue;
+          state.pendingTelegramImageDataUrls = previousPendingImages;
+          state.replyingToMessageId = previousReplyingToMessageId;
+          state.replyingToSender = previousReplyingToSender;
+          if (state.selectedTelegramMessageId === pendingMessage.id) {
+            state.selectedTelegramMessageId = state.telegramMessages[state.telegramMessages.length - 1]?.id ?? null;
+          }
+        }
         await refreshConnectorStatuses();
         const status = getStatusByNetwork('telegram');
         statusBar.textContent = `Failed to send: ${status.lastError ?? status.details}`;
         render();
         return;
       }
-      telegramComposeInput.value = '';
-      state.pendingTelegramImageDataUrls = [];
-      state.replyingToMessageId = null;
-      state.replyingToSender = null;
+
+      if (!pendingMessage) {
+        telegramComposeInput.value = '';
+        state.pendingTelegramImageDataUrls = [];
+        state.replyingToMessageId = null;
+        state.replyingToSender = null;
+      }
       telegramForceScrollBottom = true;
       render();
-      scheduleTelegramMessagesRefresh(chatId, 0);
+      scheduleTelegramMessagesRefresh(chatId, pendingMessage ? 90 : 0);
       scheduleTelegramChatsRefresh(0, false);
     } finally {
       telegramSendButton.disabled = false;
@@ -3259,19 +3476,20 @@ const boot = async (): Promise<void> => {
     }
 
     if (state.activeNetwork === 'telegram' && state.vimPane === 'telegram-messages') {
-      if (state.telegramMessages.length < 1) {
+      const telegramMessages = getVisibleTelegramMessages();
+      if (telegramMessages.length < 1) {
         return;
       }
-      const step = Math.max(1, Math.floor(state.telegramMessages.length / 4));
-      const currentIndex = state.telegramMessages.findIndex(
+      const step = Math.max(1, Math.floor(telegramMessages.length / 4));
+      const currentIndex = telegramMessages.findIndex(
         (message) => message.id === state.selectedTelegramMessageId,
       );
-      const safeIndex = currentIndex === -1 ? state.telegramMessages.length - 1 : currentIndex;
+      const safeIndex = currentIndex === -1 ? telegramMessages.length - 1 : currentIndex;
       const nextIndex = Math.min(
-        state.telegramMessages.length - 1,
+        telegramMessages.length - 1,
         Math.max(0, safeIndex + direction * step),
       );
-      state.selectedTelegramMessageId = state.telegramMessages[nextIndex].id;
+      state.selectedTelegramMessageId = telegramMessages[nextIndex].id;
       render();
       return;
     }
@@ -3338,13 +3556,14 @@ const boot = async (): Promise<void> => {
     }
 
     if (state.activeNetwork === 'telegram' && state.vimPane === 'telegram-messages') {
-      if (state.telegramMessages.length < 1) {
+      const telegramMessages = getVisibleTelegramMessages();
+      if (telegramMessages.length < 1) {
         return;
       }
       state.selectedTelegramMessageId =
         edge === 'first'
-          ? state.telegramMessages[0].id
-          : state.telegramMessages[state.telegramMessages.length - 1].id;
+          ? telegramMessages[0].id
+          : telegramMessages[telegramMessages.length - 1].id;
       render();
       return;
     }
@@ -3418,18 +3637,19 @@ const boot = async (): Promise<void> => {
     }
 
     if (state.activeNetwork === 'telegram' && state.vimPane === 'telegram-messages') {
-      if (state.telegramMessages.length < 1) {
+      const telegramMessages = getVisibleTelegramMessages();
+      if (telegramMessages.length < 1) {
         return;
       }
-      const currentIndex = state.telegramMessages.findIndex(
+      const currentIndex = telegramMessages.findIndex(
         (message) => message.id === state.selectedTelegramMessageId,
       );
-      const safeIndex = currentIndex === -1 ? state.telegramMessages.length - 1 : currentIndex;
+      const safeIndex = currentIndex === -1 ? telegramMessages.length - 1 : currentIndex;
       const nextIndex = Math.min(
-        state.telegramMessages.length - 1,
+        telegramMessages.length - 1,
         Math.max(0, safeIndex + direction),
       );
-      state.selectedTelegramMessageId = state.telegramMessages[nextIndex].id;
+      state.selectedTelegramMessageId = telegramMessages[nextIndex].id;
       render();
       return;
     }
@@ -3494,7 +3714,8 @@ const boot = async (): Promise<void> => {
   };
 
   const findSelectedTelegramMessage = (): ChatMessage | undefined => {
-    return findTelegramMessageById(state.selectedTelegramMessageId);
+    const message = findTelegramMessageById(state.selectedTelegramMessageId);
+    return isPendingTelegramMessage(message) ? undefined : message;
   };
 
   const removeTelegramMessageLocally = (chatId: string, messageId: string): boolean => {
@@ -4172,20 +4393,21 @@ const boot = async (): Promise<void> => {
         renderTelegramMessageEmptyState(
           `<div class="telegram-empty">${safeLabel(state.telegramLoadError, 'Failed to load Telegram messages.')}</div>`,
         );
-      } else if (state.telegramMessages.length < 1) {
+      } else if (getVisibleTelegramMessages().length < 1) {
         renderTelegramMessageEmptyState('<div class="telegram-empty">No messages in this chat.</div>');
       } else {
         const wasNearBottom =
           telegramMessageListEl.scrollHeight - telegramMessageListEl.scrollTop - telegramMessageListEl.clientHeight < 84;
         const activeChatChanged = lastRenderedTelegramChatId !== state.activeTelegramChatId;
         const renderChatId = state.activeTelegramChatId;
+        const visibleTelegramMessages = getVisibleTelegramMessages();
         const shouldRebuildMessages =
           activeChatChanged || lastRenderedTelegramMessagesVersion !== telegramMessagesVersion;
 
         if (shouldRebuildMessages) {
           renderedTelegramMessageNodeById.clear();
           telegramMessageListEl.replaceChildren(
-            ...state.telegramMessages.flatMap((message, index, messages) => {
+            ...visibleTelegramMessages.flatMap((message, index, messages) => {
               const nodes: HTMLElement[] = [];
               const previousMessage = index > 0 ? messages[index - 1] : null;
               const messageId = safeLabel(message.id, String(index));
@@ -4487,20 +4709,29 @@ const boot = async (): Promise<void> => {
               if (message.outgoing) {
                 const receipt = document.createElement('span');
                 receipt.className = 'telegram-message-receipt';
-                const tickSingle = document.createElement('span');
-                tickSingle.className = 'telegram-message-tick';
-                tickSingle.textContent = '✓';
-                const tickDouble = document.createElement('span');
-                tickDouble.className = 'telegram-message-tick';
-                tickDouble.textContent = '✓';
-                if (message.readByPeer) {
-                  receipt.classList.add('read');
-                  receipt.title = 'Read';
-                  receipt.append(tickSingle, tickDouble);
+                if (isPendingTelegramMessage(message)) {
+                  const spinner = document.createElement('span');
+                  spinner.className = 'telegram-message-spinner';
+                  spinner.setAttribute('aria-hidden', 'true');
+                  receipt.classList.add('sending');
+                  receipt.title = 'Sending';
+                  receipt.append(spinner);
                 } else {
-                  receipt.classList.add('sent');
-                  receipt.title = 'Sent';
-                  receipt.append(tickSingle);
+                  const tickSingle = document.createElement('span');
+                  tickSingle.className = 'telegram-message-tick';
+                  tickSingle.textContent = '✓';
+                  const tickDouble = document.createElement('span');
+                  tickDouble.className = 'telegram-message-tick';
+                  tickDouble.textContent = '✓';
+                  if (message.readByPeer) {
+                    receipt.classList.add('read');
+                    receipt.title = 'Read';
+                    receipt.append(tickSingle, tickDouble);
+                  } else {
+                    receipt.classList.add('sent');
+                    receipt.title = 'Sent';
+                    receipt.append(tickSingle);
+                  }
                 }
                 footer.append(receipt);
               }

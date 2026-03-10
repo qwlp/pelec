@@ -551,6 +551,11 @@ textarea {
   position: relative;
 }
 
+.telegram-message-receipt.sending {
+  min-width: 16px;
+  justify-content: center;
+}
+
 .telegram-message-tick {
   display: inline-block;
   font-size: 14px;
@@ -570,6 +575,23 @@ textarea {
 
 .telegram-message-receipt.read .telegram-message-tick + .telegram-message-tick {
   margin-left: -6px;
+}
+
+.telegram-message-spinner {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(255, 214, 235, 0.34);
+  border-top-color: #ffb7d7;
+  border-radius: 999px;
+  animation: telegram-message-spin 0.8s linear infinite;
+}
+
+@keyframes telegram-message-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .telegram-message-text {
