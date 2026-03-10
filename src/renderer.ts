@@ -2768,7 +2768,11 @@ const boot = async (): Promise<void> => {
     }
   };
 
-  const loadTelegramChats = async (): Promise<void> => {
+  const loadTelegramChats = async (
+    options: {
+      refreshActiveMessages?: boolean;
+    } = {},
+  ): Promise<void> => {
     const requestSeq = ++telegramChatsRequestSeq;
     const telegramStatus = getStatusByNetwork('telegram');
     if (!(telegramStatus.mode === 'native' && telegramStatus.authState === 'authenticated')) {
@@ -2836,7 +2840,7 @@ const boot = async (): Promise<void> => {
         render();
       }
 
-      if (state.activeTelegramChatId) {
+      if (state.activeTelegramChatId && options.refreshActiveMessages !== false) {
         await loadTelegramMessages(state.activeTelegramChatId, 0, false, suppressNotifications);
       }
 
@@ -3126,6 +3130,7 @@ const boot = async (): Promise<void> => {
       return;
     }
 
+    const chatId = state.activeTelegramChatId;
     const text = telegramComposeInput.value.trim();
     const hasImage = state.pendingTelegramImageDataUrls.length > 0;
     if (!text && !hasImage) {
@@ -3141,7 +3146,7 @@ const boot = async (): Promise<void> => {
           const caption = index === 0 ? text : '';
           const imageSent = await window.pelec.sendConnectorImage(
             'telegram',
-            state.activeTelegramChatId,
+            chatId,
             imageDataUrl,
             caption,
             state.replyingToMessageId ?? undefined,
@@ -3153,11 +3158,11 @@ const boot = async (): Promise<void> => {
         }
       } else {
         sent = await window.pelec.sendConnectorMessage(
-            'telegram',
-            state.activeTelegramChatId,
-            text,
-            state.replyingToMessageId ?? undefined,
-          );
+          'telegram',
+          chatId,
+          text,
+          state.replyingToMessageId ?? undefined,
+        );
       }
       if (!sent) {
         await refreshConnectorStatuses();
@@ -3170,21 +3175,25 @@ const boot = async (): Promise<void> => {
       state.pendingTelegramImageDataUrls = [];
       state.replyingToMessageId = null;
       state.replyingToSender = null;
-      state.pendingTelegramImageDataUrls = [];
       telegramForceScrollBottom = true;
-      await loadTelegramMessages(state.activeTelegramChatId);
+      render();
+      scheduleTelegramMessagesRefresh(chatId, 0);
+      scheduleTelegramChatsRefresh(0, false);
     } finally {
       telegramSendButton.disabled = false;
     }
   };
 
-  const scheduleTelegramChatsRefresh = (delayMs = 300): void => {
+  const scheduleTelegramChatsRefresh = (
+    delayMs = 300,
+    refreshActiveMessages = true,
+  ): void => {
     if (telegramChatsRefreshTimer !== null) {
       window.clearTimeout(telegramChatsRefreshTimer);
     }
     telegramChatsRefreshTimer = window.setTimeout(() => {
       telegramChatsRefreshTimer = null;
-      void loadTelegramChats();
+      void loadTelegramChats({ refreshActiveMessages });
     }, delayMs);
   };
 
@@ -3488,33 +3497,70 @@ const boot = async (): Promise<void> => {
     return findTelegramMessageById(state.selectedTelegramMessageId);
   };
 
+  const removeTelegramMessageLocally = (chatId: string, messageId: string): boolean => {
+    if (state.activeTelegramChatId !== chatId) {
+      return false;
+    }
+
+    const messageIndex = state.telegramMessages.findIndex((message) => message.id === messageId);
+    if (messageIndex < 0) {
+      return false;
+    }
+
+    const nextMessages = state.telegramMessages.filter((message) => message.id !== messageId);
+    state.telegramMessages = nextMessages;
+    telegramMessagesVersion += 1;
+
+    if (state.selectedTelegramMessageId === messageId) {
+      state.selectedTelegramMessageId =
+        nextMessages[messageIndex]?.id ?? nextMessages[messageIndex - 1]?.id ?? null;
+    }
+
+    if (state.replyingToMessageId === messageId) {
+      state.replyingToMessageId = null;
+      state.replyingToSender = null;
+      state.pendingTelegramImageDataUrls = [];
+    }
+
+    if (telegramContextMenuState.messageId === messageId) {
+      closeTelegramContextMenu(false);
+    }
+
+    render();
+    return true;
+  };
+
   const deleteSelectedTelegramMessage = async (): Promise<void> => {
     if (state.activeNetwork !== 'telegram' || !state.activeTelegramChatId) {
       return;
     }
+    const chatId = state.activeTelegramChatId;
     const selected = findSelectedTelegramMessage();
     if (!selected) {
       return;
     }
 
+    removeTelegramMessageLocally(chatId, selected.id);
+    statusBar.textContent = 'Deleting message...';
+
     const deleted = await window.pelec.deleteConnectorMessage(
       'telegram',
-      state.activeTelegramChatId,
+      chatId,
       selected.id,
     );
     if (!deleted) {
       await refreshConnectorStatuses();
+      if (state.activeTelegramChatId === chatId) {
+        await loadTelegramMessages(chatId);
+      }
+      scheduleTelegramChatsRefresh(0, false);
       const status = getStatusByNetwork('telegram');
       statusBar.textContent = `Delete failed: ${status.lastError ?? status.details}`;
       return;
     }
 
-    if (state.replyingToMessageId === selected.id) {
-      state.replyingToMessageId = null;
-      state.replyingToSender = null;
-      state.pendingTelegramImageDataUrls = [];
-    }
-    await loadTelegramMessages(state.activeTelegramChatId);
+    scheduleTelegramMessagesRefresh(chatId, 180);
+    scheduleTelegramChatsRefresh(0, false);
     statusBar.textContent = 'Message deleted.';
   };
 
@@ -4754,19 +4800,19 @@ const boot = async (): Promise<void> => {
       }
 
       if (event.kind === 'chats') {
-        scheduleTelegramChatsRefresh();
+        scheduleTelegramChatsRefresh(300, false);
         return;
       }
 
       if (event.kind === 'messages') {
         if (event.chatId && state.activeTelegramChatId && event.chatId !== state.activeTelegramChatId) {
-          scheduleTelegramChatsRefresh();
+          scheduleTelegramChatsRefresh(300, false);
           return;
         }
         if (state.activeNetwork === 'telegram' && state.activeTelegramChatId) {
           scheduleTelegramMessagesRefresh(state.activeTelegramChatId);
         }
-        scheduleTelegramChatsRefresh();
+        scheduleTelegramChatsRefresh(300, false);
       }
       return;
     }
