@@ -626,7 +626,17 @@ const boot = async (): Promise<void> => {
   const webviewMap = new Map<NetworkId, Electron.WebviewTag>();
   let telegramChatsRequestSeq = 0;
   let telegramMessagesRequestSeq = 0;
+  let telegramChatsVersion = 0;
+  let telegramMessagesVersion = 0;
   let lastRenderedTelegramChatId: string | null = null;
+  let lastRenderedTelegramChatsVersion = -1;
+  let lastRenderedTelegramMessagesVersion = -1;
+  let lastRenderedTelegramSearchQuery = '';
+  let lastRenderedTelegramActiveChatButtonId: string | null = null;
+  let lastRenderedTelegramSelectedChatId: string | null = null;
+  let lastRenderedTelegramChatPane: AppState['vimPane'] | null = null;
+  let lastRenderedTelegramSelectedMessageId: string | null = null;
+  let lastRenderedTelegramMessagePane: AppState['vimPane'] | null = null;
   let telegramForceScrollBottom = false;
   let telegramChatsRefreshTimer: number | null = null;
   let telegramMessagesRefreshTimer: number | null = null;
@@ -664,6 +674,8 @@ const boot = async (): Promise<void> => {
   };
   let lastInstagramWebFallbackState: InstagramWebFallbackState | null = null;
   let lastInstagramWebFallbackNotificationKey: string | null = null;
+  const renderedTelegramChatButtonById = new Map<string, HTMLButtonElement>();
+  const renderedTelegramMessageNodeById = new Map<string, HTMLElement>();
 
   const buildChatKey = (network: NetworkId, chatId: string): string => `${network}:${chatId}`;
 
@@ -2402,6 +2414,7 @@ const boot = async (): Promise<void> => {
         a[i].id !== b[i].id ||
         a[i].title !== b[i].title ||
         a[i].lastMessagePreview !== b[i].lastMessagePreview ||
+        a[i].lastMessageTimestamp !== b[i].lastMessageTimestamp ||
         a[i].unreadCount !== b[i].unreadCount ||
         a[i].avatarUrl !== b[i].avatarUrl ||
         a[i].isMuted !== b[i].isMuted
@@ -2438,6 +2451,9 @@ const boot = async (): Promise<void> => {
         a[i].outgoing !== b[i].outgoing ||
         a[i].readByPeer !== b[i].readByPeer ||
         a[i].forwardedFrom !== b[i].forwardedFrom ||
+        a[i].replyToMessageId !== b[i].replyToMessageId ||
+        a[i].replyToSender !== b[i].replyToSender ||
+        a[i].replyToText !== b[i].replyToText ||
         a[i].imageUrl !== b[i].imageUrl ||
         a[i].animationUrl !== b[i].animationUrl ||
         a[i].animationMimeType !== b[i].animationMimeType ||
@@ -2447,7 +2463,14 @@ const boot = async (): Promise<void> => {
         !reactionsEqual ||
         a[i].hasAudio !== b[i].hasAudio ||
         a[i].audioDurationSeconds !== b[i].audioDurationSeconds ||
-        a[i].senderAvatarUrl !== b[i].senderAvatarUrl
+        a[i].audioUrl !== b[i].audioUrl ||
+        a[i].senderAvatarUrl !== b[i].senderAvatarUrl ||
+        a[i].document?.fileName !== b[i].document?.fileName ||
+        a[i].document?.mimeType !== b[i].document?.mimeType ||
+        a[i].document?.sizeBytes !== b[i].document?.sizeBytes ||
+        a[i].call?.isVideo !== b[i].call?.isVideo ||
+        a[i].call?.durationSeconds !== b[i].call?.durationSeconds ||
+        a[i].call?.discardReason !== b[i].call?.discardReason
       ) {
         return false;
       }
@@ -2687,6 +2710,7 @@ const boot = async (): Promise<void> => {
     state.telegramLoadError = null;
     if (showLoadingState) {
       state.telegramMessages = [];
+      telegramMessagesVersion += 1;
       state.selectedTelegramMessageId = null;
       render();
     }
@@ -2702,8 +2726,15 @@ const boot = async (): Promise<void> => {
         'Telegram',
       );
       maybeNotifyNewMessages('telegram', chatId, chatTitle, messages, suppressNotification);
-      state.telegramMessages = messages;
-      state.selectedTelegramMessageId = messages[messages.length - 1]?.id ?? null;
+      if (changed) {
+        state.telegramMessages = messages;
+        telegramMessagesVersion += 1;
+      }
+      const currentSelectedMessageId = state.selectedTelegramMessageId;
+      state.selectedTelegramMessageId =
+        currentSelectedMessageId && messages.some((message) => message.id === currentSelectedMessageId)
+          ? currentSelectedMessageId
+          : messages[messages.length - 1]?.id ?? null;
       await window.pelec.setConnectorActiveChat('telegram', chatId);
       state.telegramMessagesLoading = false;
       if (changed || forceScroll || showLoadingState) {
@@ -2729,6 +2760,7 @@ const boot = async (): Promise<void> => {
       }
       state.telegramMessagesLoading = false;
       state.telegramMessages = [];
+      telegramMessagesVersion += 1;
       state.selectedTelegramMessageId = null;
       state.telegramLoadError =
         error instanceof Error ? error.message : 'Failed to load Telegram messages.';
@@ -2744,6 +2776,8 @@ const boot = async (): Promise<void> => {
       resetNotificationTracking('telegram');
       state.telegramChats = [];
       state.telegramMessages = [];
+      telegramChatsVersion += 1;
+      telegramMessagesVersion += 1;
       state.activeTelegramChatId = null;
       state.selectedTelegramChatId = null;
       state.selectedTelegramMessageId = null;
@@ -2768,7 +2802,10 @@ const boot = async (): Promise<void> => {
         return;
       }
       const chatsChanged = !areChatListsEqual(state.telegramChats, chats);
-      state.telegramChats = chats;
+      if (chatsChanged) {
+        state.telegramChats = chats;
+        telegramChatsVersion += 1;
+      }
       state.telegramLoading = false;
       state.telegramLoadError = null;
       const suppressNotifications = !notificationBaselineReady.telegram;
@@ -2791,6 +2828,7 @@ const boot = async (): Promise<void> => {
       ) {
         state.activeTelegramChatId = chats[0]?.id ?? null;
         state.telegramMessages = [];
+        telegramMessagesVersion += 1;
         state.selectedTelegramMessageId = null;
       }
 
@@ -3889,6 +3927,87 @@ const boot = async (): Promise<void> => {
     return video;
   };
 
+  const resetTelegramChatRenderCache = (): void => {
+    renderedTelegramChatButtonById.clear();
+    lastRenderedTelegramChatsVersion = -1;
+    lastRenderedTelegramSearchQuery = '';
+    lastRenderedTelegramActiveChatButtonId = null;
+    lastRenderedTelegramSelectedChatId = null;
+    lastRenderedTelegramChatPane = null;
+  };
+
+  const resetTelegramMessageRenderCache = (): void => {
+    renderedTelegramMessageNodeById.clear();
+    lastRenderedTelegramMessagesVersion = -1;
+    lastRenderedTelegramSelectedMessageId = null;
+    lastRenderedTelegramMessagePane = null;
+  };
+
+  const renderTelegramChatEmptyState = (markup: string): void => {
+    telegramChatListEl.innerHTML = markup;
+    resetTelegramChatRenderCache();
+  };
+
+  const renderTelegramMessageEmptyState = (markup: string): void => {
+    telegramMessageListEl.innerHTML = markup;
+    resetTelegramMessageRenderCache();
+    lastRenderedTelegramChatId = state.activeTelegramChatId;
+  };
+
+  const syncTelegramChatListSelection = (): void => {
+    if (lastRenderedTelegramActiveChatButtonId !== state.activeTelegramChatId) {
+      if (lastRenderedTelegramActiveChatButtonId) {
+        renderedTelegramChatButtonById.get(lastRenderedTelegramActiveChatButtonId)?.classList.remove('active');
+      }
+      if (state.activeTelegramChatId) {
+        renderedTelegramChatButtonById.get(state.activeTelegramChatId)?.classList.add('active');
+      }
+      lastRenderedTelegramActiveChatButtonId = state.activeTelegramChatId;
+    }
+
+    const nextSelectedChatId =
+      state.vimPane === 'telegram-chats' ? state.selectedTelegramChatId : null;
+    if (
+      lastRenderedTelegramSelectedChatId !== nextSelectedChatId ||
+      lastRenderedTelegramChatPane !== state.vimPane
+    ) {
+      if (lastRenderedTelegramSelectedChatId) {
+        renderedTelegramChatButtonById.get(lastRenderedTelegramSelectedChatId)?.classList.remove('selected');
+      }
+      if (nextSelectedChatId) {
+        renderedTelegramChatButtonById.get(nextSelectedChatId)?.classList.add('selected');
+      }
+      lastRenderedTelegramSelectedChatId = nextSelectedChatId;
+      lastRenderedTelegramChatPane = state.vimPane;
+    }
+
+    if (nextSelectedChatId) {
+      renderedTelegramChatButtonById.get(nextSelectedChatId)?.scrollIntoView({ block: 'nearest' });
+    }
+  };
+
+  const syncTelegramMessageSelection = (): void => {
+    const nextSelectedMessageId =
+      state.vimPane === 'telegram-messages' ? state.selectedTelegramMessageId : null;
+    if (
+      lastRenderedTelegramSelectedMessageId !== nextSelectedMessageId ||
+      lastRenderedTelegramMessagePane !== state.vimPane
+    ) {
+      if (lastRenderedTelegramSelectedMessageId) {
+        renderedTelegramMessageNodeById.get(lastRenderedTelegramSelectedMessageId)?.classList.remove('selected');
+      }
+      if (nextSelectedMessageId) {
+        renderedTelegramMessageNodeById.get(nextSelectedMessageId)?.classList.add('selected');
+      }
+      lastRenderedTelegramSelectedMessageId = nextSelectedMessageId;
+      lastRenderedTelegramMessagePane = state.vimPane;
+    }
+
+    if (nextSelectedMessageId && !telegramContextMenuState.visible) {
+      renderedTelegramMessageNodeById.get(nextSelectedMessageId)?.scrollIntoView({ block: 'nearest' });
+    }
+  };
+
   const renderTelegramNative = (): void => {
     if (state.activeNetwork !== 'telegram') {
       nativeTelegram.classList.add('hidden');
@@ -3900,29 +4019,31 @@ const boot = async (): Promise<void> => {
     const telegramStatus = getStatusByNetwork('telegram');
 
     if (telegramStatus.authState !== 'authenticated') {
-      telegramChatListEl.innerHTML = '<div class="telegram-empty">Telegram is not authenticated yet. Click Start Auth.</div>';
-      telegramMessageListEl.innerHTML = `<div class="telegram-empty">${telegramStatus.details}</div>`;
+      renderTelegramChatEmptyState('<div class="telegram-empty">Telegram is not authenticated yet. Click Start Auth.</div>');
+      renderTelegramMessageEmptyState(`<div class="telegram-empty">${telegramStatus.details}</div>`);
       telegramChatTitleEl.textContent = 'Telegram';
       return;
     }
 
     if (state.telegramLoading && state.telegramChats.length < 1) {
-      telegramChatListEl.innerHTML = '<div class="telegram-empty">Loading chats...</div>';
-      telegramMessageListEl.innerHTML = '<div class="telegram-empty">Loading messages...</div>';
+      renderTelegramChatEmptyState('<div class="telegram-empty">Loading chats...</div>');
+      renderTelegramMessageEmptyState('<div class="telegram-empty">Loading messages...</div>');
       telegramChatTitleEl.textContent = 'Telegram';
       return;
     }
 
     if (state.telegramLoadError && state.telegramChats.length < 1) {
-      telegramChatListEl.innerHTML = `<div class="telegram-empty">${safeLabel(state.telegramLoadError, 'Failed to load Telegram chats.')}</div>`;
-      telegramMessageListEl.innerHTML = '<div class="telegram-empty">No messages to display.</div>';
+      renderTelegramChatEmptyState(
+        `<div class="telegram-empty">${safeLabel(state.telegramLoadError, 'Failed to load Telegram chats.')}</div>`,
+      );
+      renderTelegramMessageEmptyState('<div class="telegram-empty">No messages to display.</div>');
       telegramChatTitleEl.textContent = 'Telegram';
       return;
     }
 
     if (state.telegramChats.length < 1) {
-      telegramChatListEl.innerHTML = '<div class="telegram-empty">No chats yet.</div>';
-      telegramMessageListEl.innerHTML = '<div class="telegram-empty">No messages to display.</div>';
+      renderTelegramChatEmptyState('<div class="telegram-empty">No chats yet.</div>');
+      renderTelegramMessageEmptyState('<div class="telegram-empty">No messages to display.</div>');
       telegramChatTitleEl.textContent = 'Telegram';
       return;
     }
@@ -3937,457 +4058,467 @@ const boot = async (): Promise<void> => {
       );
 
       if (filteredTelegramChats.length < 1) {
-        telegramChatListEl.innerHTML = '<div class="telegram-empty">No chats match your search.</div>';
+        renderTelegramChatEmptyState('<div class="telegram-empty">No chats match your search.</div>');
       } else {
-        telegramChatListEl.replaceChildren(
-          ...filteredTelegramChats.map((chat) => {
-            const chatTitle = safeLabel(chat.title, 'Untitled chat');
-            const chatPreview = safeText(chat.lastMessagePreview).trim() || 'No preview';
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = 'telegram-chat-item';
-            if (chat.id === state.activeTelegramChatId) {
-              button.classList.add('active');
-            }
-            if (chat.id === state.selectedTelegramChatId && state.vimPane === 'telegram-chats') {
-              button.classList.add('selected');
-            }
-            const avatar = createAvatarNode(chatTitle, chat.avatarUrl, 'telegram-avatar');
-            const content = document.createElement('div');
-            content.className = 'telegram-chat-content';
-            const top = document.createElement('div');
-            top.className = 'telegram-chat-top';
-            const name = document.createElement('div');
-            name.className = 'telegram-chat-name';
-            name.textContent = chatTitle;
-            const date = document.createElement('div');
-            date.className = 'telegram-chat-date';
-            date.textContent = formatChatTimestamp(chat.lastMessageTimestamp);
-            if (hasValidTimestamp(chat.lastMessageTimestamp)) {
-              date.title = formatFullDateTime(chat.lastMessageTimestamp);
-            }
-            const preview = document.createElement('div');
-            preview.className = 'telegram-chat-preview';
-            preview.textContent = chatPreview;
-            top.replaceChildren(name, date);
-            content.replaceChildren(top, preview);
-            button.replaceChildren(avatar, content);
-            button.addEventListener('click', () => {
-              closeTelegramContextMenu(false);
-              state.selectedTelegramChatId = chat.id;
-              state.replyingToMessageId = null;
-              state.replyingToSender = null;
-              state.pendingTelegramImageDataUrls = [];
-              state.vimPane = 'telegram-chats';
-              void loadTelegramMessages(chat.id, 0, true, false, true);
-            });
-            return button;
-          }),
-        );
+        const shouldRebuildChatList =
+          lastRenderedTelegramChatsVersion !== telegramChatsVersion ||
+          lastRenderedTelegramSearchQuery !== state.telegramSearchQuery ||
+          renderedTelegramChatButtonById.size !== filteredTelegramChats.length;
+
+        if (shouldRebuildChatList) {
+          renderedTelegramChatButtonById.clear();
+          telegramChatListEl.replaceChildren(
+            ...filteredTelegramChats.map((chat) => {
+              const chatTitle = safeLabel(chat.title, 'Untitled chat');
+              const chatPreview = safeText(chat.lastMessagePreview).trim() || 'No preview';
+              const button = document.createElement('button');
+              button.type = 'button';
+              button.className = 'telegram-chat-item';
+              const avatar = createAvatarNode(chatTitle, chat.avatarUrl, 'telegram-avatar');
+              const content = document.createElement('div');
+              content.className = 'telegram-chat-content';
+              const top = document.createElement('div');
+              top.className = 'telegram-chat-top';
+              const name = document.createElement('div');
+              name.className = 'telegram-chat-name';
+              name.textContent = chatTitle;
+              const date = document.createElement('div');
+              date.className = 'telegram-chat-date';
+              date.textContent = formatChatTimestamp(chat.lastMessageTimestamp);
+              if (hasValidTimestamp(chat.lastMessageTimestamp)) {
+                date.title = formatFullDateTime(chat.lastMessageTimestamp);
+              }
+              const preview = document.createElement('div');
+              preview.className = 'telegram-chat-preview';
+              preview.textContent = chatPreview;
+              top.replaceChildren(name, date);
+              content.replaceChildren(top, preview);
+              button.replaceChildren(avatar, content);
+              button.addEventListener('click', () => {
+                closeTelegramContextMenu(false);
+                state.selectedTelegramChatId = chat.id;
+                state.replyingToMessageId = null;
+                state.replyingToSender = null;
+                state.pendingTelegramImageDataUrls = [];
+                state.vimPane = 'telegram-chats';
+                void loadTelegramMessages(chat.id, 0, true, false, true);
+              });
+              renderedTelegramChatButtonById.set(chat.id, button);
+              return button;
+            }),
+          );
+          lastRenderedTelegramChatsVersion = telegramChatsVersion;
+          lastRenderedTelegramSearchQuery = state.telegramSearchQuery;
+          lastRenderedTelegramActiveChatButtonId = null;
+          lastRenderedTelegramSelectedChatId = null;
+          lastRenderedTelegramChatPane = null;
+        }
+
+        syncTelegramChatListSelection();
       }
-      telegramChatListEl
-        .querySelector<HTMLElement>('.telegram-chat-item.selected')
-        ?.scrollIntoView({ block: 'nearest' });
 
       const activeChat = state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId);
       telegramChatTitleEl.textContent = safeLabel(activeChat?.title, 'Telegram');
 
       if (state.telegramMessagesLoading) {
-        telegramMessageListEl.innerHTML = '<div class="telegram-empty">Loading messages...</div>';
-        lastRenderedTelegramChatId = state.activeTelegramChatId;
+        renderTelegramMessageEmptyState('<div class="telegram-empty">Loading messages...</div>');
       } else if (state.telegramLoadError) {
-        telegramMessageListEl.innerHTML = `<div class="telegram-empty">${safeLabel(state.telegramLoadError, 'Failed to load Telegram messages.')}</div>`;
-        lastRenderedTelegramChatId = state.activeTelegramChatId;
+        renderTelegramMessageEmptyState(
+          `<div class="telegram-empty">${safeLabel(state.telegramLoadError, 'Failed to load Telegram messages.')}</div>`,
+        );
       } else if (state.telegramMessages.length < 1) {
-        telegramMessageListEl.innerHTML = '<div class="telegram-empty">No messages in this chat.</div>';
-        lastRenderedTelegramChatId = state.activeTelegramChatId;
+        renderTelegramMessageEmptyState('<div class="telegram-empty">No messages in this chat.</div>');
       } else {
         const wasNearBottom =
           telegramMessageListEl.scrollHeight - telegramMessageListEl.scrollTop - telegramMessageListEl.clientHeight < 84;
         const activeChatChanged = lastRenderedTelegramChatId !== state.activeTelegramChatId;
         const renderChatId = state.activeTelegramChatId;
+        const shouldRebuildMessages =
+          activeChatChanged || lastRenderedTelegramMessagesVersion !== telegramMessagesVersion;
 
-        telegramMessageListEl.replaceChildren(
-          ...state.telegramMessages.flatMap((message, index, messages) => {
-            const nodes: HTMLElement[] = [];
-            const previousMessage = index > 0 ? messages[index - 1] : null;
-            const messageId = safeLabel(message.id, String(index));
-            const messageTextValue = safeText(message.text);
-            const messageTextTrimmed = messageTextValue.trim();
-            const messageTextLower = messageTextTrimmed.toLowerCase();
-            const senderLabel = safeLabel(message.sender, message.outgoing ? 'You' : 'Unknown');
-            if (
-              hasValidTimestamp(message.timestamp) &&
-              (!previousMessage ||
-                !hasValidTimestamp(previousMessage.timestamp) ||
-                formatMessageDayLabel(previousMessage.timestamp) !== formatMessageDayLabel(message.timestamp))
-            ) {
-              const dayDivider = document.createElement('div');
-              dayDivider.className = 'telegram-message-day-divider';
-              dayDivider.textContent = formatMessageDayLabel(message.timestamp);
-              dayDivider.title = formatFullDateTime(message.timestamp);
-              nodes.push(dayDivider);
-            }
-            const item = document.createElement('article');
-            item.className = 'telegram-message-item';
-            item.classList.add(message.outgoing ? 'outgoing' : 'incoming');
-            const isContinuation =
-              !!previousMessage &&
-              safeText(previousMessage.sender) === safeText(message.sender) &&
-              previousMessage.outgoing === message.outgoing;
-            if (isContinuation) {
-              item.classList.add('continuation');
-            }
-            if (
-              message.id === state.selectedTelegramMessageId &&
-              state.vimPane === 'telegram-messages'
-            ) {
-              item.classList.add('selected');
-            }
-            const header = document.createElement('div');
-            header.className = 'telegram-message-header';
-            const avatar = createAvatarNode(senderLabel, message.senderAvatarUrl, 'telegram-avatar small');
-            const meta = document.createElement('div');
-            meta.className = 'telegram-message-meta';
-            meta.textContent = message.outgoing ? 'You' : senderLabel;
-            const text = document.createElement('div');
-            text.className = 'telegram-message-text';
-            text.replaceChildren(...buildLinkedTextNodes(messageTextTrimmed || '[empty]'));
-            if (message.outgoing) {
-              header.replaceChildren(meta);
-            } else {
-              header.replaceChildren(avatar, meta);
-            }
-            const bodyNodes: HTMLElement[] = [];
-            if (!isContinuation) {
-              bodyNodes.push(header);
-            }
-            if (message.forwardedFrom) {
-              const forwarded = document.createElement('div');
-              forwarded.className = 'telegram-message-forwarded';
-              forwarded.textContent = `Forwarded from ${safeLabel(message.forwardedFrom, 'Unknown')}`;
-              bodyNodes.push(forwarded);
-            }
-            if (message.replyToSender || message.replyToText) {
-              const reply = document.createElement('div');
-              reply.className = 'telegram-message-reply';
-              const replySender = document.createElement('div');
-              replySender.className = 'telegram-message-reply-sender';
-              replySender.textContent = safeLabel(message.replyToSender, 'Reply');
-              const replyText = document.createElement('div');
-              replyText.className = 'telegram-message-reply-text';
-              replyText.textContent = safeText(message.replyToText).trim() || '[message]';
-              reply.replaceChildren(replySender, replyText);
-              bodyNodes.push(reply);
-            }
-            if (message.call) {
-              bodyNodes.push(createTelegramCallCard(message));
-            }
-            if (message.imageUrl) {
-              const image = document.createElement('img');
-              image.className = 'telegram-message-image';
-              image.src = message.imageUrl;
-              image.alt = 'Telegram image';
-              image.loading = 'lazy';
-              image.addEventListener('click', () => {
-                openTelegramImagePreview(message.imageUrl as string);
-              });
-              bodyNodes.push(image);
-            }
-            if (message.animationUrl) {
-              bodyNodes.push(
-                createAnimatedMediaNode(
-                  message.animationUrl,
-                  message.animationMimeType,
-                  'telegram-message-animation',
-                  'Telegram animation',
-                ),
-              );
-            }
-            if (message.stickerUrl) {
-              const sticker = document.createElement('img');
-              sticker.className = 'telegram-message-sticker';
-              sticker.src = message.stickerUrl;
-              sticker.alt = message.stickerEmoji
-                ? `Telegram sticker ${message.stickerEmoji}`
-                : 'Telegram sticker';
-              sticker.loading = 'lazy';
-              if (message.stickerIsAnimated) {
-                sticker.title = 'Animated sticker preview';
+        if (shouldRebuildMessages) {
+          renderedTelegramMessageNodeById.clear();
+          telegramMessageListEl.replaceChildren(
+            ...state.telegramMessages.flatMap((message, index, messages) => {
+              const nodes: HTMLElement[] = [];
+              const previousMessage = index > 0 ? messages[index - 1] : null;
+              const messageId = safeLabel(message.id, String(index));
+              const messageTextValue = safeText(message.text);
+              const messageTextTrimmed = messageTextValue.trim();
+              const messageTextLower = messageTextTrimmed.toLowerCase();
+              const senderLabel = safeLabel(message.sender, message.outgoing ? 'You' : 'Unknown');
+              if (
+                hasValidTimestamp(message.timestamp) &&
+                (!previousMessage ||
+                  !hasValidTimestamp(previousMessage.timestamp) ||
+                  formatMessageDayLabel(previousMessage.timestamp) !== formatMessageDayLabel(message.timestamp))
+              ) {
+                const dayDivider = document.createElement('div');
+                dayDivider.className = 'telegram-message-day-divider';
+                dayDivider.textContent = formatMessageDayLabel(message.timestamp);
+                dayDivider.title = formatFullDateTime(message.timestamp);
+                nodes.push(dayDivider);
               }
-              bodyNodes.push(sticker);
-            }
-            if (message.hasAudio || message.audioUrl) {
-              const voiceNote = document.createElement('div');
-              voiceNote.className = 'telegram-voice-note';
-              const playButton = document.createElement('button');
-              playButton.type = 'button';
-              playButton.className = 'telegram-voice-play';
-              const playIcon = document.createElement('span');
-              playIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-play';
-              playIcon.textContent = '▶';
-              const pauseIcon = document.createElement('span');
-              pauseIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-pause';
-              pauseIcon.setAttribute('aria-hidden', 'true');
-              playButton.replaceChildren(playIcon, pauseIcon);
-              const wave = document.createElement('div');
-              wave.className = 'telegram-voice-wave';
-              const barHeights = buildVoiceBarHeights(messageId);
-              for (const height of barHeights) {
-                const bar = document.createElement('span');
-                bar.style.height = `${height}%`;
-                wave.append(bar);
+              const item = document.createElement('article');
+              item.className = 'telegram-message-item';
+              item.classList.add(message.outgoing ? 'outgoing' : 'incoming');
+              const isContinuation =
+                !!previousMessage &&
+                safeText(previousMessage.sender) === safeText(message.sender) &&
+                previousMessage.outgoing === message.outgoing;
+              if (isContinuation) {
+                item.classList.add('continuation');
               }
-              const duration = document.createElement('div');
-              duration.className = 'telegram-voice-duration';
-              duration.textContent = formatDuration(message.audioDurationSeconds ?? 0);
-              const audio = document.createElement('audio');
-              audio.className = 'telegram-message-audio';
-              audio.preload = 'none';
-              let loading = false;
-
-              const updatePlayState = (): void => {
-                const isPlaying = !audio.paused && !audio.ended;
-                playButton.classList.toggle('playing', isPlaying);
-                voiceNote.classList.toggle('playing', isPlaying);
-              };
-
-              if (message.audioUrl) {
-                const source = document.createElement('source');
-                source.src = message.audioUrl;
-                source.type = 'audio/ogg;codecs=opus';
-                audio.replaceChildren(source);
+              const header = document.createElement('div');
+              header.className = 'telegram-message-header';
+              const avatar = createAvatarNode(senderLabel, message.senderAvatarUrl, 'telegram-avatar small');
+              const meta = document.createElement('div');
+              meta.className = 'telegram-message-meta';
+              meta.textContent = message.outgoing ? 'You' : senderLabel;
+              const text = document.createElement('div');
+              text.className = 'telegram-message-text';
+              text.replaceChildren(...buildLinkedTextNodes(messageTextTrimmed || '[empty]'));
+              if (message.outgoing) {
+                header.replaceChildren(meta);
+              } else {
+                header.replaceChildren(avatar, meta);
               }
-
-              const ensureAudioLoaded = async (): Promise<boolean> => {
-                if (message.audioUrl) {
-                  return true;
-                }
-                if (loading || !state.activeTelegramChatId) {
-                  return false;
-                }
-                loading = true;
-                playButton.disabled = true;
-                voiceNote.classList.add('loading');
-                const resolved = await window.pelec.resolveConnectorAudioUrl(
-                  'telegram',
-                  state.activeTelegramChatId,
-                  messageId,
+              const bodyNodes: HTMLElement[] = [];
+              if (!isContinuation) {
+                bodyNodes.push(header);
+              }
+              if (message.forwardedFrom) {
+                const forwarded = document.createElement('div');
+                forwarded.className = 'telegram-message-forwarded';
+                forwarded.textContent = `Forwarded from ${safeLabel(message.forwardedFrom, 'Unknown')}`;
+                bodyNodes.push(forwarded);
+              }
+              if (message.replyToSender || message.replyToText) {
+                const reply = document.createElement('div');
+                reply.className = 'telegram-message-reply';
+                const replySender = document.createElement('div');
+                replySender.className = 'telegram-message-reply-sender';
+                replySender.textContent = safeLabel(message.replyToSender, 'Reply');
+                const replyText = document.createElement('div');
+                replyText.className = 'telegram-message-reply-text';
+                replyText.textContent = safeText(message.replyToText).trim() || '[message]';
+                reply.replaceChildren(replySender, replyText);
+                bodyNodes.push(reply);
+              }
+              if (message.call) {
+                bodyNodes.push(createTelegramCallCard(message));
+              }
+              if (message.imageUrl) {
+                const image = document.createElement('img');
+                image.className = 'telegram-message-image';
+                image.src = message.imageUrl;
+                image.alt = 'Telegram image';
+                image.loading = 'lazy';
+                image.addEventListener('click', () => {
+                  openTelegramImagePreview(message.imageUrl as string);
+                });
+                bodyNodes.push(image);
+              }
+              if (message.animationUrl) {
+                bodyNodes.push(
+                  createAnimatedMediaNode(
+                    message.animationUrl,
+                    message.animationMimeType,
+                    'telegram-message-animation',
+                    'Telegram animation',
+                  ),
                 );
-                loading = false;
-                playButton.disabled = false;
-                voiceNote.classList.remove('loading');
-                if (!resolved) {
-                  duration.textContent = 'retry';
-                  return false;
+              }
+              if (message.stickerUrl) {
+                const sticker = document.createElement('img');
+                sticker.className = 'telegram-message-sticker';
+                sticker.src = message.stickerUrl;
+                sticker.alt = message.stickerEmoji
+                  ? `Telegram sticker ${message.stickerEmoji}`
+                  : 'Telegram sticker';
+                sticker.loading = 'lazy';
+                if (message.stickerIsAnimated) {
+                  sticker.title = 'Animated sticker preview';
                 }
-                message.audioUrl = resolved;
-                const source = document.createElement('source');
-                source.src = resolved;
-                source.type = 'audio/ogg;codecs=opus';
-                audio.replaceChildren(source);
-                audio.load();
-                return true;
-              };
+                bodyNodes.push(sticker);
+              }
+              if (message.hasAudio || message.audioUrl) {
+                const voiceNote = document.createElement('div');
+                voiceNote.className = 'telegram-voice-note';
+                const playButton = document.createElement('button');
+                playButton.type = 'button';
+                playButton.className = 'telegram-voice-play';
+                const playIcon = document.createElement('span');
+                playIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-play';
+                playIcon.textContent = '▶';
+                const pauseIcon = document.createElement('span');
+                pauseIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-pause';
+                pauseIcon.setAttribute('aria-hidden', 'true');
+                playButton.replaceChildren(playIcon, pauseIcon);
+                const wave = document.createElement('div');
+                wave.className = 'telegram-voice-wave';
+                const barHeights = buildVoiceBarHeights(messageId);
+                for (const height of barHeights) {
+                  const bar = document.createElement('span');
+                  bar.style.height = `${height}%`;
+                  wave.append(bar);
+                }
+                const duration = document.createElement('div');
+                duration.className = 'telegram-voice-duration';
+                duration.textContent = formatDuration(message.audioDurationSeconds ?? 0);
+                const audio = document.createElement('audio');
+                audio.className = 'telegram-message-audio';
+                audio.preload = 'none';
+                let loading = false;
 
-              playButton.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                if (!message.audioUrl) {
-                  const loaded = await ensureAudioLoaded();
-                  if (!loaded) {
+                const updatePlayState = (): void => {
+                  const isPlaying = !audio.paused && !audio.ended;
+                  playButton.classList.toggle('playing', isPlaying);
+                  voiceNote.classList.toggle('playing', isPlaying);
+                };
+
+                if (message.audioUrl) {
+                  const source = document.createElement('source');
+                  source.src = message.audioUrl;
+                  source.type = 'audio/ogg;codecs=opus';
+                  audio.replaceChildren(source);
+                }
+
+                const ensureAudioLoaded = async (): Promise<boolean> => {
+                  if (message.audioUrl) {
+                    return true;
+                  }
+                  if (loading || !state.activeTelegramChatId) {
+                    return false;
+                  }
+                  loading = true;
+                  playButton.disabled = true;
+                  voiceNote.classList.add('loading');
+                  const resolved = await window.pelec.resolveConnectorAudioUrl(
+                    'telegram',
+                    state.activeTelegramChatId,
+                    messageId,
+                  );
+                  loading = false;
+                  playButton.disabled = false;
+                  voiceNote.classList.remove('loading');
+                  if (!resolved) {
+                    duration.textContent = 'retry';
+                    return false;
+                  }
+                  message.audioUrl = resolved;
+                  const source = document.createElement('source');
+                  source.src = resolved;
+                  source.type = 'audio/ogg;codecs=opus';
+                  audio.replaceChildren(source);
+                  audio.load();
+                  return true;
+                };
+
+                playButton.addEventListener('click', async (event) => {
+                  event.stopPropagation();
+                  if (!message.audioUrl) {
+                    const loaded = await ensureAudioLoaded();
+                    if (!loaded) {
+                      return;
+                    }
+                  }
+                  if (!audio.paused && !audio.ended) {
+                    audio.pause();
                     return;
                   }
-                }
-                if (!audio.paused && !audio.ended) {
-                  audio.pause();
-                  return;
-                }
-                void audio.play().catch(() => {
-                  // Keep control state if autoplay policy blocks immediate playback.
+                  void audio.play().catch(() => {
+                    // Keep control state if autoplay policy blocks immediate playback.
+                  });
                 });
-              });
 
-              audio.addEventListener('play', updatePlayState);
-              audio.addEventListener('pause', updatePlayState);
-              audio.addEventListener('ended', updatePlayState);
-              audio.addEventListener('loadedmetadata', () => {
-                if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
-                  return;
-                }
-                duration.textContent = formatDuration(audio.duration);
-              });
-
-              voiceNote.replaceChildren(playButton, wave, duration);
-              bodyNodes.push(voiceNote, audio);
-            }
-            if (message.document) {
-              const fileName = safeLabel(message.document.fileName, 'Document');
-              const documentCard = document.createElement('section');
-              documentCard.className = 'telegram-message-document';
-              const kind = document.createElement('div');
-              kind.className = 'telegram-message-document-kind';
-              kind.textContent = formatTelegramDocumentKind(
-                fileName,
-                message.document.mimeType,
-              );
-              const info = document.createElement('div');
-              info.className = 'telegram-message-document-info';
-              const name = document.createElement('div');
-              name.className = 'telegram-message-document-name';
-              name.textContent = fileName;
-              const meta = document.createElement('div');
-              meta.className = 'telegram-message-document-meta';
-              const metaParts = [
-                message.document.mimeType,
-                formatFileSize(message.document.sizeBytes),
-              ].filter((value): value is string => !!value);
-              meta.textContent = metaParts.join(' • ') || 'Telegram document';
-              info.replaceChildren(name, meta);
-              const actions = document.createElement('div');
-              actions.className = 'telegram-message-document-actions';
-              const copyButton = document.createElement('button');
-              copyButton.type = 'button';
-              copyButton.className = 'ghost-button';
-              copyButton.textContent = 'Copy';
-              copyButton.addEventListener('click', (event) => {
-                event.stopPropagation();
-                if (!renderChatId) {
-                  return;
-                }
-                void copyTelegramDocument(renderChatId, message, copyButton);
-              });
-              const downloadButton = document.createElement('button');
-              downloadButton.type = 'button';
-              downloadButton.className = 'ghost-button';
-              downloadButton.textContent = 'Download';
-              downloadButton.addEventListener('click', (event) => {
-                event.stopPropagation();
-                if (!renderChatId) {
-                  return;
-                }
-                void downloadTelegramDocument(renderChatId, message, downloadButton);
-              });
-              actions.replaceChildren(copyButton, downloadButton);
-              documentCard.replaceChildren(kind, info, actions);
-              bodyNodes.push(documentCard);
-            }
-            const shouldRenderText =
-              !!messageTextTrimmed &&
-              !message.call &&
-              !(message.animationUrl && messageTextLower === 'gif/animation') &&
-              !(message.stickerUrl && (messageTextLower === 'sticker' || messageTextLower.startsWith('sticker '))) &&
-              !((message.audioUrl || message.hasAudio) && messageTextLower === 'voice message') &&
-              !isTelegramDocumentFallbackText(message);
-            if (shouldRenderText) {
-              bodyNodes.push(text);
-            }
-            const messageReactions = message.reactions ?? [];
-            if (messageReactions.length > 0) {
-              const reactions = document.createElement('div');
-              reactions.className = 'telegram-message-reactions';
-              reactions.replaceChildren(
-                ...messageReactions.map((reaction) => {
-                  const chip = document.createElement('span');
-                  chip.className = 'telegram-message-reaction';
-                  if (reaction.chosen) {
-                    chip.classList.add('chosen');
+                audio.addEventListener('play', updatePlayState);
+                audio.addEventListener('pause', updatePlayState);
+                audio.addEventListener('ended', updatePlayState);
+                audio.addEventListener('loadedmetadata', () => {
+                  if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
+                    return;
                   }
-                  const value = document.createElement('span');
-                  value.className = 'telegram-message-reaction-value';
-                  value.textContent = safeLabel(reaction.value, '?');
-                  const count = document.createElement('span');
-                  count.className = 'telegram-message-reaction-count';
-                  count.textContent = String(reaction.count);
-                  chip.replaceChildren(value, count);
-                  return chip;
-                }),
-              );
-              bodyNodes.push(reactions);
-            }
-            const footer = document.createElement('div');
-            footer.className = 'telegram-message-footer';
-            const time = document.createElement('span');
-            time.className = 'telegram-message-time';
-            time.textContent = formatMessageTimestamp(message.timestamp);
-            if (hasValidTimestamp(message.timestamp)) {
-              time.title = formatFullDateTime(message.timestamp);
-            }
-            footer.append(time);
-            if (message.outgoing) {
-              const receipt = document.createElement('span');
-              receipt.className = 'telegram-message-receipt';
-              const tickSingle = document.createElement('span');
-              tickSingle.className = 'telegram-message-tick';
-              tickSingle.textContent = '✓';
-              const tickDouble = document.createElement('span');
-              tickDouble.className = 'telegram-message-tick';
-              tickDouble.textContent = '✓';
-              if (message.readByPeer) {
-                receipt.classList.add('read');
-                receipt.title = 'Read';
-                receipt.append(tickSingle, tickDouble);
-              } else {
-                receipt.classList.add('sent');
-                receipt.title = 'Sent';
-                receipt.append(tickSingle);
+                  duration.textContent = formatDuration(audio.duration);
+                });
+
+                voiceNote.replaceChildren(playButton, wave, duration);
+                bodyNodes.push(voiceNote, audio);
               }
-              footer.append(receipt);
-            }
-            bodyNodes.push(footer);
-            item.replaceChildren(...bodyNodes);
-            item.addEventListener('click', () => {
-              if (isTelegramContextMenuGuardActive()) {
-                return;
+              if (message.document) {
+                const fileName = safeLabel(message.document.fileName, 'Document');
+                const documentCard = document.createElement('section');
+                documentCard.className = 'telegram-message-document';
+                const kind = document.createElement('div');
+                kind.className = 'telegram-message-document-kind';
+                kind.textContent = formatTelegramDocumentKind(
+                  fileName,
+                  message.document.mimeType,
+                );
+                const info = document.createElement('div');
+                info.className = 'telegram-message-document-info';
+                const name = document.createElement('div');
+                name.className = 'telegram-message-document-name';
+                name.textContent = fileName;
+                const meta = document.createElement('div');
+                meta.className = 'telegram-message-document-meta';
+                const metaParts = [
+                  message.document.mimeType,
+                  formatFileSize(message.document.sizeBytes),
+                ].filter((value): value is string => !!value);
+                meta.textContent = metaParts.join(' • ') || 'Telegram document';
+                info.replaceChildren(name, meta);
+                const actions = document.createElement('div');
+                actions.className = 'telegram-message-document-actions';
+                const copyButton = document.createElement('button');
+                copyButton.type = 'button';
+                copyButton.className = 'ghost-button';
+                copyButton.textContent = 'Copy';
+                copyButton.addEventListener('click', (event) => {
+                  event.stopPropagation();
+                  if (!renderChatId) {
+                    return;
+                  }
+                  void copyTelegramDocument(renderChatId, message, copyButton);
+                });
+                const downloadButton = document.createElement('button');
+                downloadButton.type = 'button';
+                downloadButton.className = 'ghost-button';
+                downloadButton.textContent = 'Download';
+                downloadButton.addEventListener('click', (event) => {
+                  event.stopPropagation();
+                  if (!renderChatId) {
+                    return;
+                  }
+                  void downloadTelegramDocument(renderChatId, message, downloadButton);
+                });
+                actions.replaceChildren(copyButton, downloadButton);
+                documentCard.replaceChildren(kind, info, actions);
+                bodyNodes.push(documentCard);
               }
-              closeTelegramContextMenu(false);
-              selectTelegramMessage(message.id);
-              render();
-            });
-            item.addEventListener('pointerdown', (event) => {
-              if (isSecondaryTelegramPointerEvent(event)) {
+              const shouldRenderText =
+                !!messageTextTrimmed &&
+                !message.call &&
+                !(message.animationUrl && messageTextLower === 'gif/animation') &&
+                !(message.stickerUrl && (messageTextLower === 'sticker' || messageTextLower.startsWith('sticker '))) &&
+                !((message.audioUrl || message.hasAudio) && messageTextLower === 'voice message') &&
+                !isTelegramDocumentFallbackText(message);
+              if (shouldRenderText) {
+                bodyNodes.push(text);
+              }
+              const messageReactions = message.reactions ?? [];
+              if (messageReactions.length > 0) {
+                const reactions = document.createElement('div');
+                reactions.className = 'telegram-message-reactions';
+                reactions.replaceChildren(
+                  ...messageReactions.map((reaction) => {
+                    const chip = document.createElement('span');
+                    chip.className = 'telegram-message-reaction';
+                    if (reaction.chosen) {
+                      chip.classList.add('chosen');
+                    }
+                    const value = document.createElement('span');
+                    value.className = 'telegram-message-reaction-value';
+                    value.textContent = safeLabel(reaction.value, '?');
+                    const count = document.createElement('span');
+                    count.className = 'telegram-message-reaction-count';
+                    count.textContent = String(reaction.count);
+                    chip.replaceChildren(value, count);
+                    return chip;
+                  }),
+                );
+                bodyNodes.push(reactions);
+              }
+              const footer = document.createElement('div');
+              footer.className = 'telegram-message-footer';
+              const time = document.createElement('span');
+              time.className = 'telegram-message-time';
+              time.textContent = formatMessageTimestamp(message.timestamp);
+              if (hasValidTimestamp(message.timestamp)) {
+                time.title = formatFullDateTime(message.timestamp);
+              }
+              footer.append(time);
+              if (message.outgoing) {
+                const receipt = document.createElement('span');
+                receipt.className = 'telegram-message-receipt';
+                const tickSingle = document.createElement('span');
+                tickSingle.className = 'telegram-message-tick';
+                tickSingle.textContent = '✓';
+                const tickDouble = document.createElement('span');
+                tickDouble.className = 'telegram-message-tick';
+                tickDouble.textContent = '✓';
+                if (message.readByPeer) {
+                  receipt.classList.add('read');
+                  receipt.title = 'Read';
+                  receipt.append(tickSingle, tickDouble);
+                } else {
+                  receipt.classList.add('sent');
+                  receipt.title = 'Sent';
+                  receipt.append(tickSingle);
+                }
+                footer.append(receipt);
+              }
+              bodyNodes.push(footer);
+              item.replaceChildren(...bodyNodes);
+              item.addEventListener('click', () => {
+                if (isTelegramContextMenuGuardActive()) {
+                  return;
+                }
+                closeTelegramContextMenu(false);
+                selectTelegramMessage(message.id);
+                render();
+              });
+              item.addEventListener('pointerdown', (event) => {
+                if (isSecondaryTelegramPointerEvent(event)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openTelegramContextMenu(message.id, event.clientX, event.clientY);
+                  return;
+                }
+                if (telegramContextMenuState.visible) {
+                  closeTelegramContextMenu(false);
+                }
+              });
+              item.addEventListener('contextmenu', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                openTelegramContextMenu(message.id, event.clientX, event.clientY);
-                return;
-              }
-              if (telegramContextMenuState.visible) {
-                closeTelegramContextMenu(false);
-              }
-            });
-            item.addEventListener('contextmenu', (event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (!telegramContextMenuState.visible || telegramContextMenuState.messageId !== message.id) {
-                openTelegramContextMenu(message.id, event.clientX, event.clientY);
-              }
-            });
-            nodes.push(item);
-            return nodes;
-          }),
-        );
-        if (
-          activeChatChanged ||
-          telegramForceScrollBottom ||
-          (wasNearBottom && state.vimPane !== 'telegram-messages')
-        ) {
-          scheduleTelegramScrollToBottom();
-          telegramForceScrollBottom = false;
+                if (!telegramContextMenuState.visible || telegramContextMenuState.messageId !== message.id) {
+                  openTelegramContextMenu(message.id, event.clientX, event.clientY);
+                }
+              });
+              renderedTelegramMessageNodeById.set(message.id, item);
+              nodes.push(item);
+              return nodes;
+            }),
+          );
+          lastRenderedTelegramMessagesVersion = telegramMessagesVersion;
+          lastRenderedTelegramSelectedMessageId = null;
+          lastRenderedTelegramMessagePane = null;
+          if (
+            activeChatChanged ||
+            telegramForceScrollBottom ||
+            (wasNearBottom && state.vimPane !== 'telegram-messages')
+          ) {
+            scheduleTelegramScrollToBottom();
+            telegramForceScrollBottom = false;
+          }
         }
 
-        if (state.vimPane === 'telegram-messages' && !telegramContextMenuState.visible) {
-          telegramMessageListEl
-            .querySelector<HTMLElement>('.telegram-message-item.selected')
-            ?.scrollIntoView({ block: 'nearest' });
+        syncTelegramMessageSelection();
+        if (!shouldRebuildMessages && telegramForceScrollBottom) {
+          scheduleTelegramScrollToBottom();
+          telegramForceScrollBottom = false;
         }
       }
     } catch (error) {
       console.error('Telegram render failed.', error);
       telegramChatTitleEl.textContent = 'Telegram';
       if (telegramChatListEl.childElementCount < 1) {
-        telegramChatListEl.innerHTML = '<div class="telegram-empty">Telegram chats are unavailable.</div>';
+        renderTelegramChatEmptyState('<div class="telegram-empty">Telegram chats are unavailable.</div>');
       }
-      telegramMessageListEl.innerHTML =
-        '<div class="telegram-empty">This chat could not be rendered. Try refreshing Telegram.</div>';
+      renderTelegramMessageEmptyState(
+        '<div class="telegram-empty">This chat could not be rendered. Try refreshing Telegram.</div>',
+      );
     }
     if (state.pendingTelegramImageDataUrls.length > 0) {
       const thumbs = state.pendingTelegramImageDataUrls.map((dataUrl, index) => {
