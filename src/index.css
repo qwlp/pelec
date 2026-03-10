@@ -1013,6 +1013,52 @@ textarea {
   min-height: 42px;
 }
 
+.telegram-compose-reply {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  background: rgba(33, 24, 47, 0.88);
+}
+
+.telegram-compose-reply.hidden {
+  display: none;
+}
+
+.telegram-compose-reply-body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.telegram-compose-reply-sender {
+  color: var(--accent-2);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.telegram-compose-reply-text {
+  min-width: 0;
+  color: var(--ink-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.telegram-compose-reply-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  background: rgba(15, 11, 26, 0.82);
+  color: var(--ink-main);
+  cursor: pointer;
+}
+
 .telegram-compose-attachment {
   border: 0;
   background: transparent;
@@ -1061,6 +1107,10 @@ textarea {
   color: #ebdef6;
   padding: 12px 14px;
   font-size: 14px;
+  min-height: 40px;
+  resize: none;
+  overflow-y: hidden;
+  line-height: 1.4;
 }
 
 .telegram-compose-input::placeholder {

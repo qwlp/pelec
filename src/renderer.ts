@@ -1461,9 +1461,23 @@ const boot = async (): Promise<void> => {
       <header id="telegram-chat-title" class="telegram-chat-title">Telegram</header>
       <div id="telegram-message-list" class="telegram-message-list"></div>
       <footer class="telegram-composer">
+        <div id="telegram-compose-reply" class="telegram-compose-reply hidden">
+          <div class="telegram-compose-reply-body">
+            <div id="telegram-compose-reply-sender" class="telegram-compose-reply-sender"></div>
+            <div id="telegram-compose-reply-text" class="telegram-compose-reply-text"></div>
+          </div>
+          <button
+            id="telegram-compose-reply-close"
+            class="telegram-compose-reply-close"
+            type="button"
+            aria-label="Cancel reply"
+          >
+            ×
+          </button>
+        </div>
         <div id="telegram-compose-attachment" class="telegram-compose-attachment hidden"></div>
         <div class="telegram-compose-row">
-          <input id="telegram-compose-input" class="telegram-compose-input" placeholder="Message" />
+          <textarea id="telegram-compose-input" class="telegram-compose-input" placeholder="Message" rows="1"></textarea>
           <button id="telegram-send-button" class="telegram-send-button" type="button">➤</button>
         </div>
       </footer>
@@ -1475,8 +1489,14 @@ const boot = async (): Promise<void> => {
   const telegramChatTitleEl = nativeTelegram.querySelector<HTMLElement>('#telegram-chat-title');
   const telegramMessageListEl = nativeTelegram.querySelector<HTMLElement>('#telegram-message-list');
   const telegramSearchInput = nativeTelegram.querySelector<HTMLInputElement>('.telegram-search');
+  const telegramComposeReplyEl = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-reply');
+  const telegramComposeReplySenderEl = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-reply-sender');
+  const telegramComposeReplyTextEl = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-reply-text');
+  const telegramComposeReplyCloseEl = nativeTelegram.querySelector<HTMLButtonElement>(
+    '#telegram-compose-reply-close',
+  );
   const telegramComposeAttachment = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-attachment');
-  const telegramComposeInput = nativeTelegram.querySelector<HTMLInputElement>('#telegram-compose-input');
+  const telegramComposeInput = nativeTelegram.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
   const telegramSendButton = nativeTelegram.querySelector<HTMLButtonElement>('#telegram-send-button');
 
   if (
@@ -1484,6 +1504,10 @@ const boot = async (): Promise<void> => {
     !telegramChatTitleEl ||
     !telegramMessageListEl ||
     !telegramSearchInput ||
+    !telegramComposeReplyEl ||
+    !telegramComposeReplySenderEl ||
+    !telegramComposeReplyTextEl ||
+    !telegramComposeReplyCloseEl ||
     !telegramComposeAttachment ||
     !telegramComposeInput ||
     !telegramSendButton
@@ -1982,6 +2006,33 @@ const boot = async (): Promise<void> => {
     statusBar.textContent = copied ? 'Message copied.' : 'Copy failed.';
   };
 
+  const clearTelegramReplyState = (options: { clearImages?: boolean } = {}): void => {
+    state.replyingToMessageId = null;
+    state.replyingToSender = null;
+    if (options.clearImages) {
+      state.pendingTelegramImageDataUrls = [];
+    }
+  };
+
+  const getTelegramReplyPreview = (): { sender: string; text: string } | null => {
+    if (!state.replyingToMessageId) {
+      return null;
+    }
+
+    const replyTarget = findTelegramMessageById(state.replyingToMessageId);
+    if (replyTarget && !isPendingTelegramMessage(replyTarget)) {
+      return {
+        sender: safeLabel(replyTarget.sender, state.replyingToSender ?? 'Reply'),
+        text: buildTelegramMessageActionText(replyTarget),
+      };
+    }
+
+    return {
+      sender: safeLabel(state.replyingToSender, 'Reply'),
+      text: 'Original message unavailable.',
+    };
+  };
+
   const beginReplyToTelegramMessage = (message: ChatMessage): void => {
     if (isPendingTelegramMessage(message)) {
       statusBar.textContent = 'Wait for the message to finish sending.';
@@ -2031,9 +2082,7 @@ const boot = async (): Promise<void> => {
 
     closeTelegramForwardMenu(false);
     state.selectedTelegramChatId = chat.id;
-    state.replyingToMessageId = null;
-    state.replyingToSender = null;
-    state.pendingTelegramImageDataUrls = [];
+    clearTelegramReplyState({ clearImages: true });
     state.vimPane = 'telegram-chats';
     await loadTelegramChats();
     await loadTelegramMessages(chat.id, 0, true, true, true);
@@ -2962,9 +3011,7 @@ const boot = async (): Promise<void> => {
       state.activeTelegramChatId = null;
       state.selectedTelegramChatId = null;
       state.selectedTelegramMessageId = null;
-      state.replyingToMessageId = null;
-      state.replyingToSender = null;
-      state.pendingTelegramImageDataUrls = [];
+      clearTelegramReplyState({ clearImages: true });
       state.telegramMessagesLoading = false;
       state.telegramLoadError = null;
       render();
@@ -3336,8 +3383,8 @@ const boot = async (): Promise<void> => {
       if (pendingMessage) {
         addPendingTelegramMessages(pendingMessage);
         telegramComposeInput.value = '';
-        state.replyingToMessageId = null;
-        state.replyingToSender = null;
+        syncTelegramComposeInputHeight();
+        clearTelegramReplyState();
         state.selectedTelegramMessageId = pendingMessage.id;
         telegramForceScrollBottom = true;
         render();
@@ -3372,6 +3419,7 @@ const boot = async (): Promise<void> => {
         if (pendingMessage) {
           removePendingTelegramMessages(chatId, (message) => message.id === pendingMessage.id);
           telegramComposeInput.value = previousComposeValue;
+          syncTelegramComposeInputHeight();
           state.pendingTelegramImageDataUrls = previousPendingImages;
           state.replyingToMessageId = previousReplyingToMessageId;
           state.replyingToSender = previousReplyingToSender;
@@ -3388,9 +3436,9 @@ const boot = async (): Promise<void> => {
 
       if (!pendingMessage) {
         telegramComposeInput.value = '';
+        syncTelegramComposeInputHeight();
         state.pendingTelegramImageDataUrls = [];
-        state.replyingToMessageId = null;
-        state.replyingToSender = null;
+        clearTelegramReplyState();
       }
       telegramForceScrollBottom = true;
       render();
@@ -3696,9 +3744,7 @@ const boot = async (): Promise<void> => {
       const nextChatId = state.selectedTelegramChatId;
       if (nextChatId) {
         state.activeTelegramChatId = nextChatId;
-        state.replyingToMessageId = null;
-        state.replyingToSender = null;
-        state.pendingTelegramImageDataUrls = [];
+        clearTelegramReplyState({ clearImages: true });
         void loadTelegramMessages(nextChatId, 0, true, false, true);
       }
       return;
@@ -3738,9 +3784,7 @@ const boot = async (): Promise<void> => {
     }
 
     if (state.replyingToMessageId === messageId) {
-      state.replyingToMessageId = null;
-      state.replyingToSender = null;
-      state.pendingTelegramImageDataUrls = [];
+      clearTelegramReplyState({ clearImages: true });
     }
 
     if (telegramContextMenuState.messageId === messageId) {
@@ -4364,9 +4408,7 @@ const boot = async (): Promise<void> => {
               button.addEventListener('click', () => {
                 closeTelegramContextMenu(false);
                 state.selectedTelegramChatId = chat.id;
-                state.replyingToMessageId = null;
-                state.replyingToSender = null;
-                state.pendingTelegramImageDataUrls = [];
+                clearTelegramReplyState({ clearImages: true });
                 state.vimPane = 'telegram-chats';
                 void loadTelegramMessages(chat.id, 0, true, false, true);
               });
@@ -4825,11 +4867,24 @@ const boot = async (): Promise<void> => {
       telegramComposeAttachment.replaceChildren();
       telegramComposeAttachment.classList.add('hidden');
     }
+
+    const replyPreview = getTelegramReplyPreview();
+    if (replyPreview) {
+      telegramComposeReplySenderEl.textContent = replyPreview.sender;
+      telegramComposeReplyTextEl.textContent = replyPreview.text;
+      telegramComposeReplyEl.classList.remove('hidden');
+    } else {
+      telegramComposeReplySenderEl.textContent = '';
+      telegramComposeReplyTextEl.textContent = '';
+      telegramComposeReplyEl.classList.add('hidden');
+    }
+
     telegramComposeInput.placeholder = state.replyingToMessageId
       ? `Reply to ${state.replyingToSender ?? 'message'}`
       : state.pendingTelegramImageDataUrls.length > 0
         ? 'Type a caption...'
         : 'Type your message here...';
+    syncTelegramComposeInputHeight();
     lastRenderedTelegramChatId = state.activeTelegramChatId;
   };
 
@@ -4908,8 +4963,24 @@ const boot = async (): Promise<void> => {
     renderCommandPalette();
   };
 
+  const syncTelegramComposeInputHeight = (): void => {
+    telegramComposeInput.style.height = '0px';
+    telegramComposeInput.style.height = `${telegramComposeInput.scrollHeight}px`;
+  };
+
   telegramSendButton.addEventListener('click', () => {
     void sendTelegramMessage();
+  });
+
+  telegramComposeReplyCloseEl.addEventListener('click', () => {
+    clearTelegramReplyState();
+    statusBar.textContent = 'Reply canceled.';
+    render();
+    telegramComposeInput.focus();
+  });
+
+  telegramComposeInput.addEventListener('input', () => {
+    syncTelegramComposeInputHeight();
   });
 
   telegramComposeInput.addEventListener('keydown', (event) => {
@@ -4921,6 +4992,12 @@ const boot = async (): Promise<void> => {
 
     if (event.key === 'Escape') {
       event.preventDefault();
+      if (state.replyingToMessageId) {
+        clearTelegramReplyState();
+        statusBar.textContent = 'Reply canceled.';
+        render();
+        return;
+      }
       setMode('normal');
     }
   });
@@ -4994,6 +5071,8 @@ const boot = async (): Promise<void> => {
     }
   });
 
+  syncTelegramComposeInputHeight();
+
   window.pelec.onForceNormalMode(() => {
     setMode('normal');
   });
@@ -5031,6 +5110,13 @@ const boot = async (): Promise<void> => {
       }
 
       if (event.kind === 'chats') {
+        if (
+          state.activeNetwork === 'telegram' &&
+          event.chatId &&
+          state.activeTelegramChatId === event.chatId
+        ) {
+          scheduleTelegramMessagesRefresh(event.chatId);
+        }
         scheduleTelegramChatsRefresh(300, false);
         return;
       }

@@ -80,6 +80,11 @@ type AuthorizationUpdate = {
   authorization_state?: AuthorizationState;
 };
 
+type TdUpdateWithChatContext = AuthorizationUpdate & {
+  chat_id?: number;
+  message?: { chat_id?: number };
+};
+
 type TdMessage = {
   id?: number | string | bigint;
   date?: number;
@@ -1877,10 +1882,8 @@ export class TelegramConnector implements Connector {
       this.tdClient = tdl.createClient(clientConfig) as TdClient;
 
       this.tdClient.on('update', (payload: unknown) => {
-        const update = payload as AuthorizationUpdate & {
-          chat_id?: number;
-          message?: { chat_id?: number };
-        };
+        const update = payload as TdUpdateWithChatContext;
+        const chatId = this.extractUpdateChatId(update);
         if (update._ === 'updateAuthorizationState' && update.authorization_state) {
           this.handleAuthorizationState(update.authorization_state);
           this.emitUpdate({ network: this.network.id, kind: 'status' });
@@ -1888,13 +1891,12 @@ export class TelegramConnector implements Connector {
         }
 
         if (update._ === 'updateNewMessage' || update._ === 'updateMessageContent') {
-          const chatId = update.chat_id ?? update.message?.chat_id;
           this.emitUpdate({
             network: this.network.id,
             kind: 'messages',
-            chatId: typeof chatId === 'number' ? String(chatId) : undefined,
+            chatId,
           });
-          this.emitUpdate({ network: this.network.id, kind: 'chats' });
+          this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
           return;
         }
 
@@ -1908,7 +1910,7 @@ export class TelegramConnector implements Connector {
           this.emitUpdate({
             network: this.network.id,
             kind: 'messages',
-            chatId: typeof update.chat_id === 'number' ? String(update.chat_id) : undefined,
+            chatId,
           });
           return;
         }
@@ -1921,7 +1923,7 @@ export class TelegramConnector implements Connector {
           update._ === 'updateChatReadInbox' ||
           update._ === 'updateChatDraftMessage'
         ) {
-          this.emitUpdate({ network: this.network.id, kind: 'chats' });
+          this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
         }
       });
 
@@ -1952,6 +1954,11 @@ export class TelegramConnector implements Connector {
     for (const listener of this.updateListeners) {
       listener(event);
     }
+  }
+
+  private extractUpdateChatId(update: TdUpdateWithChatContext): string | undefined {
+    const rawChatId = update.chat_id ?? update.message?.chat_id;
+    return typeof rawChatId === 'number' ? String(rawChatId) : undefined;
   }
 
   private async isChatMuted(
