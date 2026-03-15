@@ -132,6 +132,10 @@ type TdFileRef = {
   local?: { path?: string };
 };
 
+const TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS = 8000;
+const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
+const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 12000;
+
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
   private tdClient: TdClient | null = null;
@@ -211,6 +215,30 @@ export class TelegramConnector implements Connector {
 
   getStatus(): ConnectorStatus {
     return this.status;
+  }
+
+  private async invokeWithTimeout<T>(
+    client: TdClient,
+    request: Record<string, unknown>,
+    label: string,
+    timeoutMs = TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS,
+  ): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | null = null;
+
+    try {
+      return await Promise.race([
+        client.invoke(request) as Promise<T>,
+        new Promise<T>((_resolve, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(new Error(`TDLib ${label} timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   onUpdate(handler: (event: ConnectorUpdateEvent) => void): () => void {
@@ -302,11 +330,15 @@ export class TelegramConnector implements Connector {
     try {
       for (let i = 0; i < 4; i += 1) {
         try {
-          await client.invoke({
-            _: 'loadChats',
-            chat_list: { _: 'chatListMain' },
-            limit: 100,
-          });
+          await this.invokeWithTimeout(
+            client,
+            {
+              _: 'loadChats',
+              chat_list: { _: 'chatListMain' },
+              limit: 100,
+            },
+            'loadChats',
+          );
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (!message.toLowerCase().includes('already')) {
@@ -315,20 +347,28 @@ export class TelegramConnector implements Connector {
         }
       }
 
-      const chatsResult = (await this.tdClient.invoke({
-        _: 'getChats',
-        chat_list: { _: 'chatListMain' },
-        limit: 120,
-      })) as { chat_ids?: Array<number | string> };
+      const chatsResult = await this.invokeWithTimeout<{ chat_ids?: Array<number | string> }>(
+        client,
+        {
+          _: 'getChats',
+          chat_list: { _: 'chatListMain' },
+          limit: 120,
+        },
+        'getChats',
+      );
 
       const chatIds = (chatsResult.chat_ids ?? []).slice(0, 80);
       const scopeMuteForByType = new Map<string, number>();
       const summaries = await Promise.all(
         chatIds.map(async (chatId) => {
-          const chat = (await client.invoke({
-            _: 'getChat',
-            chat_id: Number(chatId),
-          })) as TdChat;
+          const chat = await this.invokeWithTimeout<TdChat>(
+            client,
+            {
+              _: 'getChat',
+              chat_id: Number(chatId),
+            },
+            'getChat',
+          );
           const isMuted = await this.isChatMuted(client, chat, scopeMuteForByType);
 
           return {
@@ -362,14 +402,23 @@ export class TelegramConnector implements Connector {
     const client = this.tdClient;
 
     try {
-      await client.invoke({
-        _: 'openChat',
-        chat_id: Number(chatId),
-      });
-      const chat = (await client.invoke({
-        _: 'getChat',
-        chat_id: Number(chatId),
-      })) as TdChat;
+      await this.invokeWithTimeout(
+        client,
+        {
+          _: 'openChat',
+          chat_id: Number(chatId),
+        },
+        'openChat',
+        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
+      );
+      const chat = await this.invokeWithTimeout<TdChat>(
+        client,
+        {
+          _: 'getChat',
+          chat_id: Number(chatId),
+        },
+        'getChat',
+      );
       const lastReadOutboxMessageId = chat.last_read_outbox_message_id;
 
       const pageLimit = 50;
@@ -378,14 +427,18 @@ export class TelegramConnector implements Connector {
       const collected: TdMessage[] = [];
 
       for (let page = 0; page < maxPages; page += 1) {
-        const history = (await client.invoke({
-          _: 'getChatHistory',
-          chat_id: Number(chatId),
-          from_message_id: cursor,
-          offset: cursor === 0 ? 0 : -1,
-          limit: pageLimit,
-          only_local: false,
-        })) as { messages?: TdMessage[] };
+        const history = await this.invokeWithTimeout<{ messages?: TdMessage[] }>(
+          client,
+          {
+            _: 'getChatHistory',
+            chat_id: Number(chatId),
+            from_message_id: cursor,
+            offset: cursor === 0 ? 0 : -1,
+            limit: pageLimit,
+            only_local: false,
+          },
+          'getChatHistory',
+        );
 
         const messages = history.messages ?? [];
         if (messages.length < 1) {
@@ -500,7 +553,7 @@ export class TelegramConnector implements Connector {
       return [];
     } finally {
       if (this.activeChatId !== chatId) {
-        await this.closeChat(client, chatId);
+        void this.closeChat(client, chatId);
       }
     }
   }
@@ -515,7 +568,7 @@ export class TelegramConnector implements Connector {
     }
 
     if (previousChatId && previousChatId !== this.activeChatId) {
-      await this.closeChat(client, previousChatId);
+      void this.closeChat(client, previousChatId);
     }
 
     if (!this.activeChatId || this.status.authState !== 'authenticated') {
@@ -523,10 +576,15 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      await client.invoke({
-        _: 'openChat',
-        chat_id: Number(this.activeChatId),
-      });
+      await this.invokeWithTimeout(
+        client,
+        {
+          _: 'openChat',
+          chat_id: Number(this.activeChatId),
+        },
+        'openChat',
+        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
+      );
     } catch {
       // Best-effort open; message loading still works without keeping the chat watched.
     }
@@ -887,10 +945,15 @@ export class TelegramConnector implements Connector {
 
   private async closeChat(client: TdClient, chatId: string): Promise<void> {
     try {
-      await client.invoke({
-        _: 'closeChat',
-        chat_id: Number(chatId),
-      });
+      await this.invokeWithTimeout(
+        client,
+        {
+          _: 'closeChat',
+          chat_id: Number(chatId),
+        },
+        'closeChat',
+        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
+      );
     } catch {
       // Best-effort close; failure is non-fatal for message rendering.
     }
@@ -990,15 +1053,19 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const user = (await client.invoke({
-        _: 'getUser',
-        user_id: userId,
-      })) as {
+      const user = await this.invokeWithTimeout<{
         first_name?: string;
         last_name?: string;
         username?: string;
         usernames?: { active_usernames?: string[] };
-      };
+      }>(
+        client,
+        {
+          _: 'getUser',
+          user_id: userId,
+        },
+        'getUser',
+      );
 
       const first = user.first_name?.trim() ?? '';
       const last = user.last_name?.trim() ?? '';
@@ -1025,10 +1092,16 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const user = (await client.invoke({
-        _: 'getUser',
-        user_id: userId,
-      })) as { profile_photo?: { small?: { id?: number; local?: { path?: string } } } };
+      const user = await this.invokeWithTimeout<{
+        profile_photo?: { small?: { id?: number; local?: { path?: string } } };
+      }>(
+        client,
+        {
+          _: 'getUser',
+          user_id: userId,
+        },
+        'getUser',
+      );
       const avatar = await this.resolveTdFileUrl(client, user.profile_photo?.small);
       this.userAvatarCache.set(userId, avatar);
       return avatar;
@@ -1045,10 +1118,14 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const chat = (await client.invoke({
-        _: 'getChat',
-        chat_id: chatId,
-      })) as { title?: string };
+      const chat = await this.invokeWithTimeout<{ title?: string }>(
+        client,
+        {
+          _: 'getChat',
+          chat_id: chatId,
+        },
+        'getChat',
+      );
       const title = chat.title?.trim() || `Chat ${chatId}`;
       this.chatTitleCache.set(chatId, title);
       return title;
@@ -1065,10 +1142,16 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const chat = (await client.invoke({
-        _: 'getChat',
-        chat_id: chatId,
-      })) as { photo?: { small?: { id?: number; local?: { path?: string } } } };
+      const chat = await this.invokeWithTimeout<{
+        photo?: { small?: { id?: number; local?: { path?: string } } };
+      }>(
+        client,
+        {
+          _: 'getChat',
+          chat_id: chatId,
+        },
+        'getChat',
+      );
       const avatar = await this.resolveTdFileUrl(client, chat.photo?.small);
       this.chatAvatarCache.set(chatId, avatar);
       return avatar;
@@ -1476,14 +1559,19 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const downloaded = (await client.invoke({
-        _: 'downloadFile',
-        file_id: fileId,
-        priority: 1,
-        offset: 0,
-        limit: 0,
-        synchronous: true,
-      })) as { local?: { path?: string } };
+      const downloaded = await this.invokeWithTimeout<{ local?: { path?: string } }>(
+        client,
+        {
+          _: 'downloadFile',
+          file_id: fileId,
+          priority: 1,
+          offset: 0,
+          limit: 0,
+          synchronous: true,
+        },
+        'downloadFile',
+        TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      );
       return downloaded.local?.path?.trim() || undefined;
     } catch {
       return undefined;
@@ -1553,11 +1641,15 @@ export class TelegramConnector implements Connector {
       return undefined;
     }
     try {
-      return (await client.invoke({
-        _: 'getMessage',
-        chat_id: Number(chatId),
-        message_id: tdMessageId,
-      })) as TdMessage;
+      return await this.invokeWithTimeout<TdMessage>(
+        client,
+        {
+          _: 'getMessage',
+          chat_id: Number(chatId),
+          message_id: tdMessageId,
+        },
+        'getMessage',
+      );
     } catch {
       return undefined;
     }
@@ -1981,10 +2073,14 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const settings = (await client.invoke({
-        _: 'getScopeNotificationSettings',
-        scope: { _: scope },
-      })) as TdScopeNotificationSettings;
+      const settings = await this.invokeWithTimeout<TdScopeNotificationSettings>(
+        client,
+        {
+          _: 'getScopeNotificationSettings',
+          scope: { _: scope },
+        },
+        'getScopeNotificationSettings',
+      );
       const muteFor = settings.mute_for ?? 0;
       scopeMuteForByType.set(scope, muteFor);
       return muteFor > 0;
