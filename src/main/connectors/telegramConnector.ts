@@ -140,6 +140,7 @@ export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
   private tdClient: TdClient | null = null;
   private tdLibReady = false;
+  private isShuttingDown = false;
   private latestQrLink: string | null = null;
   private activeChatId: string | null = null;
   private qrWaiters: Array<(link: string | null) => void> = [];
@@ -150,6 +151,8 @@ export class TelegramConnector implements Connector {
   private mediaDataUrlCache = new Map<string, string>();
   private uploadTempCleanupTimers = new Map<string, NodeJS.Timeout>();
   private updateListeners = new Set<(event: ConnectorUpdateEvent) => void>();
+  private tdlibInitPromise: Promise<void> | null = null;
+  private tdlibRecoveryPromise: Promise<void> | null = null;
 
   constructor(
     private readonly network: NetworkDefinition,
@@ -171,10 +174,13 @@ export class TelegramConnector implements Connector {
   }
 
   async init(): Promise<void> {
-    await this.tryInitTdlib();
+    this.isShuttingDown = false;
+    await this.initTdlib();
   }
 
   async shutdown(): Promise<void> {
+    this.isShuttingDown = true;
+    this.tdlibRecoveryPromise = null;
     const client = this.tdClient;
     this.tdClient = null;
     this.tdLibReady = false;
@@ -189,28 +195,7 @@ export class TelegramConnector implements Connector {
     await Promise.allSettled(
       tempDirs.map(async (dir) => rm(dir, { recursive: true, force: true })),
     );
-
-    if (!client) {
-      return;
-    }
-
-    try {
-      await client.invoke({ _: 'close' });
-    } catch {
-      // Best-effort close; some TDLib/tdl versions can already be closed.
-    }
-
-    try {
-      await client.close?.();
-    } catch {
-      // Best-effort close hook.
-    }
-
-    try {
-      await client.destroy?.();
-    } catch {
-      // Best-effort destroy hook.
-    }
+    await this.disposeTdClient(client);
   }
 
   getStatus(): ConnectorStatus {
@@ -249,6 +234,14 @@ export class TelegramConnector implements Connector {
   }
 
   async startAuth(): Promise<AuthStartResult> {
+    if (this.tdlibRecoveryPromise) {
+      await this.tdlibRecoveryPromise;
+    }
+
+    if (!this.tdLibReady || !this.tdClient) {
+      await this.initTdlib();
+    }
+
     if (!this.tdLibReady || !this.tdClient) {
       return {
         network: this.network.id,
@@ -938,8 +931,75 @@ export class TelegramConnector implements Connector {
 
     if (state._ === 'authorizationStateClosed') {
       this.status.authState = 'unauthenticated';
-      this.status.details = 'TDLib authorization state is closed.';
+      this.status.details = 'TDLib authorization state is closed. Reinitializing Telegram...';
+      this.status.lastError = undefined;
       this.activeChatId = null;
+      this.latestQrLink = null;
+      this.resolveQrWaiters(null);
+      void this.recoverTdlib();
+    }
+  }
+
+  private async initTdlib(): Promise<void> {
+    if (this.tdlibInitPromise) {
+      await this.tdlibInitPromise;
+      return;
+    }
+
+    this.tdlibInitPromise = this.tryInitTdlib().finally(() => {
+      this.tdlibInitPromise = null;
+    });
+    await this.tdlibInitPromise;
+  }
+
+  private async recoverTdlib(): Promise<void> {
+    if (this.isShuttingDown) {
+      return;
+    }
+
+    if (this.tdlibRecoveryPromise) {
+      await this.tdlibRecoveryPromise;
+      return;
+    }
+
+    this.tdlibRecoveryPromise = (async () => {
+      const client = this.tdClient;
+      this.tdClient = null;
+      this.tdLibReady = false;
+      this.latestQrLink = null;
+      this.activeChatId = null;
+      this.resolveQrWaiters(null);
+      await this.disposeTdClient(client);
+      await this.initTdlib();
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+    })().finally(() => {
+      this.tdlibRecoveryPromise = null;
+    });
+
+    await this.tdlibRecoveryPromise;
+  }
+
+  private async disposeTdClient(client: TdClient | null): Promise<void> {
+    if (!client) {
+      return;
+    }
+
+    try {
+      await client.invoke({ _: 'close' });
+    } catch {
+      // Best-effort close; some TDLib/tdl versions can already be closed.
+    }
+
+    try {
+      await client.close?.();
+    } catch {
+      // Best-effort close hook.
+    }
+
+    try {
+      await client.destroy?.();
+    } catch {
+      // Best-effort destroy hook.
     }
   }
 
@@ -1971,9 +2031,13 @@ export class TelegramConnector implements Connector {
         filesDirectory: path.join(this.userDataPath, 'tdlib-files', 'telegram'),
       };
 
-      this.tdClient = tdl.createClient(clientConfig) as TdClient;
+      const client = tdl.createClient(clientConfig) as TdClient;
+      this.tdClient = client;
 
-      this.tdClient.on('update', (payload: unknown) => {
+      client.on('update', (payload: unknown) => {
+        if (this.tdClient !== client || this.isShuttingDown) {
+          return;
+        }
         const update = payload as TdUpdateWithChatContext;
         const chatId = this.extractUpdateChatId(update);
         if (update._ === 'updateAuthorizationState' && update.authorization_state) {
@@ -2019,11 +2083,26 @@ export class TelegramConnector implements Connector {
         }
       });
 
-      this.tdClient.on('error', (payload: unknown) => {
+      client.on('error', (payload: unknown) => {
+        if (this.tdClient !== client || this.isShuttingDown) {
+          return;
+        }
         const message = payload instanceof Error ? payload.message : String(payload);
         this.status.authState = 'degraded';
         this.status.lastError = message;
         this.status.details = `TDLib runtime error: ${message}`;
+        this.emitUpdate({ network: this.network.id, kind: 'status' });
+      });
+
+      client.on('close', () => {
+        if (this.tdClient !== client || this.isShuttingDown) {
+          return;
+        }
+        this.status.authState = 'unauthenticated';
+        this.status.lastError = undefined;
+        this.status.details = 'Telegram connection closed. Reinitializing TDLib...';
+        this.emitUpdate({ network: this.network.id, kind: 'status' });
+        void this.recoverTdlib();
       });
 
       this.tdLibReady = true;
