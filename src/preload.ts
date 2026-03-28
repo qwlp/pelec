@@ -15,6 +15,7 @@ const api = {
   showNotification: (title: string, body: string, silent?: boolean) =>
     ipcRenderer.invoke('app:notify', { title, body, silent }) as Promise<boolean>,
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<boolean>,
+  openPath: (filePath: string) => ipcRenderer.invoke('app:open-path', filePath) as Promise<boolean>,
   copyImageToClipboard: (dataUrl: string) =>
     ipcRenderer.invoke('app:copy-image', dataUrl) as Promise<boolean>,
   getConnectorStatuses: () =>
@@ -34,6 +35,13 @@ const api = {
   resolveConnectorAudioUrl: (network: NetworkId, chatId: string, messageId: string) =>
     ipcRenderer.invoke(
       'connector:resolve-audio-url',
+      network,
+      chatId,
+      messageId,
+    ) as Promise<string | undefined>,
+  resolveConnectorVideoUrl: (network: NetworkId, chatId: string, messageId: string) =>
+    ipcRenderer.invoke(
+      'connector:resolve-video-url',
       network,
       chatId,
       messageId,
@@ -88,6 +96,19 @@ const api = {
       chatId,
       document,
       caption,
+      replyToMessageId,
+    ) as Promise<boolean>,
+  sendConnectorVoice: (
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    replyToMessageId?: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:send-voice',
+      network,
+      chatId,
+      document,
       replyToMessageId,
     ) as Promise<boolean>,
   forwardConnectorMessage: (

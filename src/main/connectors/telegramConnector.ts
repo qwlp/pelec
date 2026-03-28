@@ -1,7 +1,8 @@
 import path from 'node:path';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import type {
   AuthStartResult,
@@ -64,6 +65,15 @@ const loadPrebuiltTdlibModule = async (): Promise<{ getTdjson?: () => string }> 
     getTdjson?: () => string;
   };
 
+const loadFfmpegStaticModule = async (): Promise<{ default?: string } | string> =>
+  (await importRuntimeModule(path.join('ffmpeg-static', 'index.js'))) as { default?: string } | string;
+
+const loadFfprobeStaticModule = async (): Promise<{ default?: { path?: string }; path?: string }> =>
+  (await importRuntimeModule(path.join('ffprobe-static', 'index.js'))) as {
+    default?: { path?: string };
+    path?: string;
+  };
+
 type TdClient = {
   invoke: (request: Record<string, unknown>) => Promise<unknown>;
   on: (event: 'update' | 'error' | 'close', handler: (payload: unknown) => void) => void;
@@ -88,6 +98,7 @@ type TdUpdateWithChatContext = AuthorizationUpdate & {
 
 type TdMessage = {
   id?: number | string | bigint;
+  media_album_id?: string;
   date?: number;
   is_outgoing?: boolean;
   forward_info?: {
@@ -130,13 +141,50 @@ type TdFileRef = {
   id?: number;
   size?: number;
   expected_size?: number;
-  local?: { path?: string };
+  local?: {
+    path?: string;
+    is_downloading_active?: boolean;
+    is_downloading_completed?: boolean;
+    downloaded_prefix_size?: number;
+  };
+};
+
+type ParsedDataUrl = {
+  fullMimeType: string;
+  essenceMimeType: string;
+  bytes: Buffer;
+};
+
+type PreparedUploadFile = {
+  tempDir: string;
+  filePath: string;
+  mimeType: string;
+};
+
+type PreparedVoiceNoteUpload = {
+  tempDir: string;
+  sourceFilePath: string;
+  outputFilePath: string;
+  outputMimeType: 'audio/ogg;codecs=opus';
+  durationSeconds: number;
 };
 
 const TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS = 8000;
 const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
-const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 12000;
+const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 60000;
+const TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS = 250;
 const TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
+const PELEC_MEDIA_SCHEME = 'pelec-media';
+const TELEGRAM_VOICE_NOTE_MIME_TYPES = new Set([
+  'audio/ogg',
+  'audio/ogg;codecs=opus',
+  'audio/opus',
+  'audio/webm',
+  'audio/webm;codecs=opus',
+]);
+
+let ffmpegBinaryPathPromise: Promise<string> | null = null;
+let ffprobeBinaryPathPromise: Promise<string> | null = null;
 
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
@@ -505,6 +553,7 @@ export class TelegramConnector implements Connector {
           const replyContext = replyTargetId ? replyContextById.get(replyTargetId) : undefined;
           return {
             id: String(message.id ?? ''),
+            mediaAlbumId: message.media_album_id ? String(message.media_album_id) : undefined,
             sender: await this.resolveSenderLabel(client, message.sender_id),
             text: this.extractMessageText(message.content, {
               outgoing: message.is_outgoing === true,
@@ -520,7 +569,9 @@ export class TelegramConnector implements Connector {
             replyToSender: replyContext?.sender,
             replyToText: replyContext?.text,
             hasAudio: this.hasVoiceNote(message.content),
+            hasVideo: this.hasVideo(message.content),
             imageUrl: await this.extractImageUrl(client, message.content),
+            videoMimeType: this.extractVideoMimeType(message.content),
             animationUrl: await this.extractAnimationUrl(client, message.content),
             animationMimeType: this.extractAnimationMimeType(message.content),
             stickerUrl: await this.extractStickerUrl(client, message.content),
@@ -755,6 +806,62 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async sendVoiceMessage(
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const requestedMimeType = document.mimeType?.trim().toLowerCase();
+    if (requestedMimeType && !this.isSupportedVoiceNoteMimeType(requestedMimeType)) {
+      this.setVoiceNoteError('Unsupported Telegram voice note format.');
+      return false;
+    }
+
+    const upload = await this.prepareVoiceNoteUpload(document);
+    if (!upload) {
+      return false;
+    }
+
+    let shouldCleanupImmediately = true;
+    try {
+      const baseRequest = {
+        _: 'sendMessage',
+        chat_id: Number(chatId),
+        input_message_content: {
+          _: 'inputMessageVoiceNote',
+          voice_note: {
+            _: 'inputFileLocal',
+            path: upload.outputFilePath,
+          },
+          duration: upload.durationSeconds,
+          waveform: '',
+          caption: null,
+        },
+      } as Record<string, unknown>;
+
+      await this.sendTdMessage(baseRequest, replyToMessageId);
+
+      shouldCleanupImmediately = false;
+      this.scheduleUploadTempCleanup(upload.tempDir);
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown sendVoiceMessage error';
+      this.status.details = `Failed sending voice note: ${this.status.lastError}`;
+      return false;
+    } finally {
+      if (shouldCleanupImmediately) {
+        await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {
+          // Best-effort temp cleanup.
+        });
+      }
+    }
+  }
+
   async forwardMessage(fromChatId: string, toChatId: string, messageId: string): Promise<boolean> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return false;
@@ -840,6 +947,26 @@ export class TelegramConnector implements Connector {
         message_id: tdMessageId,
       })) as { content?: unknown };
       return this.extractVoiceNoteUrl(this.tdClient, message.content);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async resolveVideoUrl(chatId: string, messageId: string): Promise<string | undefined> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return undefined;
+    }
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return undefined;
+    }
+    try {
+      const message = (await this.tdClient.invoke({
+        _: 'getMessage',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+      })) as { content?: unknown };
+      return this.extractVideoUrl(this.tdClient, message.content);
     } catch {
       return undefined;
     }
@@ -1420,6 +1547,36 @@ export class TelegramConnector implements Connector {
     );
   }
 
+  private async extractVideoUrl(
+    client: TdClient,
+    content: unknown,
+  ): Promise<string | undefined> {
+    if (!content || typeof content !== 'object') {
+      return undefined;
+    }
+
+    const container = content as {
+      _?: string;
+      video?: {
+        mime_type?: string;
+        video?: { id?: number; local?: { path?: string } };
+      };
+    };
+
+    if (container._ !== 'messageVideo') {
+      return undefined;
+    }
+
+    const localPath = await this.resolveTdPlayableFilePath(client, container.video?.video);
+    if (!localPath) {
+      return undefined;
+    }
+
+    const mediaUrl = new URL(`${PELEC_MEDIA_SCHEME}://local/`);
+    mediaUrl.searchParams.set('path', localPath);
+    return mediaUrl.toString();
+  }
+
   private async extractVoiceNoteUrl(client: TdClient, content: unknown): Promise<string | undefined> {
     if (!content || typeof content !== 'object') {
       return undefined;
@@ -1473,6 +1630,14 @@ export class TelegramConnector implements Connector {
       mimeType: document.mimeType,
       sizeBytes: document.sizeBytes,
     };
+  }
+
+  private hasVideo(content: unknown): boolean {
+    if (!content || typeof content !== 'object') {
+      return false;
+    }
+
+    return (content as { _?: string })._ === 'messageVideo';
   }
 
   private getTelegramDocument(
@@ -1558,6 +1723,20 @@ export class TelegramConnector implements Connector {
       return undefined;
     }
     return container.animation?.mime_type?.trim().toLowerCase() || undefined;
+  }
+
+  private extractVideoMimeType(content: unknown): string | undefined {
+    if (!content || typeof content !== 'object') {
+      return undefined;
+    }
+    const container = content as {
+      _?: string;
+      video?: { mime_type?: string };
+    };
+    if (container._ !== 'messageVideo') {
+      return undefined;
+    }
+    return container.video?.mime_type?.trim().toLowerCase() || undefined;
   }
 
   private extractStickerEmoji(content: unknown): string | undefined {
@@ -1659,7 +1838,7 @@ export class TelegramConnector implements Connector {
     }
 
     try {
-      const downloaded = await this.invokeWithTimeout<{ local?: { path?: string } }>(
+      const downloaded = await this.invokeWithTimeout<TdFileRef>(
         client,
         {
           _: 'downloadFile',
@@ -1676,6 +1855,106 @@ export class TelegramConnector implements Connector {
     } catch {
       return undefined;
     }
+  }
+
+  private isTdFileDownloadComplete(file: TdFileRef | undefined): boolean {
+    return file?.local?.is_downloading_completed === true && !!file.local?.path?.trim();
+  }
+
+  private getTdFileSize(file: TdFileRef | undefined): number | undefined {
+    const size = Number(file?.size ?? file?.expected_size ?? 0);
+    return Number.isFinite(size) && size > 0 ? size : undefined;
+  }
+
+  private logIncompleteVideoFile(file: TdFileRef | undefined, context: string): void {
+    console.warn(`[telegram-video] ${context}`, {
+      fileId: file?.id,
+      path: file?.local?.path?.trim() || undefined,
+      isDownloadingActive: file?.local?.is_downloading_active === true,
+      isDownloadingCompleted: file?.local?.is_downloading_completed === true,
+      downloadedPrefixSize:
+        Number.isFinite(Number(file?.local?.downloaded_prefix_size))
+          ? Number(file?.local?.downloaded_prefix_size)
+          : undefined,
+      size: this.getTdFileSize(file),
+    });
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  private async resolveTdPlayableFilePath(
+    client: TdClient,
+    file: TdFileRef | undefined,
+  ): Promise<string | undefined> {
+    if (this.isTdFileDownloadComplete(file)) {
+      return file?.local?.path?.trim();
+    }
+
+    if (file?.local?.path?.trim()) {
+      this.logIncompleteVideoFile(file, 'Video file path exists before download completed.');
+    }
+
+    const fileId = file?.id;
+    if (!fileId) {
+      return undefined;
+    }
+
+    const startedAt = Date.now();
+    let latestFile = file;
+
+    try {
+      latestFile = await this.invokeWithTimeout<TdFileRef>(
+        client,
+        {
+          _: 'downloadFile',
+          file_id: fileId,
+          priority: 1,
+          offset: 0,
+          limit: 0,
+          synchronous: true,
+        },
+        'downloadFile',
+        TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      );
+    } catch {
+      return undefined;
+    }
+
+    if (this.isTdFileDownloadComplete(latestFile)) {
+      return latestFile.local?.path?.trim();
+    }
+
+    if (latestFile?.local?.path?.trim()) {
+      this.logIncompleteVideoFile(latestFile, 'downloadFile returned an incomplete Telegram video file.');
+    }
+
+    while (Date.now() - startedAt < TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS) {
+      await this.sleep(TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS);
+      try {
+        latestFile = await this.invokeWithTimeout<TdFileRef>(
+          client,
+          {
+            _: 'getFile',
+            file_id: fileId,
+          },
+          'getFile',
+          TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS * 2,
+        );
+      } catch {
+        continue;
+      }
+
+      if (this.isTdFileDownloadComplete(latestFile)) {
+        return latestFile.local?.path?.trim();
+      }
+    }
+
+    this.logIncompleteVideoFile(latestFile, 'Timed out waiting for Telegram video download to complete.');
+    return undefined;
   }
 
   private async localPathToDataUrl(
@@ -1755,21 +2034,42 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  private parseDataUrl(
-    dataUrl: string,
-  ): { mimeType: string; bytes: Buffer } | undefined {
-    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/u.exec(dataUrl.trim());
-    if (!match) {
+  private parseDataUrl(dataUrl: string): ParsedDataUrl | undefined {
+    const trimmed = dataUrl.trim();
+    if (!trimmed.toLowerCase().startsWith('data:')) {
       return undefined;
     }
-    const mimeType = match[1]?.toLowerCase() ?? '';
-    const base64 = match[2] ?? '';
-    if (!mimeType || !base64) {
+
+    const commaIndex = trimmed.indexOf(',');
+    if (commaIndex < 0) {
       return undefined;
     }
+
+    const metadata = trimmed.slice(5, commaIndex);
+    const base64 = trimmed.slice(commaIndex + 1);
+    if (!metadata || !base64) {
+      return undefined;
+    }
+
+    const lowerMetadata = metadata.toLowerCase();
+    const base64MarkerIndex = lowerMetadata.lastIndexOf(';base64');
+    if (base64MarkerIndex < 0) {
+      return undefined;
+    }
+
+    const fullMimeType = metadata.slice(0, base64MarkerIndex).trim().toLowerCase();
+    const essenceMimeType = fullMimeType.split(';')[0]?.trim() ?? '';
+    if (!fullMimeType || !essenceMimeType || !essenceMimeType.includes('/')) {
+      return undefined;
+    }
+    if (!/^[A-Za-z0-9+/=]+$/u.test(base64) || base64.length % 4 !== 0) {
+      return undefined;
+    }
+
     try {
       return {
-        mimeType,
+        fullMimeType,
+        essenceMimeType,
         bytes: Buffer.from(base64, 'base64'),
       };
     } catch {
@@ -1781,11 +2081,19 @@ export class TelegramConnector implements Connector {
     tempPrefix: string,
     dataUrl: string,
     fileName: string | undefined,
-    validateMimeType: (mimeType: string) => boolean,
+    validateMimeType: (fullMimeType: string, essenceMimeType: string) => boolean,
     fallbackBaseName: string,
-  ): Promise<{ tempDir: string; filePath: string; mimeType: string } | undefined> {
+  ): Promise<PreparedUploadFile | undefined> {
     const parsed = this.parseDataUrl(dataUrl);
-    if (!parsed || !validateMimeType(parsed.mimeType)) {
+    if (!parsed) {
+      this.status.lastError = 'Attachment payload is invalid.';
+      this.status.details = `Failed preparing upload: ${this.status.lastError}`;
+      return undefined;
+    }
+
+    if (!validateMimeType(parsed.fullMimeType, parsed.essenceMimeType)) {
+      this.status.lastError = `Unsupported attachment format: ${parsed.fullMimeType}`;
+      this.status.details = `Failed preparing upload: ${this.status.lastError}`;
       return undefined;
     }
 
@@ -1798,14 +2106,81 @@ export class TelegramConnector implements Connector {
     }
 
     const tempDir = await mkdtemp(path.join(os.tmpdir(), tempPrefix));
-    const resolvedFileName = this.resolveUploadFileName(fileName, parsed.mimeType, fallbackBaseName);
+    const resolvedFileName = this.resolveUploadFileName(
+      fileName,
+      parsed.essenceMimeType,
+      fallbackBaseName,
+    );
     const filePath = path.join(tempDir, resolvedFileName);
     await writeFile(filePath, parsed.bytes);
     return {
       tempDir,
       filePath,
-      mimeType: parsed.mimeType,
+      mimeType: parsed.fullMimeType,
     };
+  }
+
+  private async prepareVoiceNoteUpload(
+    document: OutgoingAttachmentDocument,
+  ): Promise<PreparedVoiceNoteUpload | undefined> {
+    const parsed = this.parseDataUrl(document.dataUrl);
+    if (!parsed) {
+      this.setVoiceNoteError('Voice note payload is invalid.');
+      return undefined;
+    }
+
+    if (!this.isSupportedVoiceNoteMimeType(parsed.fullMimeType)) {
+      this.setVoiceNoteError(`Unsupported Telegram voice note format: ${parsed.fullMimeType}`);
+      return undefined;
+    }
+
+    if (parsed.bytes.byteLength > TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES) {
+      this.setVoiceNoteError(
+        `Voice note exceeds ${Math.round(TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024))} MB limit.`,
+      );
+      return undefined;
+    }
+
+    let tempDir: string | undefined;
+
+    try {
+      tempDir = await mkdtemp(path.join(os.tmpdir(), 'pelec-telegram-voice-'));
+      const sourceFileName = this.resolveUploadFileName(
+        document.fileName,
+        parsed.essenceMimeType,
+        'voice-note',
+      );
+      const sourceFilePath = path.join(tempDir, sourceFileName);
+      const outputFilePath = path.join(tempDir, 'voice-note.ogg');
+      await writeFile(sourceFilePath, parsed.bytes);
+
+      if (parsed.fullMimeType === 'audio/ogg;codecs=opus') {
+        if (sourceFilePath !== outputFilePath) {
+          await copyFile(sourceFilePath, outputFilePath);
+        }
+      } else {
+        await this.transcodeVoiceNoteToOgg(sourceFilePath, outputFilePath);
+      }
+
+      const durationSeconds = await this.probeAudioDurationSeconds(outputFilePath);
+      return {
+        tempDir,
+        sourceFilePath,
+        outputFilePath,
+        outputMimeType: 'audio/ogg;codecs=opus',
+        durationSeconds,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown voice note preparation error';
+      this.setVoiceNoteError(message);
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {
+          // Best-effort temp cleanup.
+        });
+      }
+      return undefined;
+    }
   }
 
   private async sendTdMessage(
@@ -1841,6 +2216,18 @@ export class TelegramConnector implements Connector {
   }
 
   private extensionFromMime(mimeType: string): string {
+    if (mimeType.startsWith('audio/webm')) {
+      return '.webm';
+    }
+    if (mimeType === 'audio/ogg;codecs=opus') {
+      return '.ogg';
+    }
+    if (mimeType.startsWith('audio/ogg')) {
+      return '.ogg';
+    }
+    if (mimeType === 'audio/opus') {
+      return '.opus';
+    }
     if (mimeType === 'application/pdf') {
       return '.pdf';
     }
@@ -1879,9 +2266,6 @@ export class TelegramConnector implements Connector {
     }
     if (mimeType === 'audio/mpeg') {
       return '.mp3';
-    }
-    if (mimeType === 'audio/ogg') {
-      return '.ogg';
     }
     if (mimeType === 'video/mp4') {
       return '.mp4';
@@ -1928,6 +2312,138 @@ export class TelegramConnector implements Connector {
     }, 5 * 60 * 1000);
     timer.unref?.();
     this.uploadTempCleanupTimers.set(tempDir, timer);
+  }
+
+  private setVoiceNoteError(message: string): void {
+    this.status.lastError = message;
+    this.status.details = `Failed sending voice note: ${message}`;
+  }
+
+  private isSupportedVoiceNoteMimeType(mimeType: string): boolean {
+    return TELEGRAM_VOICE_NOTE_MIME_TYPES.has(mimeType.trim().toLowerCase());
+  }
+
+  private async getFfmpegBinaryPath(): Promise<string> {
+    if (!ffmpegBinaryPathPromise) {
+      ffmpegBinaryPathPromise = (async () => {
+        const moduleValue = await loadFfmpegStaticModule();
+        const binaryPath =
+          typeof moduleValue === 'string'
+            ? moduleValue
+            : typeof moduleValue.default === 'string'
+              ? moduleValue.default
+              : undefined;
+        if (!binaryPath) {
+          throw new Error('Bundled ffmpeg binary is unavailable.');
+        }
+        return binaryPath;
+      })();
+    }
+    return ffmpegBinaryPathPromise;
+  }
+
+  private async getFfprobeBinaryPath(): Promise<string> {
+    if (!ffprobeBinaryPathPromise) {
+      ffprobeBinaryPathPromise = (async () => {
+        const moduleValue = await loadFfprobeStaticModule();
+        const binaryPath = moduleValue.path ?? moduleValue.default?.path;
+        if (!binaryPath) {
+          throw new Error('Bundled ffprobe binary is unavailable.');
+        }
+        return binaryPath;
+      })();
+    }
+    return ffprobeBinaryPathPromise;
+  }
+
+  private async transcodeVoiceNoteToOgg(
+    sourceFilePath: string,
+    outputFilePath: string,
+  ): Promise<void> {
+    const ffmpegBinaryPath = await this.getFfmpegBinaryPath().catch((error) => {
+      throw new Error(
+        error instanceof Error ? error.message : 'Bundled ffmpeg binary is unavailable.',
+      );
+    });
+
+    const result = await this.runBinary(ffmpegBinaryPath, [
+      '-y',
+      '-i',
+      sourceFilePath,
+      '-vn',
+      '-ac',
+      '1',
+      '-c:a',
+      'libopus',
+      '-b:a',
+      '24k',
+      '-f',
+      'ogg',
+      outputFilePath,
+    ]);
+
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr.trim();
+      throw new Error(stderr || `ffmpeg exited with code ${result.exitCode}.`);
+    }
+  }
+
+  private async probeAudioDurationSeconds(filePath: string): Promise<number> {
+    try {
+      const ffprobeBinaryPath = await this.getFfprobeBinaryPath();
+      const result = await this.runBinary(ffprobeBinaryPath, [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'default=noprint_wrappers=1:nokey=1',
+        filePath,
+      ]);
+      if (result.exitCode !== 0) {
+        return 0;
+      }
+
+      const durationSeconds = Number(result.stdout.trim());
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        return 0;
+      }
+
+      return Math.max(1, Math.round(durationSeconds));
+    } catch {
+      return 0;
+    }
+  }
+
+  private async runBinary(
+    binaryPath: string,
+    args: string[],
+  ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(binaryPath, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (chunk: Buffer | string) => {
+        stdout += chunk.toString();
+      });
+      child.stderr.on('data', (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+      child.on('error', (error) => {
+        reject(error);
+      });
+      child.on('close', (exitCode) => {
+        resolve({
+          exitCode,
+          stdout,
+          stderr,
+        });
+      });
+    });
   }
 
   private formatCallDuration(seconds: number): string {

@@ -30,6 +30,8 @@ const runtimeDepsToCopy = [
   'url-regex-safe',
   'utility-types',
   'bluebird',
+  'ffmpeg-static',
+  'ffprobe-static',
   'prebuilt-tdlib',
   '@prebuilt-tdlib/linux-x64-glibc',
 ];

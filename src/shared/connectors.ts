@@ -88,6 +88,7 @@ export interface ResolvedDocument extends ChatDocument {
 
 export interface ChatMessage {
   id: string;
+  mediaAlbumId?: string;
   sender: string;
   text: string;
   timestamp: number;
@@ -98,7 +99,10 @@ export interface ChatMessage {
   replyToSender?: string;
   replyToText?: string;
   hasAudio?: boolean;
+  hasVideo?: boolean;
   imageUrl?: string;
+  videoUrl?: string;
+  videoMimeType?: string;
   animationUrl?: string;
   animationMimeType?: string;
   stickerUrl?: string;
@@ -129,6 +133,7 @@ export interface Connector {
   listChats?(): Promise<ChatSummary[]>;
   listMessages?(chatId: string): Promise<ChatMessage[]>;
   resolveAudioUrl?(chatId: string, messageId: string): Promise<string | undefined>;
+  resolveVideoUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;
   sendImageMessage?(
     chatId: string,
@@ -140,6 +145,11 @@ export interface Connector {
     chatId: string,
     document: OutgoingAttachmentDocument,
     caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean>;
+  sendVoiceMessage?(
+    chatId: string,
+    document: OutgoingAttachmentDocument,
     replyToMessageId?: string,
   ): Promise<boolean>;
   sendMessage?(chatId: string, text: string, replyToMessageId?: string): Promise<boolean>;

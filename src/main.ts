@@ -7,6 +7,7 @@ import {
   Menu,
   nativeImage,
   Notification,
+  protocol,
   shell,
 } from 'electron';
 import dotenv from 'dotenv';
@@ -14,6 +15,7 @@ import fs, { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
@@ -29,6 +31,20 @@ import { ConnectorManager } from './main/connectors/connectorManager';
 if (started) {
   app.quit();
 }
+
+const PELEC_MEDIA_SCHEME = 'pelec-media';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: PELEC_MEDIA_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
+  },
+]);
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -507,7 +523,148 @@ const createWindow = (): BrowserWindow => {
   return mainWindow;
 };
 
+const mediaContentTypeForPath = (localPath: string): string => {
+  const ext = path.extname(localPath).toLowerCase();
+  switch (ext) {
+    case '.mp4':
+      return 'video/mp4';
+    case '.mov':
+      return 'video/quicktime';
+    case '.webm':
+      return 'video/webm';
+    case '.m4v':
+      return 'video/x-m4v';
+    case '.ogv':
+      return 'video/ogg';
+    default:
+      return 'application/octet-stream';
+  }
+};
+
+const parseRangeHeader = (
+  rangeHeader: string | null,
+  size: number,
+): { start: number; end: number } | null => {
+  if (!rangeHeader) {
+    return null;
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) {
+    return null;
+  }
+
+  const startRaw = match[1];
+  const endRaw = match[2];
+
+  if (!startRaw && !endRaw) {
+    return null;
+  }
+
+  let start: number;
+  let end: number;
+
+  if (!startRaw) {
+    const suffixLength = Number(endRaw);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return null;
+    }
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw ? Number(endRaw) : size - 1;
+  }
+
+  if (
+    !Number.isFinite(start) ||
+    !Number.isFinite(end) ||
+    start < 0 ||
+    end < start ||
+    start >= size
+  ) {
+    return null;
+  }
+
+  return {
+    start,
+    end: Math.min(end, size - 1),
+  };
+};
+
+const registerMediaProtocol = (): void => {
+  protocol.handle(PELEC_MEDIA_SCHEME, async (request) => {
+    try {
+      const url = new URL(request.url);
+      const localPath = url.searchParams.get('path')?.trim();
+      if (!localPath) {
+        return new Response('Missing path', { status: 400 });
+      }
+
+      const stats = await fs.promises.stat(localPath);
+      if (!stats.isFile()) {
+        return new Response('Not found', { status: 404 });
+      }
+
+      const contentType = mediaContentTypeForPath(localPath);
+      const range = parseRangeHeader(request.headers.get('range'), stats.size);
+      const method = request.method.toUpperCase();
+
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: range ? 206 : 200,
+          headers: range
+            ? {
+                'Accept-Ranges': 'bytes',
+                'Content-Length': String(range.end - range.start + 1),
+                'Content-Range': `bytes ${range.start}-${range.end}/${stats.size}`,
+                'Content-Type': contentType,
+                'Cache-Control': 'no-store',
+              }
+            : {
+                'Accept-Ranges': 'bytes',
+                'Content-Length': String(stats.size),
+                'Content-Type': contentType,
+                'Cache-Control': 'no-store',
+              },
+        });
+      }
+
+      if (range) {
+        const stream = createReadStream(localPath, {
+          start: range.start,
+          end: range.end,
+        });
+        return new Response(Readable.toWeb(stream) as BodyInit, {
+          status: 206,
+          headers: {
+            'Accept-Ranges': 'bytes',
+            'Content-Length': String(range.end - range.start + 1),
+            'Content-Range': `bytes ${range.start}-${range.end}/${stats.size}`,
+            'Content-Type': contentType,
+            'Cache-Control': 'no-store',
+          },
+        });
+      }
+
+      const stream = createReadStream(localPath);
+      return new Response(Readable.toWeb(stream) as BodyInit, {
+        status: 200,
+        headers: {
+          'Accept-Ranges': 'bytes',
+          'Content-Length': String(stats.size),
+          'Content-Type': contentType,
+          'Cache-Control': 'no-store',
+        },
+      });
+    } catch {
+      return new Response('Invalid media URL', { status: 400 });
+    }
+  });
+};
+
 app.whenReady().then(() => {
+  registerMediaProtocol();
   connectorManager = new ConnectorManager(appConfig, app.getPath('userData'));
   connectorManager.onConnectorUpdate((event: ConnectorUpdateEvent) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -689,6 +846,16 @@ ipcMain.handle(
       return undefined;
     }
     return connectorManager.resolveAudioUrl(network, chatId, messageId);
+  },
+);
+
+ipcMain.handle(
+  'connector:resolve-video-url',
+  async (_event, network: NetworkId, chatId: string, messageId: string) => {
+    if (!connectorManager) {
+      return undefined;
+    }
+    return connectorManager.resolveVideoUrl(network, chatId, messageId);
   },
 );
 
@@ -886,6 +1053,27 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+  'connector:send-voice',
+  async (
+    _event,
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    replyToMessageId?: string,
+  ) => {
+    if (!connectorManager) {
+      return false;
+    }
+    return connectorManager.sendVoiceMessage(
+      network,
+      chatId,
+      document,
+      replyToMessageId,
+    );
+  },
+);
+
+ipcMain.handle(
   'connector:delete-message',
   async (_event, network: NetworkId, chatId: string, messageId: string) => {
     if (!connectorManager) {
@@ -903,6 +1091,20 @@ ipcMain.handle('app:open-external', async (_event, url: string): Promise<boolean
     }
     await shell.openExternal(url);
     return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('app:open-path', async (_event, filePath: string): Promise<boolean> => {
+  const normalized = filePath.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    const error = await shell.openPath(normalized);
+    return !error;
   } catch {
     return false;
   }

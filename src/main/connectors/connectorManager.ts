@@ -104,6 +104,18 @@ export class ConnectorManager {
     return connector.resolveAudioUrl(chatId, messageId);
   }
 
+  async resolveVideoUrl(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+  ): Promise<string | undefined> {
+    const connector = this.getConnector(network);
+    if (!connector.resolveVideoUrl) {
+      return undefined;
+    }
+    return connector.resolveVideoUrl(chatId, messageId);
+  }
+
   async resolveDocument(
     network: NetworkId,
     chatId: string,
@@ -155,6 +167,19 @@ export class ConnectorManager {
       return false;
     }
     return connector.sendDocumentMessage(chatId, document, caption, replyToMessageId);
+  }
+
+  async sendVoiceMessage(
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.sendVoiceMessage) {
+      return false;
+    }
+    return connector.sendVoiceMessage(chatId, document, replyToMessageId);
   }
 
   async forwardMessage(
