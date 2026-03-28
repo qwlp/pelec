@@ -32,7 +32,7 @@ interface AppState {
   selectedTelegramMessageId: string | null;
   replyingToMessageId: string | null;
   replyingToSender: string | null;
-  pendingTelegramImageDataUrls: string[];
+  pendingTelegramAttachments: PendingTelegramAttachment[];
   telegramLoading: boolean;
   telegramMessagesLoading: boolean;
   telegramLoadError: string | null;
@@ -64,6 +64,15 @@ type PendingTelegramMessage = RenderableTelegramMessage & {
   signature: string;
 };
 
+type PendingTelegramAttachment = {
+  id: string;
+  kind: 'image' | 'document';
+  name: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  dataUrl: string;
+};
+
 type TelegramContextMenuState = {
   visible: boolean;
   messageId: string | null;
@@ -88,6 +97,8 @@ if (!appEl) {
 const INSTAGRAM_CHECKPOINT_COOLDOWN_MS = 48 * 60 * 60 * 1000;
 const INSTAGRAM_CHECKPOINT_COOLDOWN_KEY = 'pelec.instagramCheckpointCooldownUntil';
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
+const TELEGRAM_MAX_ATTACHMENTS = 10;
+const TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
 const MESSAGE_LINK_PATTERN = /\b((?:https?:\/\/|mailto:|tg:\/\/|www\.)[^\s<]+)/giu;
 
 const readInstagramCooldownUntil = (): number => {
@@ -152,6 +163,28 @@ const safeText = (value: unknown): string => (typeof value === 'string' ? value 
 const safeLabel = (value: unknown, fallback: string): string => {
   const text = safeText(value).trim();
   return text || fallback;
+};
+
+const createTelegramAttachmentId = (): string =>
+  `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const readFileAsDataUrl = (file: File): Promise<string | null> =>
+  new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve(typeof reader.result === 'string' ? reader.result : null);
+    };
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+
+const getTelegramAttachmentKind = (mimeType?: string): PendingTelegramAttachment['kind'] =>
+  (mimeType ?? '').startsWith('image/') ? 'image' : 'document';
+
+const formatTelegramAttachmentMeta = (attachment: PendingTelegramAttachment): string => {
+  const detail = safeLabel(attachment.mimeType, attachment.kind === 'image' ? 'Image' : 'Document');
+  const size = formatFileSize(attachment.sizeBytes);
+  return size ? `${detail} • ${size}` : detail;
 };
 
 const trimLinkSuffix = (value: string): { linkText: string; suffix: string } => {
@@ -258,6 +291,20 @@ const formatTelegramDocumentKind = (fileName: string | undefined, mimeType?: str
     return mimeType.split('/').pop()?.slice(0, 8).toUpperCase() || 'FILE';
   }
   return 'FILE';
+};
+
+const formatTelegramDocumentSubtitle = (
+  fileName: string | undefined,
+  mimeType?: string,
+  sizeBytes?: number,
+): string => {
+  const size = formatFileSize(sizeBytes);
+  if (size) {
+    return size;
+  }
+
+  const kind = formatTelegramDocumentKind(fileName, mimeType);
+  return kind === 'FILE' ? 'Telegram document' : kind;
 };
 
 const isTelegramDocumentFallbackText = (message: ChatMessage): boolean => {
@@ -567,7 +614,7 @@ const boot = async (): Promise<void> => {
     selectedTelegramMessageId: null,
     replyingToMessageId: null,
     replyingToSender: null,
-    pendingTelegramImageDataUrls: [],
+    pendingTelegramAttachments: [],
     telegramLoading: false,
     telegramMessagesLoading: false,
     telegramLoadError: null,
@@ -1477,6 +1524,8 @@ const boot = async (): Promise<void> => {
         </div>
         <div id="telegram-compose-attachment" class="telegram-compose-attachment hidden"></div>
         <div class="telegram-compose-row">
+          <button id="telegram-attach-button" class="telegram-attach-button" type="button" aria-label="Attach file">+</button>
+          <input id="telegram-attach-input" class="telegram-attach-input" type="file" multiple />
           <textarea id="telegram-compose-input" class="telegram-compose-input" placeholder="Message" rows="1"></textarea>
           <button id="telegram-send-button" class="telegram-send-button" type="button">➤</button>
         </div>
@@ -1496,6 +1545,8 @@ const boot = async (): Promise<void> => {
     '#telegram-compose-reply-close',
   );
   const telegramComposeAttachment = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-attachment');
+  const telegramAttachButton = nativeTelegram.querySelector<HTMLButtonElement>('#telegram-attach-button');
+  const telegramAttachInput = nativeTelegram.querySelector<HTMLInputElement>('#telegram-attach-input');
   const telegramComposeInput = nativeTelegram.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
   const telegramSendButton = nativeTelegram.querySelector<HTMLButtonElement>('#telegram-send-button');
 
@@ -1509,6 +1560,8 @@ const boot = async (): Promise<void> => {
     !telegramComposeReplyTextEl ||
     !telegramComposeReplyCloseEl ||
     !telegramComposeAttachment ||
+    !telegramAttachButton ||
+    !telegramAttachInput ||
     !telegramComposeInput ||
     !telegramSendButton
   ) {
@@ -2006,11 +2059,11 @@ const boot = async (): Promise<void> => {
     statusBar.textContent = copied ? 'Message copied.' : 'Copy failed.';
   };
 
-  const clearTelegramReplyState = (options: { clearImages?: boolean } = {}): void => {
+  const clearTelegramReplyState = (options: { clearAttachments?: boolean } = {}): void => {
     state.replyingToMessageId = null;
     state.replyingToSender = null;
-    if (options.clearImages) {
-      state.pendingTelegramImageDataUrls = [];
+    if (options.clearAttachments) {
+      state.pendingTelegramAttachments = [];
     }
   };
 
@@ -2082,7 +2135,7 @@ const boot = async (): Promise<void> => {
 
     closeTelegramForwardMenu(false);
     state.selectedTelegramChatId = chat.id;
-    clearTelegramReplyState({ clearImages: true });
+    clearTelegramReplyState({ clearAttachments: true });
     state.vimPane = 'telegram-chats';
     await loadTelegramChats();
     await loadTelegramMessages(chat.id, 0, true, true, true);
@@ -3011,7 +3064,7 @@ const boot = async (): Promise<void> => {
       state.activeTelegramChatId = null;
       state.selectedTelegramChatId = null;
       state.selectedTelegramMessageId = null;
-      clearTelegramReplyState({ clearImages: true });
+      clearTelegramReplyState({ clearAttachments: true });
       state.telegramMessagesLoading = false;
       state.telegramLoadError = null;
       render();
@@ -3349,6 +3402,101 @@ const boot = async (): Promise<void> => {
     render();
   };
 
+  const mergeTelegramAttachments = (attachments: PendingTelegramAttachment[]): void => {
+    if (attachments.length < 1) {
+      return;
+    }
+
+    const availableSlots = Math.max(0, TELEGRAM_MAX_ATTACHMENTS - state.pendingTelegramAttachments.length);
+    const accepted = attachments.slice(0, availableSlots);
+    const skippedCount = attachments.length - accepted.length;
+    state.pendingTelegramAttachments = [...state.pendingTelegramAttachments, ...accepted];
+
+    if (accepted.length < 1) {
+      statusBar.textContent = `Attachment limit reached (${TELEGRAM_MAX_ATTACHMENTS}).`;
+      render();
+      return;
+    }
+
+    if (skippedCount > 0) {
+      statusBar.textContent = `Added ${accepted.length} attachment${accepted.length === 1 ? '' : 's'}. Skipped ${skippedCount} over the ${TELEGRAM_MAX_ATTACHMENTS}-item limit.`;
+    } else {
+      statusBar.textContent =
+        accepted.length === 1
+          ? `${accepted[0]?.kind === 'image' ? 'Image' : 'File'} attached.`
+          : `${accepted.length} attachments ready to send.`;
+    }
+
+    setMode('insert');
+    telegramComposeInput.focus();
+    render();
+  };
+
+  const createPendingTelegramAttachment = async (
+    file: File,
+  ): Promise<PendingTelegramAttachment | { error: string }> => {
+    if (file.size < 1) {
+      return { error: `${safeLabel(file.name, 'Unnamed file')} is empty.` };
+    }
+
+    if (file.size > TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES) {
+      return {
+        error: `${safeLabel(file.name, 'Unnamed file')} exceeds ${Math.round(
+          TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024),
+        )} MB.`,
+      };
+    }
+
+    const dataUrl = await readFileAsDataUrl(file);
+    if (!dataUrl) {
+      return { error: `Failed to read ${safeLabel(file.name, 'attachment')}.` };
+    }
+
+    return {
+      id: createTelegramAttachmentId(),
+      kind: getTelegramAttachmentKind(file.type),
+      name: safeLabel(file.name, 'attachment'),
+      mimeType: file.type || undefined,
+      sizeBytes: file.size > 0 ? file.size : undefined,
+      dataUrl,
+    };
+  };
+
+  const appendTelegramFiles = async (
+    files: File[],
+    sourceLabel: 'pasted' | 'selected',
+  ): Promise<void> => {
+    if (files.length < 1) {
+      return;
+    }
+
+    const results = await Promise.all(files.map((file) => createPendingTelegramAttachment(file)));
+    const attachments = results.filter(
+      (result): result is PendingTelegramAttachment => 'id' in result,
+    );
+    const errors = results
+      .filter((result): result is { error: string } => 'error' in result)
+      .map((result) => result.error);
+
+    mergeTelegramAttachments(attachments);
+
+    if (attachments.length < 1 && errors.length > 0) {
+      statusBar.textContent = errors[0] ?? `Failed to read ${sourceLabel} attachment.`;
+      return;
+    }
+
+    if (errors.length > 0) {
+      statusBar.textContent = `${attachments.length} ${sourceLabel} attachment${attachments.length === 1 ? '' : 's'} added. ${errors[0]}`;
+    } else if (attachments.length > 0) {
+      statusBar.textContent =
+        attachments.length === 1
+          ? `${attachments[0]?.kind === 'image' ? 'Image' : 'File'} ${sourceLabel}. Type a caption, then press send.`
+          : `${attachments.length} attachments ${sourceLabel}. Type a caption, then press send.`;
+    }
+
+    render();
+  };
+
   const sendTelegramMessage = async (): Promise<void> => {
     if (state.activeNetwork !== 'telegram' || !state.activeTelegramChatId) {
       return;
@@ -3356,8 +3504,9 @@ const boot = async (): Promise<void> => {
 
     const chatId = state.activeTelegramChatId;
     const text = telegramComposeInput.value.trim();
-    const hasImage = state.pendingTelegramImageDataUrls.length > 0;
-    if (!text && !hasImage) {
+    const attachments = [...state.pendingTelegramAttachments];
+    const hasAttachments = attachments.length > 0;
+    if (!text && !hasAttachments) {
       return;
     }
 
@@ -3366,10 +3515,10 @@ const boot = async (): Promise<void> => {
       const replyToMessageId = state.replyingToMessageId ?? undefined;
       const replyTarget = findTelegramMessageById(replyToMessageId ?? null);
       const previousComposeValue = telegramComposeInput.value;
-      const previousPendingImages = [...state.pendingTelegramImageDataUrls];
+      const previousPendingAttachments = [...state.pendingTelegramAttachments];
       const previousReplyingToMessageId = state.replyingToMessageId;
       const previousReplyingToSender = state.replyingToSender;
-      const pendingMessage = !hasImage
+      const pendingMessage = !hasAttachments
         ? createPendingTelegramMessage(chatId, {
             sender: 'You',
             text,
@@ -3391,18 +3540,34 @@ const boot = async (): Promise<void> => {
       }
 
       let sent = true;
-      if (hasImage) {
-        for (let index = 0; index < state.pendingTelegramImageDataUrls.length; index += 1) {
-          const imageDataUrl = state.pendingTelegramImageDataUrls[index];
+      if (hasAttachments) {
+        for (let index = 0; index < attachments.length; index += 1) {
+          const attachment = attachments[index];
+          if (!attachment) {
+            continue;
+          }
           const caption = index === 0 ? text : '';
-          const imageSent = await window.pelec.sendConnectorImage(
-            'telegram',
-            chatId,
-            imageDataUrl,
-            caption,
-            replyToMessageId,
-          );
-          if (!imageSent) {
+          const attachmentSent =
+            attachment.kind === 'image'
+              ? await window.pelec.sendConnectorImage(
+                  'telegram',
+                  chatId,
+                  attachment.dataUrl,
+                  caption,
+                  replyToMessageId,
+                )
+              : await window.pelec.sendConnectorDocument(
+                  'telegram',
+                  chatId,
+                  {
+                    dataUrl: attachment.dataUrl,
+                    fileName: attachment.name,
+                    mimeType: attachment.mimeType,
+                  },
+                  caption,
+                  replyToMessageId,
+                );
+          if (!attachmentSent) {
             sent = false;
             break;
           }
@@ -3420,7 +3585,7 @@ const boot = async (): Promise<void> => {
           removePendingTelegramMessages(chatId, (message) => message.id === pendingMessage.id);
           telegramComposeInput.value = previousComposeValue;
           syncTelegramComposeInputHeight();
-          state.pendingTelegramImageDataUrls = previousPendingImages;
+          state.pendingTelegramAttachments = previousPendingAttachments;
           state.replyingToMessageId = previousReplyingToMessageId;
           state.replyingToSender = previousReplyingToSender;
           if (state.selectedTelegramMessageId === pendingMessage.id) {
@@ -3437,7 +3602,7 @@ const boot = async (): Promise<void> => {
       if (!pendingMessage) {
         telegramComposeInput.value = '';
         syncTelegramComposeInputHeight();
-        state.pendingTelegramImageDataUrls = [];
+        state.pendingTelegramAttachments = [];
         clearTelegramReplyState();
       }
       telegramForceScrollBottom = true;
@@ -3744,7 +3909,7 @@ const boot = async (): Promise<void> => {
       const nextChatId = state.selectedTelegramChatId;
       if (nextChatId) {
         state.activeTelegramChatId = nextChatId;
-        clearTelegramReplyState({ clearImages: true });
+        clearTelegramReplyState({ clearAttachments: true });
         void loadTelegramMessages(nextChatId, 0, true, false, true);
       }
       return;
@@ -3784,7 +3949,7 @@ const boot = async (): Promise<void> => {
     }
 
     if (state.replyingToMessageId === messageId) {
-      clearTelegramReplyState({ clearImages: true });
+      clearTelegramReplyState({ clearAttachments: true });
     }
 
     if (telegramContextMenuState.messageId === messageId) {
@@ -4408,7 +4573,7 @@ const boot = async (): Promise<void> => {
               button.addEventListener('click', () => {
                 closeTelegramContextMenu(false);
                 state.selectedTelegramChatId = chat.id;
-                clearTelegramReplyState({ clearImages: true });
+                clearTelegramReplyState({ clearAttachments: true });
                 state.vimPane = 'telegram-chats';
                 void loadTelegramMessages(chat.id, 0, true, false, true);
               });
@@ -4657,33 +4822,47 @@ const boot = async (): Promise<void> => {
               }
               if (message.document) {
                 const fileName = safeLabel(message.document.fileName, 'Document');
-                const documentCard = document.createElement('section');
-                documentCard.className = 'telegram-message-document';
-                const kind = document.createElement('div');
-                kind.className = 'telegram-message-document-kind';
-                kind.textContent = formatTelegramDocumentKind(
+                const documentKind = formatTelegramDocumentKind(
                   fileName,
                   message.document.mimeType,
                 );
+                const documentSubtitle = formatTelegramDocumentSubtitle(
+                  fileName,
+                  message.document.mimeType,
+                  message.document.sizeBytes,
+                );
+                const documentCard = document.createElement('section');
+                documentCard.className = 'telegram-message-document';
+                const documentTitle = [fileName, message.document.mimeType].filter(Boolean).join('\n');
+                if (documentTitle) {
+                  documentCard.title = documentTitle;
+                }
+                const main = document.createElement('div');
+                main.className = 'telegram-message-document-main';
+                const icon = document.createElement('div');
+                icon.className = 'telegram-message-document-icon';
+                icon.textContent = documentKind;
                 const info = document.createElement('div');
                 info.className = 'telegram-message-document-info';
                 const name = document.createElement('div');
-                name.className = 'telegram-message-document-name';
+                name.className = 'telegram-message-document-title';
                 name.textContent = fileName;
+                name.title = fileName;
                 const meta = document.createElement('div');
-                meta.className = 'telegram-message-document-meta';
-                const metaParts = [
-                  message.document.mimeType,
-                  formatFileSize(message.document.sizeBytes),
-                ].filter((value): value is string => !!value);
-                meta.textContent = metaParts.join(' • ') || 'Telegram document';
+                meta.className = 'telegram-message-document-subtitle';
+                meta.textContent = documentSubtitle;
+                if (message.document.mimeType) {
+                  meta.title = message.document.mimeType;
+                }
                 info.replaceChildren(name, meta);
                 const actions = document.createElement('div');
                 actions.className = 'telegram-message-document-actions';
                 const copyButton = document.createElement('button');
                 copyButton.type = 'button';
-                copyButton.className = 'ghost-button';
+                copyButton.className = 'telegram-message-document-action';
                 copyButton.textContent = 'Copy';
+                copyButton.setAttribute('aria-label', `Copy ${fileName}`);
+                copyButton.title = `Copy ${fileName}`;
                 copyButton.addEventListener('click', (event) => {
                   event.stopPropagation();
                   if (!renderChatId) {
@@ -4693,8 +4872,10 @@ const boot = async (): Promise<void> => {
                 });
                 const downloadButton = document.createElement('button');
                 downloadButton.type = 'button';
-                downloadButton.className = 'ghost-button';
-                downloadButton.textContent = 'Download';
+                downloadButton.className = 'telegram-message-document-action';
+                downloadButton.textContent = 'Save';
+                downloadButton.setAttribute('aria-label', `Download ${fileName}`);
+                downloadButton.title = `Download ${fileName}`;
                 downloadButton.addEventListener('click', (event) => {
                   event.stopPropagation();
                   if (!renderChatId) {
@@ -4703,7 +4884,8 @@ const boot = async (): Promise<void> => {
                   void downloadTelegramDocument(renderChatId, message, downloadButton);
                 });
                 actions.replaceChildren(copyButton, downloadButton);
-                documentCard.replaceChildren(kind, info, actions);
+                main.replaceChildren(icon, info);
+                documentCard.replaceChildren(main, actions);
                 bodyNodes.push(documentCard);
               }
               const shouldRenderText =
@@ -4713,6 +4895,17 @@ const boot = async (): Promise<void> => {
                 !(message.stickerUrl && (messageTextLower === 'sticker' || messageTextLower.startsWith('sticker '))) &&
                 !((message.audioUrl || message.hasAudio) && messageTextLower === 'voice message') &&
                 !isTelegramDocumentFallbackText(message);
+              const isDocumentOnlyMessage =
+                !!message.document &&
+                !shouldRenderText &&
+                !message.call &&
+                !message.imageUrl &&
+                !message.animationUrl &&
+                !message.stickerUrl &&
+                !(message.audioUrl || message.hasAudio);
+              if (isDocumentOnlyMessage) {
+                item.classList.add('document-only');
+              }
               if (shouldRenderText) {
                 bodyNodes.push(text);
               }
@@ -4839,21 +5032,37 @@ const boot = async (): Promise<void> => {
         '<div class="telegram-empty">This chat could not be rendered. Try refreshing Telegram.</div>',
       );
     }
-    if (state.pendingTelegramImageDataUrls.length > 0) {
-      const thumbs = state.pendingTelegramImageDataUrls.map((dataUrl, index) => {
+    if (state.pendingTelegramAttachments.length > 0) {
+      const thumbs = state.pendingTelegramAttachments.map((attachment, index) => {
         const thumbWrap = document.createElement('div');
         thumbWrap.className = 'telegram-compose-thumb-wrap';
-        const preview = document.createElement('img');
-        preview.className = 'telegram-compose-preview';
-        preview.src = dataUrl;
-        preview.alt = `Pasted image ${index + 1}`;
+        const preview =
+          attachment.kind === 'image'
+            ? document.createElement('img')
+            : document.createElement('div');
+        preview.className =
+          attachment.kind === 'image'
+            ? 'telegram-compose-preview'
+            : 'telegram-compose-document';
+        if (attachment.kind === 'image') {
+          (preview as HTMLImageElement).src = attachment.dataUrl;
+          (preview as HTMLImageElement).alt = attachment.name || `Pasted image ${index + 1}`;
+        } else {
+          const nameEl = document.createElement('div');
+          nameEl.className = 'telegram-compose-document-name';
+          nameEl.textContent = attachment.name;
+          const metaEl = document.createElement('div');
+          metaEl.className = 'telegram-compose-document-meta';
+          metaEl.textContent = formatTelegramAttachmentMeta(attachment);
+          preview.replaceChildren(nameEl, metaEl);
+        }
         const clearButton = document.createElement('button');
         clearButton.type = 'button';
         clearButton.className = 'telegram-compose-thumb-remove';
         clearButton.textContent = '×';
         clearButton.addEventListener('click', () => {
-          state.pendingTelegramImageDataUrls = state.pendingTelegramImageDataUrls.filter(
-            (_value, itemIndex) => itemIndex !== index,
+          state.pendingTelegramAttachments = state.pendingTelegramAttachments.filter(
+            (item) => item.id !== attachment.id,
           );
           render();
         });
@@ -4881,7 +5090,7 @@ const boot = async (): Promise<void> => {
 
     telegramComposeInput.placeholder = state.replyingToMessageId
       ? `Reply to ${state.replyingToSender ?? 'message'}`
-      : state.pendingTelegramImageDataUrls.length > 0
+      : state.pendingTelegramAttachments.length > 0
         ? 'Type a caption...'
         : 'Type your message here...';
     syncTelegramComposeInputHeight();
@@ -4979,6 +5188,19 @@ const boot = async (): Promise<void> => {
     telegramComposeInput.focus();
   });
 
+  telegramAttachButton.addEventListener('click', () => {
+    telegramAttachInput.click();
+  });
+
+  telegramAttachInput.addEventListener('change', () => {
+    const files = telegramAttachInput.files ? Array.from(telegramAttachInput.files) : [];
+    telegramAttachInput.value = '';
+    if (files.length < 1) {
+      return;
+    }
+    void appendTelegramFiles(files, 'selected');
+  });
+
   telegramComposeInput.addEventListener('input', () => {
     syncTelegramComposeInputHeight();
   });
@@ -5007,40 +5229,15 @@ const boot = async (): Promise<void> => {
     if (!items || items.length < 1) {
       return;
     }
-    const imageFiles = Array.from(items)
-      .filter((item) => item.type.startsWith('image/'))
+    const files = Array.from(items)
+      .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile())
       .filter((file): file is File => !!file);
-    if (imageFiles.length < 1) {
+    if (files.length < 1) {
       return;
     }
     event.preventDefault();
-    void (async () => {
-      const readAsDataUrl = (file: File): Promise<string | null> =>
-        new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            resolve(typeof reader.result === 'string' ? reader.result : null);
-          };
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(file);
-        });
-
-      const results = await Promise.all(imageFiles.map((file) => readAsDataUrl(file)));
-      const valid = results.filter((value): value is string => !!value);
-      if (valid.length < 1) {
-        statusBar.textContent = 'Failed to read pasted image.';
-        return;
-      }
-      state.pendingTelegramImageDataUrls = [...state.pendingTelegramImageDataUrls, ...valid];
-      statusBar.textContent =
-        valid.length === 1
-          ? 'Image pasted. Type a caption, then press send.'
-          : `${valid.length} images pasted. Type a caption, then press send.`;
-      setMode('insert');
-      telegramComposeInput.focus();
-      render();
-    })();
+    void appendTelegramFiles(files, 'pasted');
   });
 
   quickFilter.addEventListener('input', () => render());

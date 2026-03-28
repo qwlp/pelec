@@ -14,6 +14,7 @@ import type {
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  OutgoingAttachmentDocument,
   ResolvedDocument,
 } from '../../shared/connectors';
 import type { NetworkDefinition } from '../../shared/types';
@@ -135,6 +136,7 @@ type TdFileRef = {
 const TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS = 8000;
 const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
 const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 12000;
+const TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
 
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
@@ -647,19 +649,19 @@ export class TelegramConnector implements Connector {
       return false;
     }
 
-    const parsed = this.parseDataUrl(dataUrl);
-    if (!parsed || !parsed.mimeType.startsWith('image/')) {
+    const upload = await this.prepareUploadFile(
+      'pelec-telegram-image-',
+      dataUrl,
+      undefined,
+      (mimeType) => mimeType.startsWith('image/'),
+      'clipboard-image',
+    );
+    if (!upload) {
       return false;
     }
 
-    let tempDir: string | null = null;
     let shouldCleanupImmediately = true;
     try {
-      tempDir = await mkdtemp(path.join(os.tmpdir(), 'pelec-telegram-image-'));
-      const ext = this.extensionFromMime(parsed.mimeType);
-      const filePath = path.join(tempDir, `clipboard-image${ext}`);
-      await writeFile(filePath, parsed.bytes);
-
       const baseRequest = {
         _: 'sendMessage',
         chat_id: Number(chatId),
@@ -667,7 +669,7 @@ export class TelegramConnector implements Connector {
           _: 'inputMessagePhoto',
           photo: {
             _: 'inputFileLocal',
-            path: filePath,
+            path: upload.filePath,
           },
           caption: {
             _: 'formattedText',
@@ -676,30 +678,10 @@ export class TelegramConnector implements Connector {
         },
       } as Record<string, unknown>;
 
-      const replyTo = this.toTdMessageId(replyToMessageId);
-      if (replyTo) {
-        try {
-          await this.tdClient.invoke({
-            ...baseRequest,
-            reply_to: {
-              _: 'inputMessageReplyToMessage',
-              message_id: replyTo,
-              quote: null,
-              checklist_task_id: 0,
-            },
-          });
-        } catch {
-          await this.tdClient.invoke({
-            ...baseRequest,
-            reply_to_message_id: replyTo,
-          });
-        }
-      } else {
-        await this.tdClient.invoke(baseRequest);
-      }
+      await this.sendTdMessage(baseRequest, replyToMessageId);
 
       shouldCleanupImmediately = false;
-      this.scheduleUploadTempCleanup(tempDir);
+      this.scheduleUploadTempCleanup(upload.tempDir);
       return true;
     } catch (error) {
       this.status.lastError =
@@ -707,8 +689,66 @@ export class TelegramConnector implements Connector {
       this.status.details = `Failed sending image: ${this.status.lastError}`;
       return false;
     } finally {
-      if (tempDir && shouldCleanupImmediately) {
-        await rm(tempDir, { recursive: true, force: true }).catch(() => {
+      if (shouldCleanupImmediately) {
+        await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {
+          // Best-effort temp cleanup.
+        });
+      }
+    }
+  }
+
+  async sendDocumentMessage(
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const upload = await this.prepareUploadFile(
+      'pelec-telegram-document-',
+      document.dataUrl,
+      document.fileName,
+      () => true,
+      'attachment',
+    );
+    if (!upload) {
+      return false;
+    }
+
+    let shouldCleanupImmediately = true;
+    try {
+      const baseRequest = {
+        _: 'sendMessage',
+        chat_id: Number(chatId),
+        input_message_content: {
+          _: 'inputMessageDocument',
+          document: {
+            _: 'inputFileLocal',
+            path: upload.filePath,
+          },
+          caption: {
+            _: 'formattedText',
+            text: caption?.trim() ?? '',
+          },
+        },
+      } as Record<string, unknown>;
+
+      await this.sendTdMessage(baseRequest, replyToMessageId);
+
+      shouldCleanupImmediately = false;
+      this.scheduleUploadTempCleanup(upload.tempDir);
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown sendDocumentMessage error';
+      this.status.details = `Failed sending document: ${this.status.lastError}`;
+      return false;
+    } finally {
+      if (shouldCleanupImmediately) {
+        await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {
           // Best-effort temp cleanup.
         });
       }
@@ -1737,7 +1777,85 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  private async prepareUploadFile(
+    tempPrefix: string,
+    dataUrl: string,
+    fileName: string | undefined,
+    validateMimeType: (mimeType: string) => boolean,
+    fallbackBaseName: string,
+  ): Promise<{ tempDir: string; filePath: string; mimeType: string } | undefined> {
+    const parsed = this.parseDataUrl(dataUrl);
+    if (!parsed || !validateMimeType(parsed.mimeType)) {
+      return undefined;
+    }
+
+    if (parsed.bytes.byteLength > TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES) {
+      this.status.lastError = `Attachment exceeds ${Math.round(
+        TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024),
+      )} MB limit`;
+      this.status.details = `Failed preparing upload: ${this.status.lastError}`;
+      return undefined;
+    }
+
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), tempPrefix));
+    const resolvedFileName = this.resolveUploadFileName(fileName, parsed.mimeType, fallbackBaseName);
+    const filePath = path.join(tempDir, resolvedFileName);
+    await writeFile(filePath, parsed.bytes);
+    return {
+      tempDir,
+      filePath,
+      mimeType: parsed.mimeType,
+    };
+  }
+
+  private async sendTdMessage(
+    baseRequest: Record<string, unknown>,
+    replyToMessageId?: string,
+  ): Promise<void> {
+    if (!this.tdClient) {
+      throw new Error('TDLib client is unavailable');
+    }
+
+    const replyTo = this.toTdMessageId(replyToMessageId);
+    if (replyTo) {
+      try {
+        await this.tdClient.invoke({
+          ...baseRequest,
+          reply_to: {
+            _: 'inputMessageReplyToMessage',
+            message_id: replyTo,
+            quote: null,
+            checklist_task_id: 0,
+          },
+        });
+      } catch {
+        await this.tdClient.invoke({
+          ...baseRequest,
+          reply_to_message_id: replyTo,
+        });
+      }
+      return;
+    }
+
+    await this.tdClient.invoke(baseRequest);
+  }
+
   private extensionFromMime(mimeType: string): string {
+    if (mimeType === 'application/pdf') {
+      return '.pdf';
+    }
+    if (mimeType === 'text/plain') {
+      return '.txt';
+    }
+    if (mimeType === 'application/zip') {
+      return '.zip';
+    }
+    if (mimeType === 'application/json') {
+      return '.json';
+    }
+    if (mimeType === 'text/csv') {
+      return '.csv';
+    }
     if (mimeType === 'image/png') {
       return '.png';
     }
@@ -1750,7 +1868,51 @@ export class TelegramConnector implements Connector {
     if (mimeType === 'image/bmp') {
       return '.bmp';
     }
-    return '.jpg';
+    if (mimeType === 'image/jpeg') {
+      return '.jpg';
+    }
+    if (mimeType === 'image/heic') {
+      return '.heic';
+    }
+    if (mimeType === 'image/heif') {
+      return '.heif';
+    }
+    if (mimeType === 'audio/mpeg') {
+      return '.mp3';
+    }
+    if (mimeType === 'audio/ogg') {
+      return '.ogg';
+    }
+    if (mimeType === 'video/mp4') {
+      return '.mp4';
+    }
+    if (mimeType === 'application/octet-stream') {
+      return '.bin';
+    }
+    return '.bin';
+  }
+
+  private sanitizeUploadFileName(value: string): string {
+    const base = path
+      .basename(value.trim())
+      .replace(/[<>:"/\\|?*]/g, '_')
+      .replaceAll(/[\n\r\t]/g, '_');
+    const cleaned = [...base].map((char) => (char.charCodeAt(0) < 32 ? '_' : char)).join('');
+    return cleaned || 'attachment';
+  }
+
+  private resolveUploadFileName(
+    fileName: string | undefined,
+    mimeType: string,
+    fallbackBaseName: string,
+  ): string {
+    const candidate = this.sanitizeUploadFileName(fileName?.trim() || fallbackBaseName);
+    const parsed = path.parse(candidate);
+    if (parsed.ext) {
+      return candidate;
+    }
+    const ext = this.extensionFromMime(mimeType);
+    return `${candidate}${ext}`;
   }
 
   private scheduleUploadTempCleanup(tempDir: string): void {

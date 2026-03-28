@@ -17,7 +17,12 @@ import { mkdir, rm } from 'node:fs/promises';
 import { finished } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
-import type { AuthSubmission, ConnectorUpdateEvent, ResolvedDocument } from './shared/connectors';
+import type {
+  AuthSubmission,
+  ConnectorUpdateEvent,
+  OutgoingAttachmentDocument,
+  ResolvedDocument,
+} from './shared/connectors';
 import type { AppActivity, AppConfig, NetworkId } from './shared/types';
 import { ConnectorManager } from './main/connectors/connectorManager';
 
@@ -851,6 +856,29 @@ ipcMain.handle(
       network,
       chatId,
       dataUrl,
+      caption,
+      replyToMessageId,
+    );
+  },
+);
+
+ipcMain.handle(
+  'connector:send-document',
+  async (
+    _event,
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ) => {
+    if (!connectorManager) {
+      return false;
+    }
+    return connectorManager.sendDocumentMessage(
+      network,
+      chatId,
+      document,
       caption,
       replyToMessageId,
     );

@@ -2,6 +2,7 @@ import type {
   AuthStartResult,
   AuthSubmission,
   ChatMessage,
+  OutgoingAttachmentDocument,
   ResolvedDocument,
   ChatSummary,
   Connector,
@@ -140,6 +141,20 @@ export class ConnectorManager {
       return false;
     }
     return connector.sendImageMessage(chatId, dataUrl, caption, replyToMessageId);
+  }
+
+  async sendDocumentMessage(
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.sendDocumentMessage) {
+      return false;
+    }
+    return connector.sendDocumentMessage(chatId, document, caption, replyToMessageId);
   }
 
   async forwardMessage(

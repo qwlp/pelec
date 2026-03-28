@@ -6,6 +6,7 @@ import type {
   ChatSummary,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  OutgoingAttachmentDocument,
 } from './shared/connectors';
 import type { AppActivity, AppConfig, NetworkId } from './shared/types';
 
@@ -71,6 +72,21 @@ const api = {
       network,
       chatId,
       dataUrl,
+      caption,
+      replyToMessageId,
+    ) as Promise<boolean>,
+  sendConnectorDocument: (
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:send-document',
+      network,
+      chatId,
+      document,
       caption,
       replyToMessageId,
     ) as Promise<boolean>,

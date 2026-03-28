@@ -70,6 +70,12 @@ export interface ChatDocument {
   sizeBytes?: number;
 }
 
+export interface OutgoingAttachmentDocument {
+  dataUrl: string;
+  fileName: string;
+  mimeType?: string;
+}
+
 export interface ChatCall {
   isVideo?: boolean;
   durationSeconds?: number;
@@ -127,6 +133,12 @@ export interface Connector {
   sendImageMessage?(
     chatId: string,
     dataUrl: string,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean>;
+  sendDocumentMessage?(
+    chatId: string,
+    document: OutgoingAttachmentDocument,
     caption?: string,
     replyToMessageId?: string,
   ): Promise<boolean>;
