@@ -12,6 +12,7 @@ import type {
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
 } from '../../shared/connectors';
@@ -326,26 +327,17 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  async listMessages(chatId: string): Promise<ChatMessage[]> {
+  async listMessages(
+    chatId: string,
+    _options?: ListMessagesOptions,
+  ): Promise<ChatMessage[]> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return [];
     }
 
     const client = this.tdClient;
-    const shouldOpenChat = !this.userConfig.ghostMode;
 
     try {
-      if (shouldOpenChat) {
-        await this.invokeWithTimeout(
-          client,
-          {
-            _: 'openChat',
-            chat_id: Number(chatId),
-          },
-          'openChat',
-          TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
-        );
-      }
       const chat = await this.invokeWithTimeout<TdChat>(
         client,
         {
@@ -390,10 +382,6 @@ export class TelegramConnector implements Connector {
         }
 
         cursor = oldestId;
-      }
-
-      if (shouldOpenChat) {
-        await this.acknowledgeViewedMessages(client, chatId, collected);
       }
 
       const uniqueById = new Map<string, TdMessage>();
@@ -495,10 +483,6 @@ export class TelegramConnector implements Connector {
         error instanceof Error ? error.message : 'Unknown getChatHistory error';
       this.status.details = `Failed loading messages: ${this.status.lastError}`;
       return [];
-    } finally {
-      if (shouldOpenChat && this.activeChatId !== chatId) {
-        void this.closeChat(client, chatId);
-      }
     }
   }
 
@@ -518,24 +502,18 @@ export class TelegramConnector implements Connector {
     if (!this.activeChatId || this.status.authState !== 'authenticated') {
       return;
     }
+  }
 
-    if (this.userConfig.ghostMode) {
+  async markChatRead(chatId: string, messageIds?: string[]): Promise<void> {
+    if (!this.tdClient || this.status.authState !== 'authenticated' || this.userConfig.ghostMode) {
       return;
     }
 
-    try {
-      await this.invokeWithTimeout(
-        client,
-        {
-          _: 'openChat',
-          chat_id: Number(this.activeChatId),
-        },
-        'openChat',
-        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
-      );
-    } catch {
-      // Best-effort open; message loading still works without keeping the chat watched.
-    }
+    const readableMessageIds = (messageIds ?? [])
+      .map((messageId) => this.toTdMessageId(messageId))
+      .filter((messageId): messageId is number => typeof messageId === 'number');
+
+    await this.acknowledgeViewedMessageIds(this.tdClient, chatId, readableMessageIds);
   }
 
   async sendMessage(chatId: string, text: string, replyToMessageId?: string): Promise<boolean> {
@@ -1088,16 +1066,11 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  private async acknowledgeViewedMessages(
+  private async acknowledgeViewedMessageIds(
     client: TdClient,
     chatId: string,
-    messages: TdMessage[],
+    messageIds: number[],
   ): Promise<void> {
-    const messageIds = messages
-      .filter((message) => message.is_outgoing !== true)
-      .map((message) => this.toTdMessageId(String(message.id ?? '')))
-      .filter((messageId): messageId is number => typeof messageId === 'number');
-
     if (messageIds.length < 1) {
       return;
     }

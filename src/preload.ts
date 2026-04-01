@@ -6,6 +6,7 @@ import type {
   ChatSummary,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  ListMessagesOptions,
   OutgoingAttachmentDocument,
 } from './shared/connectors';
 import type { AppActivity, AppConfig, NetworkId } from './shared/types';
@@ -28,8 +29,10 @@ const api = {
     ipcRenderer.invoke('connector:reset-auth', network) as Promise<ConnectorStatus>,
   listConnectorChats: (network: NetworkId) =>
     ipcRenderer.invoke('connector:list-chats', network) as Promise<ChatSummary[]>,
-  listConnectorMessages: (network: NetworkId, chatId: string) =>
-    ipcRenderer.invoke('connector:list-messages', network, chatId) as Promise<ChatMessage[]>,
+  listConnectorMessages: (network: NetworkId, chatId: string, options?: ListMessagesOptions) =>
+    ipcRenderer.invoke('connector:list-messages', network, chatId, options) as Promise<ChatMessage[]>,
+  markConnectorChatRead: (network: NetworkId, chatId: string, messageIds?: string[]) =>
+    ipcRenderer.invoke('connector:mark-chat-read', network, chatId, messageIds) as Promise<void>,
   setConnectorActiveChat: (network: NetworkId, chatId?: string | null) =>
     ipcRenderer.invoke('connector:set-active-chat', network, chatId) as Promise<void>,
   resolveConnectorAudioUrl: (network: NetworkId, chatId: string, messageId: string) =>

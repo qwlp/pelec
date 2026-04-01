@@ -9,6 +9,7 @@ import {
 import path from 'node:path';
 import type {
   AuthSubmission,
+  ListMessagesOptions,
   OutgoingAttachmentDocument,
 } from '../shared/connectors';
 import type { AppActivity, AppConfig, NetworkId } from '../shared/types';
@@ -121,8 +122,15 @@ export const registerIpcHandlers = ({
 
   ipcMain.handle(
     'connector:list-messages',
-    async (_event, network: NetworkId, chatId: string) => {
-      return (await getConnectorManager()?.listMessages(network, chatId)) ?? [];
+    async (_event, network: NetworkId, chatId: string, options?: ListMessagesOptions) => {
+      return (await getConnectorManager()?.listMessages(network, chatId, options)) ?? [];
+    },
+  );
+
+  ipcMain.handle(
+    'connector:mark-chat-read',
+    async (_event, network: NetworkId, chatId: string, messageIds?: string[]) => {
+      await getConnectorManager()?.markChatRead(network, chatId, messageIds);
     },
   );
 

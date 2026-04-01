@@ -86,6 +86,10 @@ export interface ResolvedDocument extends ChatDocument {
   filePath: string;
 }
 
+export interface ListMessagesOptions {
+  passive?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   mediaAlbumId?: string;
@@ -131,7 +135,8 @@ export interface Connector {
   resetAuth?(): Promise<ConnectorStatus>;
   setActiveChat?(chatId?: string | null): Promise<void>;
   listChats?(): Promise<ChatSummary[]>;
-  listMessages?(chatId: string): Promise<ChatMessage[]>;
+  listMessages?(chatId: string, options?: ListMessagesOptions): Promise<ChatMessage[]>;
+  markChatRead?(chatId: string, messageIds?: string[]): Promise<void>;
   resolveAudioUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveVideoUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;

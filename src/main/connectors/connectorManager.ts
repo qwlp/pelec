@@ -2,6 +2,7 @@ import type {
   AuthStartResult,
   AuthSubmission,
   ChatMessage,
+  ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
   ChatSummary,
@@ -76,12 +77,28 @@ export class ConnectorManager {
     return connector.listChats();
   }
 
-  async listMessages(network: NetworkId, chatId: string): Promise<ChatMessage[]> {
+  async listMessages(
+    network: NetworkId,
+    chatId: string,
+    options?: ListMessagesOptions,
+  ): Promise<ChatMessage[]> {
     const connector = this.getConnector(network);
     if (!connector.listMessages) {
       return [];
     }
-    return connector.listMessages(chatId);
+    return connector.listMessages(chatId, options);
+  }
+
+  async markChatRead(
+    network: NetworkId,
+    chatId: string,
+    messageIds?: string[],
+  ): Promise<void> {
+    const connector = this.getConnector(network);
+    if (!connector.markChatRead) {
+      return;
+    }
+    await connector.markChatRead(chatId, messageIds);
   }
 
   async setActiveChat(network: NetworkId, chatId?: string | null): Promise<void> {

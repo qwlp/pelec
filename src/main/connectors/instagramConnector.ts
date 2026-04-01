@@ -6,6 +6,7 @@ import type {
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  ListMessagesOptions,
 } from '../../shared/connectors';
 import type { NetworkDefinition } from '../../shared/types';
 import { verifyInstagramCapability } from './instagram/capability';
@@ -319,7 +320,7 @@ export class InstagramConnector implements Connector {
     }
   }
 
-  async listMessages(chatId: string): Promise<ChatMessage[]> {
+  async listMessages(chatId: string, _options?: ListMessagesOptions): Promise<ChatMessage[]> {
     if (!chatId || this.status.mode !== 'native' || this.status.authState !== 'authenticated') {
       return [];
     }

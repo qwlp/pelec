@@ -265,6 +265,8 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   let telegramMessagesRefreshTimer: number | null = null;
   let telegramMessagesHydrationTimer: number | null = null;
   let telegramScrollFollowupTimer: number | null = null;
+  let telegramReadAcknowledgeTimer: number | null = null;
+  let lastTelegramReadAcknowledgeKey: string | null = null;
   let instagramChatsRequestSeq = 0;
   let instagramMessagesRequestSeq = 0;
   let instagramChatsRefreshTimer: number | null = null;
@@ -358,6 +360,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     telegramScrollFollowupTimer = window.setTimeout(() => {
       telegramScrollFollowupTimer = null;
       telegramMessageListEl.scrollTop = telegramMessageListEl.scrollHeight;
+      scheduleTelegramReadAcknowledgement();
     }, 120);
   };
 
@@ -1009,7 +1012,12 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   const fetchChatMessages = async (
     network: NetworkId,
     chatId: string,
-  ): Promise<ChatMessage[]> => window.pelec.listConnectorMessages(network, chatId);
+  ): Promise<ChatMessage[]> =>
+    window.pelec.listConnectorMessages(
+      network,
+      chatId,
+      network === 'telegram' ? { passive: true } : undefined,
+    );
 
   const scanChatsForNotifications = async (
     network: NetworkId,
@@ -1591,6 +1599,53 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   const isPendingTelegramMessage = (
     message: RenderableTelegramMessage | ChatMessage | undefined,
   ): message is PendingTelegramMessage => Boolean(message && 'pendingState' in message && message.pendingState === 'sending');
+
+  const getTelegramReadableMessageIds = (
+    chatId: string | null = state.activeTelegramChatId,
+  ): string[] =>
+    getVisibleTelegramMessages(chatId)
+      .filter((message) => !message.outgoing && !isPendingTelegramMessage(message))
+      .map((message) => message.id);
+
+  const isTelegramMessageListNearBottom = (): boolean =>
+    telegramMessageListEl.scrollHeight - telegramMessageListEl.scrollTop - telegramMessageListEl.clientHeight < 24;
+
+  const acknowledgeActiveTelegramChatRead = async (): Promise<void> => {
+    if (
+      state.activeNetwork !== 'telegram' ||
+      !document.hasFocus() ||
+      state.telegramMessagesLoading ||
+      !state.activeTelegramChatId ||
+      !isTelegramMessageListNearBottom()
+    ) {
+      return;
+    }
+
+    const messageIds = getTelegramReadableMessageIds(state.activeTelegramChatId);
+    const latestMessageId = messageIds[messageIds.length - 1];
+    if (!latestMessageId) {
+      return;
+    }
+
+    const acknowledgeKey = `${state.activeTelegramChatId}:${latestMessageId}`;
+    if (acknowledgeKey === lastTelegramReadAcknowledgeKey) {
+      return;
+    }
+
+    await window.pelec.markConnectorChatRead('telegram', state.activeTelegramChatId, messageIds);
+    lastTelegramReadAcknowledgeKey = acknowledgeKey;
+    scheduleTelegramChatsRefresh(120, false);
+  };
+
+  const scheduleTelegramReadAcknowledgement = (): void => {
+    if (telegramReadAcknowledgeTimer !== null) {
+      window.clearTimeout(telegramReadAcknowledgeTimer);
+    }
+    telegramReadAcknowledgeTimer = window.setTimeout(() => {
+      telegramReadAcknowledgeTimer = null;
+      void acknowledgeActiveTelegramChatRead();
+    }, 80);
+  };
 
   const bumpTelegramMessagesVersion = (): void => {
     telegramMessagesVersion += 1;
@@ -2235,6 +2290,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       return;
     }
     closeTelegramContextMenu();
+    scheduleTelegramReadAcknowledgement();
   });
 
   telegramChatListEl.addEventListener('scroll', () => {
@@ -2256,6 +2312,10 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
   window.addEventListener('resize', () => {
     closeTelegramContextMenu();
+  });
+
+  window.addEventListener('focus', () => {
+    scheduleTelegramReadAcknowledgement();
   });
 
   const requestAuthInput = async ({
@@ -2793,7 +2853,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     try {
-      const messages = await window.pelec.listConnectorMessages('telegram', chatId);
+      const messages = await window.pelec.listConnectorMessages('telegram', chatId, {
+        passive: true,
+      });
       if (requestSeq !== telegramMessagesRequestSeq || chatId !== state.activeTelegramChatId) {
         return;
       }
@@ -2821,6 +2883,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
         telegramForceScrollBottom = true;
         render();
       }
+      scheduleTelegramReadAcknowledgement();
 
       // TDLib can return a partial first page right after chat open; re-fetch once to hydrate.
       if (attempt === 0 && messages.length <= 1) {
@@ -3202,6 +3265,10 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     render();
+
+    if (id === 'telegram') {
+      scheduleTelegramReadAcknowledgement();
+    }
   };
 
   const mergeTelegramAttachments = (attachments: PendingTelegramAttachment[]): void => {
