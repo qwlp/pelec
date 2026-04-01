@@ -594,6 +594,14 @@ const formatChatTimestamp = (timestamp?: number): string => {
   });
 };
 
+const formatTelegramUnreadBadge = (count: number): string => {
+  const normalized = Math.max(0, Math.floor(count));
+  if (normalized > 99) {
+    return '99+';
+  }
+  return String(normalized);
+};
+
 const formatMessageTimestamp = (timestamp: number): string => {
   if (!hasValidTimestamp(timestamp)) {
     return '';
@@ -5599,14 +5607,20 @@ const boot = async (): Promise<void> => {
             ...filteredTelegramChats.map((chat) => {
               const chatTitle = safeLabel(chat.title, 'Untitled chat');
               const chatPreview = safeText(chat.lastMessagePreview).trim() || 'No preview';
+              const unreadCount = Math.max(0, Math.floor(chat.unreadCount));
               const button = document.createElement('button');
               button.type = 'button';
               button.className = 'telegram-chat-item';
+              button.classList.toggle('unread', unreadCount > 0);
+              button.classList.toggle('read', unreadCount < 1);
+              button.classList.toggle('muted', chat.isMuted === true);
               const avatar = createAvatarNode(chatTitle, chat.avatarUrl, 'telegram-avatar');
               const content = document.createElement('div');
               content.className = 'telegram-chat-content';
               const top = document.createElement('div');
               top.className = 'telegram-chat-top';
+              const bottom = document.createElement('div');
+              bottom.className = 'telegram-chat-bottom';
               const name = document.createElement('div');
               name.className = 'telegram-chat-name';
               name.textContent = chatTitle;
@@ -5619,8 +5633,23 @@ const boot = async (): Promise<void> => {
               const preview = document.createElement('div');
               preview.className = 'telegram-chat-preview';
               preview.textContent = chatPreview;
+              const status = document.createElement('div');
+              status.className = 'telegram-chat-status';
+              if (unreadCount > 0) {
+                const badge = document.createElement('span');
+                badge.className = 'telegram-chat-unread-badge';
+                badge.textContent = formatTelegramUnreadBadge(unreadCount);
+                badge.title = `${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`;
+                status.append(badge);
+              } else {
+                const readDot = document.createElement('span');
+                readDot.className = 'telegram-chat-read-dot';
+                readDot.title = 'No unread messages';
+                status.append(readDot);
+              }
               top.replaceChildren(name, date);
-              content.replaceChildren(top, preview);
+              bottom.replaceChildren(preview, status);
+              content.replaceChildren(top, bottom);
               button.replaceChildren(avatar, content);
               button.addEventListener('click', () => {
                 closeTelegramContextMenu(false);

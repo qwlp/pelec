@@ -389,6 +389,15 @@ textarea {
   background: #231834;
 }
 
+.telegram-chat-item.unread:not(.active) {
+  background: #20142f;
+  border-color: rgba(255, 79, 167, 0.18);
+}
+
+.telegram-chat-item.unread:hover:not(.active) {
+  background: #29183c;
+}
+
 .telegram-chat-item.active:hover {
   background: rgba(255, 79, 167, 0.26);
 }
@@ -412,6 +421,13 @@ textarea {
   align-items: baseline;
 }
 
+.telegram-chat-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
 .telegram-chat-date {
   font-size: 11px;
   color: #9f90b6;
@@ -422,17 +438,75 @@ textarea {
 .telegram-chat-preview {
   font-size: 12px;
   color: #c1b2d4;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.telegram-chat-status {
+  min-width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.telegram-chat-unread-badge {
+  min-width: 22px;
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 120, 187, 0.4);
+  background: #ff5cae;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.telegram-chat-read-dot {
+  width: 8px;
+  height: 8px;
+  border: 1px solid rgba(168, 153, 197, 0.7);
+  background: rgba(159, 144, 182, 0.65);
+}
+
+.telegram-chat-item.unread .telegram-chat-name {
+  color: #fff;
+}
+
+.telegram-chat-item.unread .telegram-chat-date {
+  color: #f0bad8;
+}
+
+.telegram-chat-item.unread .telegram-chat-preview {
+  color: #e7dcf2;
+  font-weight: 600;
+}
+
+.telegram-chat-item.muted .telegram-chat-unread-badge {
+  background: rgba(255, 92, 174, 0.28);
+  color: #ffd9eb;
+}
+
 .telegram-chat-item.active .telegram-chat-preview {
   color: #ffe7f4;
+  font-weight: 600;
 }
 
 .telegram-chat-item.active .telegram-chat-date {
   color: #f8dceb;
+}
+
+.telegram-chat-item.active .telegram-chat-unread-badge {
+  border-color: rgba(255, 255, 255, 0.34);
+  background: #fff;
+  color: #8b1453;
+}
+
+.telegram-chat-item.active .telegram-chat-read-dot {
+  border-color: rgba(255, 240, 248, 0.9);
+  background: #fff0f8;
 }
 
 .telegram-chat-pane {
