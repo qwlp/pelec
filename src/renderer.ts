@@ -73,6 +73,38 @@ type PendingTelegramAttachment = {
   dataUrl: string;
 };
 
+type TelegramEmojiCatalogEntry = {
+  emoji: string;
+  aliases: string[];
+};
+
+type TelegramEmojiAliasEntry = {
+  emoji: string;
+  alias: string;
+  canonicalAlias: string;
+};
+
+type TelegramEmojiSuggestion = {
+  emoji: string;
+  canonicalAlias: string;
+  matchedAlias: string;
+};
+
+type TelegramEmojiTokenMatch = {
+  query: string;
+  tokenStart: number;
+  tokenEnd: number;
+};
+
+type TelegramEmojiCompletionState = {
+  visible: boolean;
+  query: string;
+  tokenStart: number;
+  tokenEnd: number;
+  activeIndex: number;
+  suggestions: TelegramEmojiSuggestion[];
+};
+
 type TelegramContextMenuState = {
   visible: boolean;
   messageId: string | null;
@@ -113,7 +145,99 @@ const TELEGRAM_VOICE_RECORDING_MIME_TYPES = [
   'audio/webm',
 ];
 const TELEGRAM_VOICE_RECORDING_MIN_DURATION_MS = 250;
+const TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS = 7;
+const TELEGRAM_EMOJI_ALIAS_MAX_LENGTH = 32;
+const TELEGRAM_EMOJI_ALIAS_PATTERN = /^[a-z0-9_+-]+$/i;
 const MESSAGE_LINK_PATTERN = /\b((?:https?:\/\/|mailto:|tg:\/\/|www\.)[^\s<]+)/giu;
+const TELEGRAM_EMOJI_CATALOG: TelegramEmojiCatalogEntry[] = [
+  { emoji: '😄', aliases: ['smile', 'happy', 'smiley'] },
+  { emoji: '😀', aliases: ['grinning', 'grin'] },
+  { emoji: '😂', aliases: ['joy', 'laugh', 'laughing'] },
+  { emoji: '🤣', aliases: ['rofl', 'rolling_on_the_floor_laughing'] },
+  { emoji: '🙂', aliases: ['slight_smile', 'slightly_smiling_face'] },
+  { emoji: '😊', aliases: ['blush', 'shy'] },
+  { emoji: '😉', aliases: ['wink'] },
+  { emoji: '😍', aliases: ['heart_eyes', 'love_eyes'] },
+  { emoji: '😘', aliases: ['kissing_heart', 'kiss'] },
+  { emoji: '😋', aliases: ['yum', 'tongue'] },
+  { emoji: '😎', aliases: ['sunglasses', 'cool'] },
+  { emoji: '🤔', aliases: ['thinking', 'think'] },
+  { emoji: '😐', aliases: ['neutral_face', 'meh'] },
+  { emoji: '🙄', aliases: ['roll_eyes', 'eyeroll'] },
+  { emoji: '😴', aliases: ['sleeping', 'sleep'] },
+  { emoji: '😪', aliases: ['sleepy_face'] },
+  { emoji: '😩', aliases: ['weary', 'exhausted'] },
+  { emoji: '🥺', aliases: ['pleading_face', 'please'] },
+  { emoji: '😢', aliases: ['cry', 'sad', 'crying'] },
+  { emoji: '😭', aliases: ['sob', 'sobbing', 'tears'] },
+  { emoji: '😡', aliases: ['rage', 'angry', 'mad'] },
+  { emoji: '😱', aliases: ['scream', 'shocked'] },
+  { emoji: '😳', aliases: ['flushed', 'embarrassed'] },
+  { emoji: '🤯', aliases: ['mind_blown', 'exploding_head'] },
+  { emoji: '😇', aliases: ['innocent', 'angel'] },
+  { emoji: '🥳', aliases: ['partying_face', 'party'] },
+  { emoji: '🤡', aliases: ['clown_face', 'clown'] },
+  { emoji: '💩', aliases: ['poop', 'shit'] },
+  { emoji: '👋', aliases: ['wave', 'hello', 'hi'] },
+  { emoji: '🙌', aliases: ['raised_hands', 'celebrate'] },
+  { emoji: '👏', aliases: ['clap', 'applause'] },
+  { emoji: '🙏', aliases: ['pray', 'thanks', 'thank_you'] },
+  { emoji: '💪', aliases: ['muscle', 'strong'] },
+  { emoji: '👍', aliases: ['thumbsup', 'thumbs_up', 'yes', 'like'] },
+  { emoji: '👎', aliases: ['thumbsdown', 'thumbs_down', 'dislike', 'no'] },
+  { emoji: '👌', aliases: ['ok_hand', 'ok'] },
+  { emoji: '✌️', aliases: ['v', 'victory_hand', 'peace'] },
+  { emoji: '🤝', aliases: ['handshake', 'deal'] },
+  { emoji: '❤️', aliases: ['heart', 'love'] },
+  { emoji: '🧡', aliases: ['orange_heart'] },
+  { emoji: '💛', aliases: ['yellow_heart'] },
+  { emoji: '💚', aliases: ['green_heart'] },
+  { emoji: '💙', aliases: ['blue_heart'] },
+  { emoji: '💜', aliases: ['purple_heart'] },
+  { emoji: '🖤', aliases: ['black_heart'] },
+  { emoji: '🤍', aliases: ['white_heart'] },
+  { emoji: '🤎', aliases: ['brown_heart'] },
+  { emoji: '💔', aliases: ['broken_heart', 'heartbreak'] },
+  { emoji: '🔥', aliases: ['fire', 'lit'] },
+  { emoji: '✨', aliases: ['sparkles', 'sparkle'] },
+  { emoji: '⭐', aliases: ['star'] },
+  { emoji: '🌟', aliases: ['glowing_star'] },
+  { emoji: '🎉', aliases: ['tada', 'party_popper', 'celebration'] },
+  { emoji: '🎊', aliases: ['confetti_ball', 'confetti'] },
+  { emoji: '🚀', aliases: ['rocket'] },
+  { emoji: '☕', aliases: ['coffee'] },
+  { emoji: '✅', aliases: ['white_check_mark', 'check', 'done'] },
+  { emoji: '❌', aliases: ['x', 'cross_mark'] },
+  { emoji: '💯', aliases: ['100', 'hundred'] },
+  { emoji: '👀', aliases: ['eyes', 'look'] },
+  { emoji: '🤷', aliases: ['shrug', 'idk'] },
+  { emoji: '🤦', aliases: ['facepalm'] },
+  { emoji: '😅', aliases: ['sweat_smile', 'phew'] },
+  { emoji: '🥲', aliases: ['smiling_face_with_tear', 'bittersweet'] },
+  { emoji: '😬', aliases: ['grimacing', 'awkward'] },
+  { emoji: '😌', aliases: ['relieved', 'calm'] },
+];
+
+const TELEGRAM_EMOJI_INDEX: TelegramEmojiAliasEntry[] = [];
+for (const entry of TELEGRAM_EMOJI_CATALOG) {
+  const canonicalAlias = entry.aliases[0];
+  if (!canonicalAlias) {
+    continue;
+  }
+  for (const alias of entry.aliases) {
+    TELEGRAM_EMOJI_INDEX.push({
+      emoji: entry.emoji,
+      alias,
+      canonicalAlias,
+    });
+  }
+}
+
+TELEGRAM_EMOJI_INDEX.sort(
+  (left, right) =>
+    left.alias.localeCompare(right.alias) ||
+    left.canonicalAlias.localeCompare(right.canonicalAlias),
+);
 
 const readInstagramCooldownUntil = (): number => {
   const raw = window.localStorage.getItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY);
@@ -681,6 +805,102 @@ const buildVoiceBarHeights = (seed: string, count = 38): number[] => {
   return bars;
 };
 
+const getTelegramEmojiTokenMatch = (
+  value: string,
+  selectionStart: number | null,
+  selectionEnd: number | null,
+): TelegramEmojiTokenMatch | null => {
+  if (
+    selectionStart === null ||
+    selectionEnd === null ||
+    selectionStart !== selectionEnd
+  ) {
+    return null;
+  }
+
+  let tokenStart = selectionStart;
+  while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1])) {
+    tokenStart -= 1;
+  }
+
+  let tokenEnd = selectionStart;
+  while (tokenEnd < value.length && !/\s/.test(value[tokenEnd])) {
+    tokenEnd += 1;
+  }
+
+  const token = value.slice(tokenStart, tokenEnd);
+  if (!token.startsWith(':')) {
+    return null;
+  }
+
+  const previousChar = tokenStart > 0 ? value[tokenStart - 1] : '';
+  if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
+    return null;
+  }
+
+  const query = value.slice(tokenStart + 1, selectionStart).toLowerCase();
+  const suffix = value.slice(selectionStart, tokenEnd);
+  if (
+    query.length < 1 ||
+    query.length > TELEGRAM_EMOJI_ALIAS_MAX_LENGTH ||
+    !TELEGRAM_EMOJI_ALIAS_PATTERN.test(query)
+  ) {
+    return null;
+  }
+
+  if (suffix && !TELEGRAM_EMOJI_ALIAS_PATTERN.test(suffix)) {
+    return null;
+  }
+
+  return {
+    query,
+    tokenStart,
+    tokenEnd,
+  };
+};
+
+const buildTelegramEmojiSuggestions = (query: string): TelegramEmojiSuggestion[] => {
+  if (!query) {
+    return [];
+  }
+
+  const normalizedQuery = query.toLowerCase();
+  const matches = TELEGRAM_EMOJI_INDEX.filter((entry) => entry.alias.startsWith(normalizedQuery));
+  matches.sort((left, right) => {
+    const leftPriority =
+      left.alias === normalizedQuery ? 0 : left.canonicalAlias === normalizedQuery ? 1 : 2;
+    const rightPriority =
+      right.alias === normalizedQuery ? 0 : right.canonicalAlias === normalizedQuery ? 1 : 2;
+    return (
+      leftPriority - rightPriority ||
+      left.alias.length - right.alias.length ||
+      left.canonicalAlias.length - right.canonicalAlias.length ||
+      left.canonicalAlias.localeCompare(right.canonicalAlias)
+    );
+  });
+
+  const suggestions: TelegramEmojiSuggestion[] = [];
+  const seen = new Set<string>();
+
+  for (const match of matches) {
+    const key = `${match.emoji}:${match.canonicalAlias}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    suggestions.push({
+      emoji: match.emoji,
+      canonicalAlias: match.canonicalAlias,
+      matchedAlias: match.alias,
+    });
+    if (suggestions.length >= TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS) {
+      break;
+    }
+  }
+
+  return suggestions;
+};
+
 const boot = async (): Promise<void> => {
   const appConfig = await window.pelec.getConfig();
   const initialStatuses = await window.pelec.getConnectorStatuses();
@@ -834,6 +1054,14 @@ const boot = async (): Promise<void> => {
   let lastInstagramWebFallbackNotificationKey: string | null = null;
   const renderedTelegramChatButtonById = new Map<string, HTMLButtonElement>();
   const renderedTelegramMessageNodeById = new Map<string, HTMLElement>();
+  let telegramEmojiCompletionState: TelegramEmojiCompletionState = {
+    visible: false,
+    query: '',
+    tokenStart: 0,
+    tokenEnd: 0,
+    activeIndex: 0,
+    suggestions: [],
+  };
 
   const buildChatKey = (network: NetworkId, chatId: string): string => `${network}:${chatId}`;
 
@@ -1623,6 +1851,12 @@ const boot = async (): Promise<void> => {
           </button>
         </div>
         <div id="telegram-compose-attachment" class="telegram-compose-attachment hidden"></div>
+        <div
+          id="telegram-emoji-completion"
+          class="telegram-emoji-completion hidden"
+          role="listbox"
+          aria-label="Emoji suggestions"
+        ></div>
         <div class="telegram-compose-row">
           <button id="telegram-attach-button" class="telegram-attach-button" type="button" aria-label="Attach file">+</button>
           <input id="telegram-attach-input" class="telegram-attach-input" type="file" multiple />
@@ -1646,6 +1880,9 @@ const boot = async (): Promise<void> => {
     '#telegram-compose-reply-close',
   );
   const telegramComposeAttachment = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-attachment');
+  const telegramEmojiCompletionEl = nativeTelegram.querySelector<HTMLElement>(
+    '#telegram-emoji-completion',
+  );
   const telegramAttachButton = nativeTelegram.querySelector<HTMLButtonElement>('#telegram-attach-button');
   const telegramAttachInput = nativeTelegram.querySelector<HTMLInputElement>('#telegram-attach-input');
   const telegramComposeInput = nativeTelegram.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
@@ -1664,6 +1901,7 @@ const boot = async (): Promise<void> => {
     !telegramComposeReplyTextEl ||
     !telegramComposeReplyCloseEl ||
     !telegramComposeAttachment ||
+    !telegramEmojiCompletionEl ||
     !telegramAttachButton ||
     !telegramAttachInput ||
     !telegramComposeInput ||
@@ -1672,6 +1910,168 @@ const boot = async (): Promise<void> => {
   ) {
     throw new Error('Native Telegram UI elements missing');
   }
+
+  const closeTelegramEmojiCompletion = (): void => {
+    telegramEmojiCompletionState = {
+      visible: false,
+      query: '',
+      tokenStart: 0,
+      tokenEnd: 0,
+      activeIndex: 0,
+      suggestions: [],
+    };
+    telegramEmojiCompletionEl.replaceChildren();
+    telegramEmojiCompletionEl.classList.add('hidden');
+    telegramComposeInput.setAttribute('aria-expanded', 'false');
+    telegramComposeInput.removeAttribute('aria-activedescendant');
+  };
+
+  const renderTelegramEmojiCompletion = (): void => {
+    if (
+      !telegramEmojiCompletionState.visible ||
+      telegramEmojiCompletionState.suggestions.length < 1 ||
+      state.activeNetwork !== 'telegram' ||
+      document.activeElement !== telegramComposeInput
+    ) {
+      closeTelegramEmojiCompletion();
+      return;
+    }
+
+    const activeIndex = Math.max(
+      0,
+      Math.min(
+        telegramEmojiCompletionState.activeIndex,
+        telegramEmojiCompletionState.suggestions.length - 1,
+      ),
+    );
+    telegramEmojiCompletionState.activeIndex = activeIndex;
+
+    const items = telegramEmojiCompletionState.suggestions.map((suggestion, index) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'telegram-emoji-completion-item';
+      item.setAttribute('role', 'option');
+      item.id = `telegram-emoji-completion-item-${index}`;
+      const isActive = index === activeIndex;
+      item.setAttribute('aria-selected', String(isActive));
+      if (isActive) {
+        item.classList.add('active');
+      }
+
+      const emoji = document.createElement('span');
+      emoji.className = 'telegram-emoji-completion-value';
+      emoji.textContent = suggestion.emoji;
+
+      const copy = document.createElement('span');
+      copy.className = 'telegram-emoji-completion-copy';
+      const alias = document.createElement('span');
+      alias.className = 'telegram-emoji-completion-alias';
+      alias.textContent = `:${suggestion.canonicalAlias}:`;
+      copy.append(alias);
+
+      if (suggestion.matchedAlias !== suggestion.canonicalAlias) {
+        const via = document.createElement('span');
+        via.className = 'telegram-emoji-completion-match';
+        via.textContent = `via :${suggestion.matchedAlias}`;
+        copy.append(via);
+      }
+
+      item.replaceChildren(emoji, copy);
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        telegramEmojiCompletionState.activeIndex = index;
+        insertTelegramEmojiCompletion();
+      });
+      return item;
+    });
+
+    telegramEmojiCompletionEl.replaceChildren(...items);
+    telegramEmojiCompletionEl.classList.remove('hidden');
+    telegramComposeInput.setAttribute('aria-controls', 'telegram-emoji-completion');
+    telegramComposeInput.setAttribute('aria-expanded', 'true');
+    telegramComposeInput.setAttribute(
+      'aria-activedescendant',
+      `telegram-emoji-completion-item-${activeIndex}`,
+    );
+  };
+
+  const updateTelegramEmojiCompletion = (): void => {
+    const tokenMatch = getTelegramEmojiTokenMatch(
+      telegramComposeInput.value,
+      telegramComposeInput.selectionStart,
+      telegramComposeInput.selectionEnd,
+    );
+    if (!tokenMatch) {
+      closeTelegramEmojiCompletion();
+      return;
+    }
+
+    const suggestions = buildTelegramEmojiSuggestions(tokenMatch.query);
+    if (suggestions.length < 1) {
+      closeTelegramEmojiCompletion();
+      return;
+    }
+
+    const previousSuggestion =
+      telegramEmojiCompletionState.suggestions[telegramEmojiCompletionState.activeIndex];
+    let activeIndex = 0;
+    if (previousSuggestion) {
+      const matchedIndex = suggestions.findIndex(
+        (suggestion) =>
+          suggestion.canonicalAlias === previousSuggestion.canonicalAlias &&
+          suggestion.matchedAlias === previousSuggestion.matchedAlias,
+      );
+      if (matchedIndex >= 0) {
+        activeIndex = matchedIndex;
+      }
+    }
+
+    telegramEmojiCompletionState = {
+      visible: true,
+      query: tokenMatch.query,
+      tokenStart: tokenMatch.tokenStart,
+      tokenEnd: tokenMatch.tokenEnd,
+      activeIndex,
+      suggestions,
+    };
+    renderTelegramEmojiCompletion();
+  };
+
+  const moveTelegramEmojiCompletion = (offset: number): void => {
+    if (!telegramEmojiCompletionState.visible || telegramEmojiCompletionState.suggestions.length < 1) {
+      return;
+    }
+    const maxIndex = telegramEmojiCompletionState.suggestions.length - 1;
+    telegramEmojiCompletionState.activeIndex = Math.max(
+      0,
+      Math.min(maxIndex, telegramEmojiCompletionState.activeIndex + offset),
+    );
+    renderTelegramEmojiCompletion();
+  };
+
+  const insertTelegramEmojiCompletion = (): boolean => {
+    if (!telegramEmojiCompletionState.visible || telegramEmojiCompletionState.suggestions.length < 1) {
+      return false;
+    }
+
+    const suggestion =
+      telegramEmojiCompletionState.suggestions[telegramEmojiCompletionState.activeIndex];
+    if (!suggestion) {
+      closeTelegramEmojiCompletion();
+      return false;
+    }
+
+    const before = telegramComposeInput.value.slice(0, telegramEmojiCompletionState.tokenStart);
+    const after = telegramComposeInput.value.slice(telegramEmojiCompletionState.tokenEnd);
+    const nextValue = `${before}${suggestion.emoji}${after}`;
+    const nextSelection = before.length + suggestion.emoji.length;
+    telegramComposeInput.value = nextValue;
+    telegramComposeInput.focus();
+    telegramComposeInput.setSelectionRange(nextSelection, nextSelection);
+    syncTelegramComposeInputHeight();
+    closeTelegramEmojiCompletion();
+    return true;
+  };
 
   const instagramWebShell = document.createElement('section');
   instagramWebShell.className = 'instagram-web-shell hidden';
@@ -1907,6 +2307,42 @@ const boot = async (): Promise<void> => {
     ].join('|');
   };
 
+  const normalizeTelegramComparableEmoji = (value: string): string =>
+    value
+      .normalize('NFC')
+      .replace(/[\uFE0E\uFE0F]/g, '')
+      .replace(/\s+/g, '');
+
+  const extractTelegramComparableEmoji = (
+    message: Partial<ChatMessage>,
+  ): string | undefined => {
+    const stickerEmoji = safeText(message.stickerEmoji).trim();
+    if (stickerEmoji) {
+      return normalizeTelegramComparableEmoji(stickerEmoji);
+    }
+
+    const text = safeText(message.text).trim();
+    if (!text) {
+      return undefined;
+    }
+
+    if (!message.imageUrl && !message.document && !message.call && !message.audioUrl && !message.hasAudio) {
+      const animatedEmojiMatch = text.match(/^animated emoji\s+(.+)$/i);
+      if (animatedEmojiMatch?.[1]) {
+        return normalizeTelegramComparableEmoji(animatedEmojiMatch[1]);
+      }
+
+      const stickerMatch = text.match(/^sticker\s+(.+)$/i);
+      if (stickerMatch?.[1]) {
+        return normalizeTelegramComparableEmoji(stickerMatch[1]);
+      }
+    }
+
+    const normalized = normalizeTelegramComparableEmoji(text);
+    const withoutEmoji = normalized.replace(/[\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\u200D]/gu, '');
+    return normalized && withoutEmoji.length < 1 ? normalized : undefined;
+  };
+
   const isPendingTelegramMessage = (
     message: RenderableTelegramMessage | ChatMessage | undefined,
   ): message is PendingTelegramMessage => Boolean(message && 'pendingState' in message && message.pendingState === 'sending');
@@ -2006,7 +2442,16 @@ const boot = async (): Promise<void> => {
       return false;
     }
     if (buildPendingTelegramSignature(message) !== pendingMessage.signature) {
-      return false;
+      const pendingEmoji = extractTelegramComparableEmoji(pendingMessage);
+      const messageEmoji = extractTelegramComparableEmoji(message);
+      if (
+        !pendingEmoji ||
+        !messageEmoji ||
+        pendingEmoji !== messageEmoji ||
+        (pendingMessage.replyToMessageId ?? '') !== (message.replyToMessageId ?? '')
+      ) {
+        return false;
+      }
     }
     const delta = message.timestamp - pendingMessage.timestamp;
     return delta >= -60000 && delta <= 5 * 60 * 1000;
@@ -3876,6 +4321,7 @@ const boot = async (): Promise<void> => {
       return;
     }
 
+    closeTelegramEmojiCompletion();
     telegramSendButton.disabled = true;
     try {
       const replyToMessageId = state.replyingToMessageId ?? undefined;
@@ -3973,6 +4419,7 @@ const boot = async (): Promise<void> => {
           removePendingTelegramMessages(chatId, (message) => message.id === pendingMessage.id);
           telegramComposeInput.value = previousComposeValue;
           syncTelegramComposeInputHeight();
+          updateTelegramEmojiCompletion();
           state.pendingTelegramAttachments = previousPendingAttachments;
           state.replyingToMessageId = previousReplyingToMessageId;
           state.replyingToSender = previousReplyingToSender;
@@ -5809,6 +6256,7 @@ const boot = async (): Promise<void> => {
         ? 'Type a caption...'
         : 'Type your message here...';
     syncTelegramComposeInputHeight();
+    renderTelegramEmojiCompletion();
     lastRenderedTelegramChatId = state.activeTelegramChatId;
   };
 
@@ -5970,11 +6418,46 @@ const boot = async (): Promise<void> => {
     handleTelegramVoiceRecordingRelease();
   });
 
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement === telegramComposeInput) {
+      updateTelegramEmojiCompletion();
+    }
+  });
+
   telegramComposeInput.addEventListener('input', () => {
     syncTelegramComposeInputHeight();
+    updateTelegramEmojiCompletion();
+  });
+
+  telegramComposeInput.addEventListener('focus', () => {
+    updateTelegramEmojiCompletion();
+  });
+
+  telegramComposeInput.addEventListener('blur', () => {
+    closeTelegramEmojiCompletion();
   });
 
   telegramComposeInput.addEventListener('keydown', (event) => {
+    if (telegramEmojiCompletionState.visible) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        moveTelegramEmojiCompletion(1);
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        moveTelegramEmojiCompletion(-1);
+        return;
+      }
+
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        insertTelegramEmojiCompletion();
+        return;
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void sendTelegramMessage();
@@ -5983,6 +6466,10 @@ const boot = async (): Promise<void> => {
 
     if (event.key === 'Escape') {
       event.preventDefault();
+      if (telegramEmojiCompletionState.visible) {
+        closeTelegramEmojiCompletion();
+        return;
+      }
       if (state.replyingToMessageId) {
         clearTelegramReplyState();
         statusBar.textContent = 'Reply canceled.';

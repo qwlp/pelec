@@ -1317,6 +1317,80 @@ textarea {
   display: none;
 }
 
+.telegram-emoji-completion {
+  margin-left: 48px;
+  margin-right: 96px;
+  min-width: 0;
+  max-height: 240px;
+  border: 1px solid rgba(255, 124, 193, 0.24);
+  background: linear-gradient(180deg, rgba(33, 25, 46, 0.98), rgba(24, 18, 34, 0.98));
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+  overflow: auto;
+}
+
+.telegram-emoji-completion.hidden {
+  display: none;
+}
+
+.telegram-emoji-completion-item {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid rgba(255, 190, 224, 0.08);
+  background: transparent;
+  color: var(--ink-main);
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+}
+
+.telegram-emoji-completion-item:first-child {
+  border-top: 0;
+}
+
+.telegram-emoji-completion-item:hover,
+.telegram-emoji-completion-item:focus-visible,
+.telegram-emoji-completion-item.active {
+  background: rgba(255, 79, 167, 0.14);
+}
+
+.telegram-emoji-completion-item:focus-visible {
+  outline: 1px solid rgba(255, 190, 224, 0.28);
+  outline-offset: -1px;
+}
+
+.telegram-emoji-completion-value {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.telegram-emoji-completion-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.telegram-emoji-completion-alias {
+  color: #f7e9fb;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.telegram-emoji-completion-match {
+  color: #bfaecf;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .telegram-compose-preview {
   width: 92px;
   height: 92px;
