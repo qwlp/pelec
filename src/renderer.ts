@@ -8,7 +8,13 @@ import type {
   ConnectorUpdateEvent,
   ConnectorStatus,
 } from './shared/connectors';
-import type { AppActivity, AppMode, NetworkDefinition, NetworkId } from './shared/types';
+import type {
+  AppActivity,
+  AppMode,
+  NetworkDefinition,
+  NetworkId,
+  UserConfig,
+} from './shared/types';
 
 interface AppState {
   mode: AppMode;
@@ -238,6 +244,23 @@ TELEGRAM_EMOJI_INDEX.sort(
     left.alias.localeCompare(right.alias) ||
     left.canonicalAlias.localeCompare(right.canonicalAlias),
 );
+
+const applyUserTheme = (userConfig: UserConfig): void => {
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty('--window-padding', `${userConfig.appearance.windowPadding}px`);
+  rootStyle.setProperty(
+    '--window-border-radius',
+    `${userConfig.appearance.windowBorderRadius}px`,
+  );
+  rootStyle.setProperty('--app-font-family', userConfig.appearance.fontFamily);
+  rootStyle.setProperty('--app-font-size', `${userConfig.appearance.fontSize}px`);
+  rootStyle.setProperty('--font-scale', String(userConfig.appearance.fontSize / 14));
+  rootStyle.setProperty(
+    '--background-opacity',
+    String(userConfig.appearance.backgroundOpacity),
+  );
+  rootStyle.setProperty('--text-opacity', String(userConfig.appearance.textOpacity));
+};
 
 const readInstagramCooldownUntil = (): number => {
   const raw = window.localStorage.getItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY);
@@ -911,6 +934,7 @@ const buildTelegramEmojiSuggestions = (query: string): TelegramEmojiSuggestion[]
 
 const boot = async (): Promise<void> => {
   const appConfig = await window.pelec.getConfig();
+  applyUserTheme(appConfig.userConfig);
   const initialStatuses = await window.pelec.getConnectorStatuses();
 
   if (appConfig.networks.length < 1) {
@@ -971,16 +995,18 @@ const boot = async (): Promise<void> => {
   commandPalette.append(commandList);
 
   appEl.innerHTML = `
-  <div class="shell">
-    <aside class="sidebar" aria-label="Networks">
-      <div class="search-wrap">
-        <input id="quick-filter" class="quick-filter" placeholder="/ to search networks" />
-      </div>
-      <nav id="network-list" class="network-list"></nav>
-    </aside>
-    <main class="content" aria-live="polite">
-      <section id="views" class="views"></section>
-    </main>
+  <div class="app-frame">
+    <div class="shell">
+      <aside class="sidebar" aria-label="Networks">
+        <div class="search-wrap">
+          <input id="quick-filter" class="quick-filter" placeholder="/ to search networks" />
+        </div>
+        <nav id="network-list" class="network-list"></nav>
+      </aside>
+      <main class="content" aria-live="polite">
+        <section id="views" class="views"></section>
+      </main>
+    </div>
   </div>
   `;
 

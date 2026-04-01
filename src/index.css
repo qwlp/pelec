@@ -1,13 +1,54 @@
 :root {
   color-scheme: dark;
-  font-family: 'Ioskeley Mono', 'Iosevka Mono', 'Iosevka', 'JetBrains Mono', 'IBM Plex Mono', 'Fira Code', 'Consolas', monospace;
-  --bg-main: #0d0a12;
-  --bg-panel: #15101d;
-  --bg-panel-2: #1b1525;
-  --bg-elev: #211a2d;
-  --bg-elev-2: #2a2138;
-  --ink-main: #efe7f7;
-  --ink-muted: #ab9dbf;
+  font-family: var(--app-font-family);
+  font-size: var(--app-font-size);
+  --app-font-family: 'Ioskeley Mono', 'Iosevka Mono', 'Iosevka', 'JetBrains Mono', 'IBM Plex Mono', 'Fira Code', 'Consolas', monospace;
+  --app-font-size: 14px;
+  --font-scale: 1;
+  --window-padding: 12px;
+  --window-border-radius: 0px;
+  --background-opacity: 0.92;
+  --text-opacity: 1;
+  --bg-main-rgb: 13 10 18;
+  --bg-panel-rgb: 21 16 29;
+  --bg-panel-2-rgb: 27 21 37;
+  --bg-elev-rgb: 33 26 45;
+  --bg-elev-2-rgb: 42 33 56;
+  --bg-stage-rgb: 17 17 16;
+  --bg-input-rgb: 15 11 26;
+  --bg-header-rgb: 20 16 29;
+  --bg-pane-rgb: 19 13 30;
+  --bg-chat-rgb: 18 13 31;
+  --bg-chat-header-rgb: 25 18 39;
+  --bg-message-media-rgb: 8 5 16;
+  --ink-main-rgb: 239 231 247;
+  --ink-muted-rgb: 171 157 191;
+  --ink-bright-rgb: 247 226 255;
+  --ink-panel-rgb: 241 232 250;
+  --ink-soft-rgb: 127 115 147;
+  --ink-meta-rgb: 186 170 203;
+  --ink-title-rgb: 243 231 251;
+  --ink-hint-rgb: 181 166 200;
+  --bg-main: rgb(var(--bg-main-rgb) / var(--background-opacity));
+  --bg-panel: rgb(var(--bg-panel-rgb) / calc(var(--background-opacity) * 0.96));
+  --bg-panel-2: rgb(var(--bg-panel-2-rgb) / calc(var(--background-opacity) * 0.92));
+  --bg-elev: rgb(var(--bg-elev-rgb) / calc(var(--background-opacity) * 0.9));
+  --bg-elev-2: rgb(var(--bg-elev-2-rgb) / calc(var(--background-opacity) * 0.94));
+  --bg-stage: rgb(var(--bg-stage-rgb) / calc(var(--background-opacity) * 0.9));
+  --bg-input: rgb(var(--bg-input-rgb) / calc(var(--background-opacity) * 0.96));
+  --bg-header: rgb(var(--bg-header-rgb) / calc(var(--background-opacity) * 0.96));
+  --bg-pane: rgb(var(--bg-pane-rgb) / calc(var(--background-opacity) * 0.98));
+  --bg-chat: rgb(var(--bg-chat-rgb) / calc(var(--background-opacity) * 0.92));
+  --bg-chat-header: rgb(var(--bg-chat-header-rgb) / calc(var(--background-opacity) * 0.96));
+  --bg-message-media: rgb(var(--bg-message-media-rgb) / calc(var(--background-opacity) * 0.82));
+  --ink-main: rgb(var(--ink-main-rgb) / var(--text-opacity));
+  --ink-muted: rgb(var(--ink-muted-rgb) / calc(var(--text-opacity) * 0.84));
+  --ink-bright: rgb(var(--ink-bright-rgb) / var(--text-opacity));
+  --ink-panel: rgb(var(--ink-panel-rgb) / var(--text-opacity));
+  --ink-soft: rgb(var(--ink-soft-rgb) / calc(var(--text-opacity) * 0.7));
+  --ink-meta: rgb(var(--ink-meta-rgb) / calc(var(--text-opacity) * 0.82));
+  --ink-title: rgb(var(--ink-title-rgb) / var(--text-opacity));
+  --ink-hint: rgb(var(--ink-hint-rgb) / calc(var(--text-opacity) * 0.82));
   --line-soft: rgba(255, 190, 224, 0.14);
   --line-strong: rgba(255, 124, 193, 0.42);
   --accent: #ff4fa7;
@@ -47,7 +88,7 @@ body,
 }
 
 body {
-  background: var(--bg-main);
+  background: transparent;
   color: var(--ink-main);
 }
 
@@ -58,10 +99,22 @@ textarea {
   border-radius: 0;
 }
 
+.app-frame {
+  width: 100%;
+  height: 100%;
+  padding: var(--window-padding);
+  background: transparent;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 320px 1fr;
-  height: 100vh;
+  height: 100%;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--window-border-radius) !important;
+  background: var(--bg-main);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
   transition: grid-template-columns 180ms ease;
 }
 
@@ -87,10 +140,10 @@ textarea {
 }
 
 .brand {
-  font-size: 28px;
+  font-size: calc(28px * var(--font-scale));
   letter-spacing: 0.04em;
   margin-bottom: 4px;
-  color: #f7e2ff;
+  color: var(--ink-bright);
 }
 
 .sidebar-toggle {
@@ -108,7 +161,7 @@ textarea {
 .quick-filter {
   width: 100%;
   border: 1px solid var(--line-soft);
-  background: #0f0b1a;
+  background: var(--bg-input);
   color: var(--ink-main);
   padding: 10px;
 }
@@ -119,7 +172,7 @@ textarea {
 .telegram-search::placeholder,
 .instagram-compose-input::placeholder,
 .instagram-search::placeholder {
-  color: #7f7393;
+  color: var(--ink-soft);
 }
 
 .network-list {
@@ -133,7 +186,7 @@ textarea {
 .network-item {
   border: 1px solid var(--line-soft);
   background: var(--bg-panel-2);
-  color: #f1e8fa;
+  color: var(--ink-panel);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -154,15 +207,15 @@ textarea {
 }
 
 .network-meta {
-  font-size: 11px;
-  color: #baaacb;
+  font-size: calc(11px * var(--font-scale));
+  color: var(--ink-meta);
   white-space: nowrap;
   text-transform: uppercase;
 }
 
 .network-short {
   font-weight: 700;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   letter-spacing: 0.04em;
 }
 
@@ -173,7 +226,7 @@ textarea {
 }
 
 .shell.sidebar-collapsed .brand {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   margin: 0;
 }
 
@@ -206,7 +259,7 @@ textarea {
 .topbar {
   padding: 12px 16px;
   border-bottom: 1px solid var(--line-soft);
-  background: #14101d;
+  background: var(--bg-header);
   display: grid;
   grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1fr) auto;
   gap: 12px;
@@ -214,17 +267,17 @@ textarea {
 }
 
 .network-title {
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale));
   font-weight: 600;
-  color: #f3e7fb;
+  color: var(--ink-title);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .network-hint {
-  font-size: 12px;
-  color: #b5a6c8;
+  font-size: calc(12px * var(--font-scale));
+  color: var(--ink-hint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -240,9 +293,9 @@ textarea {
 .ghost-button {
   border: 1px solid var(--line-soft);
   background: rgba(255, 79, 167, 0.06);
-  color: #fbe6f5;
+  color: var(--ink-bright);
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -255,7 +308,7 @@ textarea {
   position: relative;
   overflow: hidden;
   min-width: 0;
-  background: #111110;
+  background: var(--bg-stage);
 }
 
 .instagram-web-shell {
@@ -326,7 +379,7 @@ textarea {
   display: grid;
   grid-template-rows: 56px 1fr;
   border-right: 1px solid var(--line-soft);
-  background: rgba(19, 13, 30, 0.96);
+  background: var(--bg-pane);
   min-height: 0;
 }
 
@@ -340,15 +393,15 @@ textarea {
 }
 
 .telegram-hamburger {
-  color: #d3bddf;
-  font-size: 17px;
+  color: var(--ink-muted);
+  font-size: calc(17px * var(--font-scale));
   text-align: center;
 }
 
 .telegram-search {
   border: 1px solid var(--line-soft);
-  background: #120d1f;
-  color: #ebdff4;
+  background: var(--bg-input);
+  color: var(--ink-panel);
   padding: 8px;
 }
 
@@ -363,8 +416,8 @@ textarea {
 
 .telegram-chat-item {
   border: 1px solid transparent;
-  background: #1a1328;
-  color: #f1e6fb;
+  background: var(--bg-panel-2);
+  color: var(--ink-panel);
   text-align: left;
   display: grid;
   grid-template-columns: 36px 1fr;
@@ -386,16 +439,16 @@ textarea {
 }
 
 .telegram-chat-item:hover {
-  background: #231834;
+  background: var(--bg-elev);
 }
 
 .telegram-chat-item.unread:not(.active) {
-  background: #20142f;
+  background: var(--bg-elev);
   border-color: rgba(255, 79, 167, 0.18);
 }
 
 .telegram-chat-item.unread:hover:not(.active) {
-  background: #29183c;
+  background: var(--bg-elev-2);
 }
 
 .telegram-chat-item.active:hover {
@@ -403,7 +456,7 @@ textarea {
 }
 
 .telegram-chat-name {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 700;
   margin-bottom: 0;
 }
@@ -429,15 +482,15 @@ textarea {
 }
 
 .telegram-chat-date {
-  font-size: 11px;
-  color: #9f90b6;
+  font-size: calc(11px * var(--font-scale));
+  color: var(--ink-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .telegram-chat-preview {
-  font-size: 12px;
-  color: #c1b2d4;
+  font-size: calc(12px * var(--font-scale));
+  color: var(--ink-muted);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -457,7 +510,7 @@ textarea {
   border: 1px solid rgba(255, 120, 187, 0.4);
   background: #ff5cae;
   color: #fff;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 700;
   line-height: 1.4;
   text-align: center;
@@ -512,7 +565,7 @@ textarea {
 .telegram-chat-pane {
   display: grid;
   grid-template-rows: 52px 1fr auto;
-  background: rgba(12, 9, 21, 0.9);
+  background: var(--bg-chat);
   min-height: 0;
 }
 
@@ -522,8 +575,8 @@ textarea {
   padding: 0 14px;
   border-bottom: 1px solid var(--line-soft);
   font-weight: 600;
-  color: #f3e8fb;
-  background: rgba(25, 18, 39, 0.95);
+  color: var(--ink-title);
+  background: var(--bg-chat-header);
 }
 
 .telegram-message-list {
@@ -542,8 +595,8 @@ textarea {
   border: 1px solid rgba(255, 124, 193, 0.18);
   border-radius: 999px;
   background: rgba(19, 14, 29, 0.92);
-  color: #bfaed2;
-  font-size: 11px;
+  color: var(--ink-muted);
+  font-size: calc(11px * var(--font-scale));
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -596,8 +649,8 @@ textarea {
 }
 
 .telegram-message-meta {
-  font-size: 11px;
-  color: #beaed1;
+  font-size: calc(11px * var(--font-scale));
+  color: var(--ink-muted);
   font-weight: 500;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -612,8 +665,8 @@ textarea {
   align-items: center;
   gap: 6px;
   margin-top: 8px;
-  font-size: 11px;
-  color: #beaed1;
+  font-size: calc(11px * var(--font-scale));
+  color: var(--ink-muted);
 }
 
 .telegram-message-item.outgoing .telegram-message-footer {
@@ -644,7 +697,7 @@ textarea {
 
 .telegram-message-tick {
   display: inline-block;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.08em;
@@ -681,9 +734,9 @@ textarea {
 }
 
 .telegram-message-text {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   line-height: 1.45;
-  color: #f8efff;
+  color: var(--ink-main);
   white-space: pre-wrap;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -712,7 +765,7 @@ textarea {
 
 .telegram-message-forwarded {
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   color: #d6bfd4;
 }
 
@@ -734,7 +787,7 @@ textarea {
 }
 
 .telegram-message-reply-sender {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 700;
   color: #ff9ac5;
   margin-bottom: 2px;
@@ -745,7 +798,7 @@ textarea {
 }
 
 .telegram-message-reply-text {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   color: #d7cae8;
   white-space: nowrap;
   overflow: hidden;
@@ -857,13 +910,13 @@ textarea {
   border-radius: 999px !important;
   background: rgba(62, 31, 54, 0.72);
   border: 1px solid rgba(255, 190, 224, 0.18);
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.02em;
 }
 
 .telegram-message-video-trigger-text {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -964,7 +1017,7 @@ textarea {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
   color: #f3e8fb;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.2;
 }
 
@@ -1014,7 +1067,7 @@ textarea {
   border: 1px solid rgba(255, 124, 193, 0.24);
   background: rgba(255, 79, 167, 0.12);
   color: #ffd5ea;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.08em;
   text-align: center;
@@ -1033,7 +1086,7 @@ textarea {
 
 .telegram-call-title {
   color: #f8eefc;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 600;
   line-height: 1.35;
 }
@@ -1041,7 +1094,7 @@ textarea {
 .telegram-call-meta {
   margin-top: 3px;
   color: #baaed0;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.35;
 }
 
@@ -1088,7 +1141,7 @@ textarea {
 
 .telegram-voice-play-icon {
   grid-area: 1 / 1;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1;
 }
 
@@ -1150,7 +1203,7 @@ textarea {
 }
 
 .telegram-voice-duration {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: #a7a0ba;
@@ -1160,7 +1213,7 @@ textarea {
 }
 
 .telegram-message-audio-meta {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   color: #bcaed0;
   margin-bottom: 6px;
 }
@@ -1201,7 +1254,7 @@ textarea {
     linear-gradient(180deg, rgba(255, 118, 190, 0.34), rgba(255, 79, 167, 0.18)),
     rgba(255, 79, 167, 0.12);
   color: #fff2fb;
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1220,7 +1273,7 @@ textarea {
 
 .telegram-message-document-title {
   color: #f8eefc;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
@@ -1231,7 +1284,7 @@ textarea {
 .telegram-message-document-subtitle {
   margin-top: 3px;
   color: #cdbedb;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
@@ -1255,7 +1308,7 @@ textarea {
   color: #f8e7f3;
   padding: 6px 10px;
   min-height: 28px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 600;
   letter-spacing: 0.01em;
   cursor: pointer;
@@ -1295,7 +1348,7 @@ textarea {
 
 .telegram-empty {
   color: #ab9dbe;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   padding: 12px;
 }
 
@@ -1323,7 +1376,7 @@ textarea {
   background: rgba(255, 79, 167, 0.1);
   color: #fff;
   cursor: pointer;
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale));
   line-height: 1;
 }
 
@@ -1353,7 +1406,7 @@ textarea {
 
 .telegram-compose-reply-sender {
   color: var(--accent-2);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1361,7 +1414,7 @@ textarea {
 .telegram-compose-reply-text {
   min-width: 0;
   color: var(--ink-muted);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1437,7 +1490,7 @@ textarea {
 }
 
 .telegram-emoji-completion-value {
-  font-size: 20px;
+  font-size: calc(20px * var(--font-scale));
   line-height: 1;
 }
 
@@ -1449,7 +1502,7 @@ textarea {
 
 .telegram-emoji-completion-alias {
   color: #f7e9fb;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
@@ -1458,7 +1511,7 @@ textarea {
 
 .telegram-emoji-completion-match {
   color: #bfaecf;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
@@ -1505,14 +1558,14 @@ textarea {
 
 .telegram-compose-document-name {
   color: var(--ink-main);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.35;
   word-break: break-word;
 }
 
 .telegram-compose-document-meta {
   color: var(--ink-muted);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.4;
   word-break: break-word;
 }
@@ -1522,7 +1575,7 @@ textarea {
   background: #1b162a;
   color: #ebdef6;
   padding: 12px 14px;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   min-height: 40px;
   resize: none;
   overflow-y: hidden;
@@ -1550,7 +1603,7 @@ textarea {
   background: rgba(201, 55, 84, 0.18);
   color: #ffd9df;
   cursor: pointer;
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale));
   line-height: 1;
   touch-action: none;
   user-select: none;
@@ -1576,7 +1629,7 @@ textarea {
   color: #f9e2f4;
   display: grid;
   place-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 700;
   overflow: hidden;
 }
@@ -1584,7 +1637,7 @@ textarea {
 .telegram-avatar.small {
   width: 28px;
   height: 28px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .telegram-avatar img {
@@ -1611,7 +1664,7 @@ textarea {
   display: grid;
   grid-template-rows: 56px 1fr;
   border-right: 1px solid var(--line-soft);
-  background: rgba(19, 13, 30, 0.96);
+  background: var(--bg-pane);
   min-height: 0;
 }
 
@@ -1625,15 +1678,15 @@ textarea {
 }
 
 .instagram-hamburger {
-  color: #d3bddf;
-  font-size: 17px;
+  color: var(--ink-muted);
+  font-size: calc(17px * var(--font-scale));
   text-align: center;
 }
 
 .instagram-search {
   border: 1px solid var(--line-soft);
-  background: #120d1f;
-  color: #ebdff4;
+  background: var(--bg-input);
+  color: var(--ink-panel);
   padding: 8px;
 }
 
@@ -1648,8 +1701,8 @@ textarea {
 
 .instagram-chat-item {
   border: 1px solid transparent;
-  background: #1a1328;
-  color: #f1e6fb;
+  background: var(--bg-panel-2);
+  color: var(--ink-panel);
   text-align: left;
   display: grid;
   grid-template-columns: 36px 1fr;
@@ -1671,7 +1724,7 @@ textarea {
 }
 
 .instagram-chat-item:hover {
-  background: #231834;
+  background: var(--bg-elev);
 }
 
 .instagram-chat-item.active:hover {
@@ -1679,7 +1732,7 @@ textarea {
 }
 
 .instagram-chat-name {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 700;
   margin-bottom: 3px;
 }
@@ -1689,8 +1742,8 @@ textarea {
 }
 
 .instagram-chat-preview {
-  font-size: 12px;
-  color: #c1b2d4;
+  font-size: calc(12px * var(--font-scale));
+  color: var(--ink-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1703,7 +1756,7 @@ textarea {
 .instagram-chat-pane {
   display: grid;
   grid-template-rows: 52px 1fr 58px;
-  background: rgba(12, 9, 21, 0.9);
+  background: var(--bg-chat);
   min-height: 0;
 }
 
@@ -1713,8 +1766,8 @@ textarea {
   padding: 0 14px;
   border-bottom: 1px solid var(--line-soft);
   font-weight: 600;
-  color: #f3e8fb;
-  background: rgba(25, 18, 39, 0.95);
+  color: var(--ink-title);
+  background: var(--bg-chat-header);
 }
 
 .instagram-message-list {
@@ -1773,8 +1826,8 @@ textarea {
 }
 
 .instagram-message-meta {
-  font-size: 11px;
-  color: #beaed1;
+  font-size: calc(11px * var(--font-scale));
+  color: var(--ink-muted);
   font-weight: 500;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -1785,9 +1838,9 @@ textarea {
 }
 
 .instagram-message-text {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   line-height: 1.45;
-  color: #f8efff;
+  color: var(--ink-main);
   white-space: pre-wrap;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -1810,12 +1863,12 @@ textarea {
   object-fit: contain;
   margin-bottom: 8px;
   border: 1px solid var(--line-soft);
-  background: rgba(8, 5, 16, 0.85);
+  background: var(--bg-message-media);
 }
 
 .instagram-empty {
-  color: #ab9dbe;
-  font-size: 13px;
+  color: var(--ink-muted);
+  font-size: calc(13px * var(--font-scale));
   padding: 12px;
 }
 
@@ -1826,13 +1879,13 @@ textarea {
   gap: 8px;
   align-items: center;
   padding: 10px;
-  background: rgba(18, 12, 29, 0.96);
+  background: var(--bg-pane);
 }
 
 .instagram-compose-input {
   border: 1px solid var(--line-soft);
-  background: #120d1f;
-  color: #ebdef6;
+  background: var(--bg-input);
+  color: var(--ink-panel);
   padding: 10px;
 }
 
@@ -1853,7 +1906,7 @@ textarea {
   color: #f9e2f4;
   display: grid;
   place-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 700;
   overflow: hidden;
 }
@@ -1861,7 +1914,7 @@ textarea {
 .instagram-avatar.small {
   width: 28px;
   height: 28px;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .instagram-avatar img {
@@ -1933,7 +1986,7 @@ textarea {
 
 .status-toast-eyebrow {
   color: #f0a7cf;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -1963,7 +2016,7 @@ textarea {
 
 .status-toast-label {
   color: #fbe8f4;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 700;
   line-height: 1.3;
   min-width: 0;
@@ -1974,7 +2027,7 @@ textarea {
 
 .status-toast-value {
   color: #f7b8d8;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1991,7 +2044,7 @@ textarea {
 
 .status-toast-detail {
   color: #baaed0;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.45;
   min-width: 0;
   white-space: normal;
@@ -2094,7 +2147,7 @@ textarea {
   color: #f8eaf6;
   text-align: left;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   cursor: pointer;
 }
 
@@ -2111,7 +2164,7 @@ textarea {
   padding: 12px;
   background: #181126;
   color: #f7ecff;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
 }
 
 .command-list {
@@ -2177,7 +2230,7 @@ textarea {
 }
 
 .telegram-image-modal-title {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #ffd4ea;
@@ -2234,14 +2287,14 @@ textarea {
   border: 1px solid rgba(255, 124, 193, 0.24);
   background: rgba(255, 255, 255, 0.03);
   color: #d8c7d8;
-  font-size: 28px;
+  font-size: calc(28px * var(--font-scale));
   line-height: 1;
   cursor: pointer;
 }
 
 .telegram-forward-title {
   color: #c5b7c8;
-  font-size: 21px;
+  font-size: calc(21px * var(--font-scale));
 }
 
 .telegram-forward-search-shell {
@@ -2255,7 +2308,7 @@ textarea {
   border: 0;
   background: transparent;
   color: #f2e8f2;
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   outline: none;
 }
 
@@ -2298,7 +2351,7 @@ textarea {
 .telegram-forward-chat-item .telegram-avatar {
   width: 52px;
   height: 52px;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
 }
 
 .telegram-forward-chat-copy {
@@ -2306,7 +2359,7 @@ textarea {
 }
 
 .telegram-forward-chat-title {
-  font-size: 20px;
+  font-size: calc(20px * var(--font-scale));
   color: #f9f2fb;
   white-space: nowrap;
   overflow: hidden;
@@ -2315,7 +2368,7 @@ textarea {
 
 .telegram-forward-chat-preview {
   margin-top: 5px;
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   color: #a99cae;
   white-space: nowrap;
   overflow: hidden;
@@ -2324,7 +2377,7 @@ textarea {
 
 .telegram-forward-empty {
   color: #ab9dbe;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   padding: 12px;
 }
 
@@ -2336,7 +2389,7 @@ textarea {
   width: fit-content;
   border: 1px solid var(--line-strong);
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #ffd4ea;
@@ -2349,12 +2402,12 @@ textarea {
 
 .qr-subtitle {
   margin: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   color: #b6a8cb;
 }
 
 .auth-label {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #d9bad0;
@@ -2441,7 +2494,7 @@ textarea {
   }
 
   .brand {
-    font-size: 15px;
+    font-size: calc(15px * var(--font-scale));
     margin: 0;
   }
 
@@ -2507,7 +2560,7 @@ textarea {
     width: 56px;
     min-width: 56px;
     height: 56px;
-    font-size: 13px;
+    font-size: calc(13px * var(--font-scale));
   }
 
   .telegram-message-document-title {

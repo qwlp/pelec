@@ -220,7 +220,7 @@ export class ConnectorManager {
 
   private createConnector(network: NetworkDefinition): Connector {
     if (network.id === 'telegram') {
-      return new TelegramConnector(network, this.userDataPath);
+      return new TelegramConnector(network, this.userDataPath, this.config.userConfig.telegram);
     }
 
     if (network.id === 'instagram') {

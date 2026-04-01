@@ -51,7 +51,37 @@ bun install
 
 ## Configuration
 
-PELEC reads environment variables from `.env` if present. The main variables are:
+PELEC now reads a user config file on startup at:
+
+- Linux: `$XDG_CONFIG_HOME/pelec/config.toml` or `~/.config/pelec/config.toml`
+- macOS: `~/Library/Application Support/pelec/config.toml`
+- Windows: `%APPDATA%\\pelec\\config.toml`
+
+The file is created automatically on first launch. Current keys:
+
+```toml
+[telegram]
+ghost_mode = false
+
+[appearance]
+window_padding = 12
+window_border_radius = 0
+font_family = "Ioskeley Mono, Iosevka Mono, Iosevka, JetBrains Mono, IBM Plex Mono, Fira Code, Consolas, monospace"
+font_size = 14
+background_opacity = 0.92
+text_opacity = 1.0
+```
+
+Notes:
+
+- Restart the app after editing `config.toml`
+- `ghost_mode = true` keeps Telegram chat reads in a best-effort “do not mark seen” mode by avoiding chat-open watcher calls
+- `window_padding` is clamped to `0..64`
+- `window_border_radius` is clamped to `0..64`
+- `font_size` is clamped to `10..28`
+- `background_opacity` and `text_opacity` are clamped to `0..1`
+
+PELEC also reads environment variables from `.env` if present. The main variables are:
 
 ```bash
 TELEGRAM_API_ID=your_api_id

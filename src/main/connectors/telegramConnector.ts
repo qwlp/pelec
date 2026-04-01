@@ -18,7 +18,7 @@ import type {
   OutgoingAttachmentDocument,
   ResolvedDocument,
 } from '../../shared/connectors';
-import type { NetworkDefinition } from '../../shared/types';
+import type { NetworkDefinition, TelegramUserConfig } from '../../shared/types';
 
 const importRuntimeModule = async (relativeToNodeModules: string): Promise<unknown> => {
   const candidates = [
@@ -207,6 +207,7 @@ export class TelegramConnector implements Connector {
   constructor(
     private readonly network: NetworkDefinition,
     private readonly userDataPath: string,
+    private readonly userConfig: TelegramUserConfig,
   ) {
     this.status = {
       network: this.network.id,
@@ -443,17 +444,20 @@ export class TelegramConnector implements Connector {
     }
 
     const client = this.tdClient;
+    const shouldOpenChat = !this.userConfig.ghostMode;
 
     try {
-      await this.invokeWithTimeout(
-        client,
-        {
-          _: 'openChat',
-          chat_id: Number(chatId),
-        },
-        'openChat',
-        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
-      );
+      if (shouldOpenChat) {
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'openChat',
+            chat_id: Number(chatId),
+          },
+          'openChat',
+          TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
+        );
+      }
       const chat = await this.invokeWithTimeout<TdChat>(
         client,
         {
@@ -496,6 +500,10 @@ export class TelegramConnector implements Connector {
         }
 
         cursor = oldestId;
+      }
+
+      if (shouldOpenChat) {
+        await this.acknowledgeViewedMessages(client, chatId, collected);
       }
 
       const uniqueById = new Map<string, TdMessage>();
@@ -598,7 +606,7 @@ export class TelegramConnector implements Connector {
       this.status.details = `Failed loading messages: ${this.status.lastError}`;
       return [];
     } finally {
-      if (this.activeChatId !== chatId) {
+      if (shouldOpenChat && this.activeChatId !== chatId) {
         void this.closeChat(client, chatId);
       }
     }
@@ -618,6 +626,10 @@ export class TelegramConnector implements Connector {
     }
 
     if (!this.activeChatId || this.status.authState !== 'authenticated') {
+      return;
+    }
+
+    if (this.userConfig.ghostMode) {
       return;
     }
 
@@ -1183,6 +1195,54 @@ export class TelegramConnector implements Connector {
       );
     } catch {
       // Best-effort close; failure is non-fatal for message rendering.
+    }
+  }
+
+  private async acknowledgeViewedMessages(
+    client: TdClient,
+    chatId: string,
+    messages: TdMessage[],
+  ): Promise<void> {
+    const messageIds = messages
+      .filter((message) => message.is_outgoing !== true)
+      .map((message) => this.toTdMessageId(String(message.id ?? '')))
+      .filter((messageId): messageId is number => typeof messageId === 'number');
+
+    if (messageIds.length < 1) {
+      return;
+    }
+
+    try {
+      await this.invokeWithTimeout(
+        client,
+        {
+          _: 'viewMessages',
+          chat_id: Number(chatId),
+          message_ids: messageIds,
+          source: null,
+          force_read: true,
+        },
+        'viewMessages',
+        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
+      );
+      return;
+    } catch {
+      // Fall back for TDLib variants that don't accept force_read/source.
+    }
+
+    try {
+      await this.invokeWithTimeout(
+        client,
+        {
+          _: 'viewMessages',
+          chat_id: Number(chatId),
+          message_ids: messageIds,
+        },
+        'viewMessages',
+        TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS,
+      );
+    } catch {
+      // Best-effort read acknowledgement only.
     }
   }
 

@@ -25,8 +25,9 @@ import type {
   OutgoingAttachmentDocument,
   ResolvedDocument,
 } from './shared/connectors';
-import type { AppActivity, AppConfig, NetworkId } from './shared/types';
+import type { AppActivity, AppConfig, NetworkDefinition, NetworkId } from './shared/types';
 import { ConnectorManager } from './main/connectors/connectorManager';
+import { loadUserConfig } from './main/userConfig';
 
 if (started) {
   app.quit();
@@ -76,34 +77,42 @@ if (!process.env.TELEGRAM_API_HASH) {
   process.env.TELEGRAM_API_HASH = '90e7c85f263db08ae995ea0de68b4523';
 }
 
-const appConfig: AppConfig = {
+const networks: NetworkDefinition[] = [
+  {
+    id: 'telegram',
+    name: 'Telegram',
+    partition: 'persist:telegram',
+    homeUrl: 'about:blank',
+    loginHint: 'TDLib native auth: phone number, login code, and 2FA password if needed.',
+    supportLevel: 'native-web',
+  },
+  {
+    id: 'instagram',
+    name: 'Instagram',
+    partition: 'persist:instagram',
+    homeUrl: 'https://www.instagram.com/direct/inbox/',
+    loginHint: 'Use the embedded Instagram web app for DMs inside the app shell.',
+    supportLevel: 'native-web',
+  },
+];
+
+const buildAppConfig = (
+  configPath: string,
+  userConfig: AppConfig['userConfig'],
+): AppConfig => ({
   version: app.getVersion(),
-  networks: [
-    {
-      id: 'telegram',
-      name: 'Telegram',
-      partition: 'persist:telegram',
-      homeUrl: 'about:blank',
-      loginHint: 'TDLib native auth: phone number, login code, and 2FA password if needed.',
-      supportLevel: 'native-web',
-    },
-    {
-      id: 'instagram',
-      name: 'Instagram',
-      partition: 'persist:instagram',
-      homeUrl: 'https://www.instagram.com/direct/inbox/',
-      loginHint: 'Use the embedded Instagram web app for DMs inside the app shell.',
-      supportLevel: 'native-web',
-    },
-  ],
+  networks,
   shortcuts: {
     forceNormalMode: 'CommandOrControl+[',
   },
-};
+  userConfig,
+  configPath,
+});
 
 let connectorManager: ConnectorManager | null = null;
 let mainWindow: BrowserWindow | null = null;
 let appShutdownStarted = false;
+let appConfig: AppConfig | null = null;
 
 const resolveNetworkShortcutTarget = (input: Electron.Input): NetworkId | null => {
   if (
@@ -488,7 +497,8 @@ const createWindow = (): BrowserWindow => {
     height: 900,
     minWidth: 1100,
     minHeight: 720,
-    backgroundColor: '#0b1016',
+    backgroundColor: '#00000000',
+    transparent: true,
     autoHideMenuBar: true,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -664,40 +674,54 @@ const registerMediaProtocol = (): void => {
 };
 
 app.whenReady().then(() => {
-  registerMediaProtocol();
-  connectorManager = new ConnectorManager(appConfig, app.getPath('userData'));
-  connectorManager.onConnectorUpdate((event: ConnectorUpdateEvent) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send('connector:update', event);
+  void (async () => {
+    registerMediaProtocol();
+
+    const loadedUserConfig = await loadUserConfig(app.getPath('userData'));
+    if (loadedUserConfig.warnings.length > 0) {
+      for (const warning of loadedUserConfig.warnings) {
+        console.warn(`[config] ${warning}`);
+      }
     }
-  });
-  void connectorManager.initAll();
 
-  mainWindow = createWindow();
-  wireNetworkShortcutHandling(mainWindow.webContents);
+    appConfig = buildAppConfig(loadedUserConfig.configPath, loadedUserConfig.userConfig);
+    connectorManager = new ConnectorManager(appConfig, app.getPath('userData'));
+    connectorManager.onConnectorUpdate((event: ConnectorUpdateEvent) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        window.webContents.send('connector:update', event);
+      }
+    });
+    void connectorManager.initAll();
 
-  app.on('web-contents-created', (_event, contents) => {
-    if (contents.getType() === 'webview') {
-      wireNetworkShortcutHandling(contents);
-      installWebviewContextMenu(contents);
+    mainWindow = createWindow();
+    wireNetworkShortcutHandling(mainWindow.webContents);
+
+    app.on('web-contents-created', (_event, contents) => {
+      if (contents.getType() === 'webview') {
+        wireNetworkShortcutHandling(contents);
+        installWebviewContextMenu(contents);
+      }
+    });
+
+    const shortcut = appConfig.shortcuts.forceNormalMode;
+    const registered = globalShortcut.register(shortcut, () => {
+      mainWindow?.webContents.send('app:force-normal-mode');
+    });
+
+    if (!registered) {
+      // Failing to register is not fatal. Renderer still handles Escape in-app.
+      console.warn(`Failed to register shortcut: ${shortcut}`);
     }
-  });
 
-  const shortcut = appConfig.shortcuts.forceNormalMode;
-  const registered = globalShortcut.register(shortcut, () => {
-    mainWindow?.webContents.send('app:force-normal-mode');
-  });
-
-  if (!registered) {
-    // Failing to register is not fatal. Renderer still handles Escape in-app.
-    console.warn(`Failed to register shortcut: ${shortcut}`);
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow();
-      wireNetworkShortcutHandling(mainWindow.webContents);
-    }
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        mainWindow = createWindow();
+        wireNetworkShortcutHandling(mainWindow.webContents);
+      }
+    });
+  })().catch((error) => {
+    console.error('Application startup failed.', error);
+    app.exit(1);
   });
 });
 
@@ -740,7 +764,12 @@ app.on('window-all-closed', () => {
   }
 });
 
-ipcMain.handle('app:get-config', async (): Promise<AppConfig> => appConfig);
+ipcMain.handle('app:get-config', async (): Promise<AppConfig> => {
+  if (!appConfig) {
+    throw new Error('App config not ready');
+  }
+  return appConfig;
+});
 
 ipcMain.handle('connector:get-statuses', async () => {
   if (!connectorManager) {
