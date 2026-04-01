@@ -129,6 +129,11 @@ textarea {
   grid-template-columns: 72px 1fr;
 }
 
+.shell.network-rail-hidden,
+.shell.network-rail-hidden.sidebar-collapsed {
+  grid-template-columns: 0 1fr;
+}
+
 .sidebar {
   border-right: 1px solid var(--line-soft);
   padding: 14px;
@@ -137,6 +142,13 @@ textarea {
   grid-template-rows: auto auto 1fr;
   gap: 10px;
   min-width: 0;
+}
+
+.shell.network-rail-hidden .sidebar {
+  opacity: 0;
+  pointer-events: none;
+  border-right: 0;
+  padding: 0;
 }
 
 .sidebar-top {
@@ -376,6 +388,8 @@ textarea {
   grid-template-columns: 340px minmax(0, 1fr);
   background: transparent;
   z-index: 3;
+  transition: grid-template-columns 0.18s ease;
+  overflow: hidden;
 }
 
 .native-telegram.hidden {
@@ -388,21 +402,30 @@ textarea {
   border-right: 1px solid var(--line-soft);
   background: var(--bg-pane);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+
+.telegram-left-pane > * {
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
 }
 
 .telegram-left-header {
   display: grid;
-  grid-template-columns: 32px 1fr;
+  grid-template-columns: 1fr;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line-soft);
-}
-
-.telegram-hamburger {
-  color: var(--ink-muted);
-  font-size: calc(17px * var(--font-scale));
-  text-align: center;
 }
 
 .telegram-search {
@@ -419,6 +442,22 @@ textarea {
   flex-direction: column;
   gap: 3px;
   min-height: 0;
+}
+
+.native-telegram.telegram-chat-list-minimized {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.native-telegram.telegram-chat-list-minimized .telegram-left-pane {
+  opacity: 0;
+  transform: translateX(-12px);
+  pointer-events: none;
+  border-right-color: transparent;
+}
+
+.native-telegram.telegram-chat-list-minimized .telegram-left-pane > * {
+  opacity: 0;
+  transform: translateX(-8px);
 }
 
 .telegram-chat-item {
@@ -2474,6 +2513,11 @@ textarea {
     grid-template-columns: 280px minmax(0, 1fr);
   }
 
+  .shell.network-rail-hidden,
+  .shell.network-rail-hidden.sidebar-collapsed {
+    grid-template-columns: 0 1fr;
+  }
+
   .network-hint {
     display: none;
   }
@@ -2482,6 +2526,11 @@ textarea {
 @media (max-width: 760px) {
   .shell {
     grid-template-columns: 64px 1fr;
+  }
+
+  .shell.network-rail-hidden,
+  .shell.network-rail-hidden.sidebar-collapsed {
+    grid-template-columns: 0 1fr;
   }
 
   .sidebar {

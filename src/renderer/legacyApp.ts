@@ -86,6 +86,7 @@ interface AppState {
   telegramMessagesLoading: boolean;
   telegramLoadError: string | null;
   telegramSearchQuery: string;
+  telegramChatListMinimized: boolean;
   instagramChats: ChatSummary[];
   instagramMessages: ChatMessage[];
   activeInstagramChatId: string | null;
@@ -138,6 +139,7 @@ type TelegramForwardState = {
 };
 
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
+const NETWORK_RAIL_VISIBLE = false;
 export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> => {
   const appEl = mountRoot ?? document.querySelector<HTMLDivElement>('#app');
   if (!appEl) {
@@ -182,6 +184,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     telegramMessagesLoading: false,
     telegramLoadError: null,
     telegramSearchQuery: '',
+    telegramChatListMinimized: false,
     instagramChats: [],
     instagramMessages: [],
     activeInstagramChatId: null,
@@ -1080,7 +1083,6 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   nativeTelegram.innerHTML = `
     <aside class="telegram-left-pane">
       <header class="telegram-left-header">
-        <div class="telegram-hamburger">☰</div>
         <input class="telegram-search" placeholder="Search" />
       </header>
       <section id="telegram-chat-list" class="telegram-chat-list"></section>
@@ -1163,6 +1165,27 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   ) {
     throw new Error('Native Telegram UI elements missing');
   }
+
+  const setTelegramChatListMinimized = (minimized: boolean): void => {
+    if (state.telegramChatListMinimized === minimized) {
+      return;
+    }
+    state.telegramChatListMinimized = minimized;
+    if (minimized) {
+      telegramSearchInput.blur();
+    }
+    statusBar.textContent = minimized
+      ? 'Telegram chats minimized.'
+      : 'Telegram chats expanded.';
+    render();
+  };
+
+  const toggleTelegramChatListMinimized = (): void => {
+    if (state.activeNetwork !== 'telegram') {
+      return;
+    }
+    setTelegramChatListMinimized(!state.telegramChatListMinimized);
+  };
 
   const closeTelegramEmojiCompletion = (): void => {
     telegramEmojiCompletionState = {
@@ -2536,6 +2559,20 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     return status.mode === 'native' && status.authState === 'authenticated';
   };
 
+  const getVimPanesForActiveNetwork = (): Array<AppState['vimPane']> => {
+    if (state.activeNetwork === 'telegram') {
+      return NETWORK_RAIL_VISIBLE
+        ? ['networks', 'telegram-chats', 'telegram-messages']
+        : ['telegram-chats', 'telegram-messages'];
+    }
+    if (state.activeNetwork === 'instagram' && isInstagramNativeReady()) {
+      return NETWORK_RAIL_VISIBLE
+        ? ['networks', 'instagram-chats', 'instagram-messages']
+        : ['instagram-chats', 'instagram-messages'];
+    }
+    return ['networks'];
+  };
+
   const areChatListsEqual = (a: ChatSummary[], b: ChatSummary[]): boolean => {
     if (a.length !== b.length) {
       return false;
@@ -3259,7 +3296,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       state.vimPane = 'telegram-chats';
       void loadTelegramChats();
     } else if (id === 'instagram') {
-      state.vimPane = 'networks';
+      state.vimPane = isInstagramNativeReady() && !NETWORK_RAIL_VISIBLE
+        ? 'instagram-chats'
+        : 'networks';
     } else {
       state.vimPane = 'networks';
     }
@@ -3805,6 +3844,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const moveSelection = (direction: 1 | -1): void => {
+    if (!NETWORK_RAIL_VISIBLE) {
+      return;
+    }
     const list = visibleNetworks();
     if (list.length < 1) {
       return;
@@ -3890,6 +3932,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       return;
     }
 
+    if (!NETWORK_RAIL_VISIBLE) {
+      return;
+    }
     const list = visibleNetworks();
     if (list.length < 1) {
       return;
@@ -3952,6 +3997,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       return;
     }
 
+    if (!NETWORK_RAIL_VISIBLE) {
+      return;
+    }
     const list = visibleNetworks();
     if (list.length < 1) {
       return;
@@ -3965,14 +4013,21 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       state.activeNetwork !== 'telegram' &&
       !(state.activeNetwork === 'instagram' && isInstagramNativeReady())
     ) {
-      state.vimPane = 'networks';
+      if (NETWORK_RAIL_VISIBLE) {
+        state.vimPane = 'networks';
+        render();
+      }
+      return;
+    }
+    const panes = getVimPanesForActiveNetwork();
+    if (panes.length < 2) {
+      return;
+    }
+    if (!panes.includes(state.vimPane)) {
+      state.vimPane = panes[0];
       render();
       return;
     }
-    const panes: Array<AppState['vimPane']> =
-      state.activeNetwork === 'instagram'
-        ? ['networks', 'instagram-chats', 'instagram-messages']
-        : ['networks', 'telegram-chats', 'telegram-messages'];
     const currentIndex = panes.indexOf(state.vimPane);
     const safeIndex = currentIndex === -1 ? 0 : currentIndex;
     const nextIndex = Math.max(0, Math.min(panes.length - 1, safeIndex + direction));
@@ -4068,6 +4123,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       return;
     }
 
+    if (!NETWORK_RAIL_VISIBLE) {
+      return;
+    }
     activateNetwork(state.selectedNetwork);
   };
 
@@ -4854,6 +4912,10 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     nativeTelegram.classList.remove('hidden');
+    nativeTelegram.classList.toggle(
+      'telegram-chat-list-minimized',
+      state.telegramChatListMinimized,
+    );
 
     const telegramStatus = getStatusByNetwork('telegram');
 
@@ -5610,6 +5672,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
     shellEl.classList.remove('telegram-focus');
     shellEl.classList.add('sidebar-collapsed');
+    shellEl.classList.toggle('network-rail-hidden', !NETWORK_RAIL_VISIBLE);
 
     networkList.replaceChildren(
       ...networks.map((network) => {
@@ -5983,6 +6046,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       return;
     }
 
+    if (state.activeNetwork === 'telegram' && event.ctrlKey && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      clearGPending();
+      toggleTelegramChatListMinimized();
+      return;
+    }
+
     const target = event.target as HTMLElement | null;
     const isTypingTarget =
       !!target &&
@@ -6013,6 +6083,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     if (event.key === '/' && document.activeElement !== quickFilter) {
+      if (!NETWORK_RAIL_VISIBLE) {
+        return;
+      }
       event.preventDefault();
       quickFilter.focus();
       quickFilter.select();
