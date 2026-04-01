@@ -114,6 +114,12 @@ Lint the codebase:
 bun run lint
 ```
 
+Run the renderer/unit test suite:
+
+```bash
+bun test
+```
+
 ## Packaging
 
 Package the Electron application with Electron Forge:
@@ -192,9 +198,10 @@ The command palette includes actions such as network switching, auth, connector 
 
 ```text
 src/
-  main.ts                         Electron main process and IPC
+  main.ts                         Thin Electron entrypoint
   preload.ts                      Safe renderer bridge
-  renderer.ts                     Keyboard-first UI
+  renderer/                       React entrypoint, legacy host, and renderer utilities/tests
+  main/                           Main-process bootstrap, IPC, window, protocol, and helpers
   main/connectors/                Telegram and Instagram connector implementations
   shared/                         Cross-process types
 scripts/

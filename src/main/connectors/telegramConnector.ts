@@ -2,14 +2,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type {
   AuthStartResult,
   AuthSubmission,
-  ChatCall,
   ChatDocument,
-  ChatReaction,
   ChatMessage,
   ChatSummary,
   Connector,
@@ -19,172 +16,63 @@ import type {
   ResolvedDocument,
 } from '../../shared/connectors';
 import type { NetworkDefinition, TelegramUserConfig } from '../../shared/types';
-
-const importRuntimeModule = async (relativeToNodeModules: string): Promise<unknown> => {
-  const candidates = [
-    path.join(
-      process.resourcesPath,
-      'app.asar.unpacked',
-      '.vite',
-      'node_modules',
-      relativeToNodeModules,
-    ),
-    path.join(__dirname, '..', 'node_modules', relativeToNodeModules),
-    path.join(process.cwd(), 'node_modules', relativeToNodeModules),
-  ];
-
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) {
-      continue;
-    }
-    return import(pathToFileURL(candidate).href);
-  }
-
-  throw new Error(`Runtime module not found: ${relativeToNodeModules}`);
-};
-
-const loadTdlModule = async (): Promise<{
-  default?: {
-    createClient?: (config: unknown) => TdClient;
-    configure?: (config: { tdjson: string }) => void;
-  };
-  createClient?: (config: unknown) => TdClient;
-  configure?: (config: { tdjson: string }) => void;
-}> =>
-  (await importRuntimeModule(path.join('tdl', 'dist', 'index.js'))) as {
-    default?: {
-      createClient?: (config: unknown) => TdClient;
-      configure?: (config: { tdjson: string }) => void;
-    };
-    createClient?: (config: unknown) => TdClient;
-    configure?: (config: { tdjson: string }) => void;
-  };
-
-const loadPrebuiltTdlibModule = async (): Promise<{ getTdjson?: () => string }> =>
-  (await importRuntimeModule(path.join('prebuilt-tdlib', 'index.js'))) as {
-    getTdjson?: () => string;
-  };
-
-const loadFfmpegStaticModule = async (): Promise<{ default?: string } | string> =>
-  (await importRuntimeModule(path.join('ffmpeg-static', 'index.js'))) as { default?: string } | string;
-
-const loadFfprobeStaticModule = async (): Promise<{ default?: { path?: string }; path?: string }> =>
-  (await importRuntimeModule(path.join('ffprobe-static', 'index.js'))) as {
-    default?: { path?: string };
-    path?: string;
-  };
-
-type TdClient = {
-  invoke: (request: Record<string, unknown>) => Promise<unknown>;
-  on: (event: 'update' | 'error' | 'close', handler: (payload: unknown) => void) => void;
-  close?: () => Promise<void> | void;
-  destroy?: () => Promise<void> | void;
-};
-
-type AuthorizationState = {
-  _: string;
-  link?: string;
-};
-
-type AuthorizationUpdate = {
-  _: string;
-  authorization_state?: AuthorizationState;
-};
-
-type TdUpdateWithChatContext = AuthorizationUpdate & {
-  chat_id?: number;
-  message?: { chat_id?: number };
-};
-
-type TdMessage = {
-  id?: number | string | bigint;
-  media_album_id?: string;
-  date?: number;
-  is_outgoing?: boolean;
-  forward_info?: {
-    origin?: {
-      _?: string;
-      sender_user_id?: number;
-      sender_name?: string;
-      sender_chat_id?: number;
-      chat_id?: number;
-      author_signature?: string;
-    };
-  };
-  reply_to?: {
-    message_id?: number | string | bigint;
-  };
-  reply_to_message_id?: number | string | bigint;
-  sender_id?: { user_id?: number; chat_id?: number; _: string };
-  interaction_info?: unknown;
-  content?: unknown;
-};
-
-type TdChat = {
-  id?: number;
-  title?: string;
-  type?: { _: string };
-  unread_count?: number;
-  last_message?: { content?: unknown };
-  last_read_outbox_message_id?: number | string | bigint;
-  notification_settings?: {
-    use_default_mute_for?: boolean;
-    mute_for?: number;
-  };
-};
-
-type TdScopeNotificationSettings = {
-  mute_for?: number;
-};
-
-type TdFileRef = {
-  id?: number;
-  size?: number;
-  expected_size?: number;
-  local?: {
-    path?: string;
-    is_downloading_active?: boolean;
-    is_downloading_completed?: boolean;
-    downloaded_prefix_size?: number;
-  };
-};
-
-type ParsedDataUrl = {
-  fullMimeType: string;
-  essenceMimeType: string;
-  bytes: Buffer;
-};
-
-type PreparedUploadFile = {
-  tempDir: string;
-  filePath: string;
-  mimeType: string;
-};
-
-type PreparedVoiceNoteUpload = {
-  tempDir: string;
-  sourceFilePath: string;
-  outputFilePath: string;
-  outputMimeType: 'audio/ogg;codecs=opus';
-  durationSeconds: number;
-};
+import {
+  extractTelegramCallInfo,
+  extractTelegramMessageText,
+  extractTelegramReactions,
+} from './telegram/messages';
+import {
+  localPathToDataUrl,
+  resolveTdFilePath,
+  resolveTdFileUrl,
+  resolveTdPlayableFilePath,
+} from './telegram/files';
+import {
+  buildTelegramLocalMediaUrl,
+  extractTelegramAnimationMimeType,
+  extractTelegramAnimationSource,
+  extractTelegramDocumentMetadata,
+  extractTelegramImageDocumentSource,
+  extractTelegramPhotoFiles,
+  extractTelegramStickerEmoji,
+  extractTelegramStickerSource,
+  extractTelegramVideoFile,
+  extractTelegramVideoMimeType,
+  extractTelegramVoiceDurationSeconds,
+  extractTelegramVoiceNoteFile,
+  getTelegramDocument,
+  hasTelegramVideo,
+  hasTelegramVoiceNote,
+  isTelegramAnimatedSticker,
+} from './telegram/media';
+import {
+  getFfmpegBinaryPath,
+  getFfprobeBinaryPath,
+  loadPrebuiltTdlibModule,
+  loadTdlModule,
+} from './telegram/runtime';
+import {
+  isSupportedVoiceNoteMimeType,
+  parseDataUrl,
+  resolveUploadFileName,
+  TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES,
+} from './telegram/uploads';
+import type {
+  AuthorizationState,
+  PreparedUploadFile,
+  PreparedVoiceNoteUpload,
+  TdChat,
+  TdClient,
+  TdMessage,
+  TdScopeNotificationSettings,
+  TdUpdateWithChatContext,
+} from './telegram/types';
 
 const TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS = 8000;
 const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
 const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 60000;
 const TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS = 250;
-const TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
 const PELEC_MEDIA_SCHEME = 'pelec-media';
-const TELEGRAM_VOICE_NOTE_MIME_TYPES = new Set([
-  'audio/ogg',
-  'audio/ogg;codecs=opus',
-  'audio/opus',
-  'audio/webm',
-  'audio/webm;codecs=opus',
-]);
-
-let ffmpegBinaryPathPromise: Promise<string> | null = null;
-let ffprobeBinaryPathPromise: Promise<string> | null = null;
 
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
@@ -419,7 +307,7 @@ export class TelegramConnector implements Connector {
             id: String(chat.id ?? chatId),
             title: chat.title ?? 'Untitled chat',
             unreadCount: chat.unread_count ?? 0,
-            lastMessagePreview: this.extractMessageText(chat.last_message?.content, {
+            lastMessagePreview: extractTelegramMessageText(chat.last_message?.content, {
               outgoing: chat.last_message?.is_outgoing === true,
             }),
             lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
@@ -474,7 +362,9 @@ export class TelegramConnector implements Connector {
       const collected: TdMessage[] = [];
 
       for (let page = 0; page < maxPages; page += 1) {
-        const history = await this.invokeWithTimeout<{ messages?: TdMessage[] }>(
+        const history: { messages?: TdMessage[] } = await this.invokeWithTimeout<{
+          messages?: TdMessage[];
+        }>(
           client,
           {
             _: 'getChatHistory',
@@ -487,13 +377,13 @@ export class TelegramConnector implements Connector {
           'getChatHistory',
         );
 
-        const messages = history.messages ?? [];
+        const messages: TdMessage[] = history.messages ?? [];
         if (messages.length < 1) {
           break;
         }
 
         collected.push(...messages);
-        const oldestId = messages[messages.length - 1]?.id;
+        const oldestId: number | string | bigint | undefined = messages[messages.length - 1]?.id;
 
         if (!oldestId || String(oldestId) === String(cursor) || messages.length < pageLimit) {
           break;
@@ -536,7 +426,7 @@ export class TelegramConnector implements Connector {
         if (localMessage) {
           replyContextById.set(replyTargetId, {
             sender: await this.resolveSenderLabel(client, localMessage.sender_id),
-            text: this.extractMessageText(localMessage.content, {
+            text: extractTelegramMessageText(localMessage.content, {
               outgoing: localMessage.is_outgoing === true,
             }),
           });
@@ -549,7 +439,7 @@ export class TelegramConnector implements Connector {
         }
         replyContextById.set(replyTargetId, {
           sender: await this.resolveSenderLabel(client, remoteMessage.sender_id),
-          text: this.extractMessageText(remoteMessage.content, {
+          text: extractTelegramMessageText(remoteMessage.content, {
             outgoing: remoteMessage.is_outgoing === true,
           }),
         });
@@ -563,7 +453,7 @@ export class TelegramConnector implements Connector {
             id: String(message.id ?? ''),
             mediaAlbumId: message.media_album_id ? String(message.media_album_id) : undefined,
             sender: await this.resolveSenderLabel(client, message.sender_id),
-            text: this.extractMessageText(message.content, {
+            text: extractTelegramMessageText(message.content, {
               outgoing: message.is_outgoing === true,
             }),
             timestamp: (message.date ?? 0) * 1000,
@@ -576,20 +466,20 @@ export class TelegramConnector implements Connector {
             replyToMessageId: replyTargetId,
             replyToSender: replyContext?.sender,
             replyToText: replyContext?.text,
-            hasAudio: this.hasVoiceNote(message.content),
-            hasVideo: this.hasVideo(message.content),
+            hasAudio: hasTelegramVoiceNote(message.content),
+            hasVideo: hasTelegramVideo(message.content),
             imageUrl: await this.extractImageUrl(client, message.content),
-            videoMimeType: this.extractVideoMimeType(message.content),
+            videoMimeType: extractTelegramVideoMimeType(message.content),
             animationUrl: await this.extractAnimationUrl(client, message.content),
-            animationMimeType: this.extractAnimationMimeType(message.content),
+            animationMimeType: extractTelegramAnimationMimeType(message.content),
             stickerUrl: await this.extractStickerUrl(client, message.content),
-            stickerEmoji: this.extractStickerEmoji(message.content),
-            stickerIsAnimated: this.isAnimatedSticker(message.content),
-            reactions: this.extractReactions(message.interaction_info),
-            audioDurationSeconds: this.extractVoiceDurationSeconds(message.content),
+            stickerEmoji: extractTelegramStickerEmoji(message.content),
+            stickerIsAnimated: isTelegramAnimatedSticker(message.content),
+            reactions: extractTelegramReactions(message.interaction_info),
+            audioDurationSeconds: extractTelegramVoiceDurationSeconds(message.content),
             senderAvatarUrl: await this.resolveSenderAvatar(client, message.sender_id),
-            document: this.extractDocumentMetadata(message.content),
-            call: this.extractCallInfo(message.content),
+            document: extractTelegramDocumentMetadata(message.content),
+            call: extractTelegramCallInfo(message.content),
           };
         }),
       );
@@ -828,7 +718,7 @@ export class TelegramConnector implements Connector {
     }
 
     const requestedMimeType = document.mimeType?.trim().toLowerCase();
-    if (requestedMimeType && !this.isSupportedVoiceNoteMimeType(requestedMimeType)) {
+    if (requestedMimeType && !isSupportedVoiceNoteMimeType(requestedMimeType)) {
       this.setVoiceNoteError('Unsupported Telegram voice note format.');
       return false;
     }
@@ -1389,7 +1279,13 @@ export class TelegramConnector implements Connector {
         },
         'getUser',
       );
-      const avatar = await this.resolveTdFileUrl(client, user.profile_photo?.small);
+      const avatar = await resolveTdFileUrl({
+        client,
+        file: user.profile_photo?.small,
+        invokeWithTimeout: this.invokeWithTimeout.bind(this),
+        downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+        mediaDataUrlCache: this.mediaDataUrlCache,
+      });
       this.userAvatarCache.set(userId, avatar);
       return avatar;
     } catch {
@@ -1439,7 +1335,13 @@ export class TelegramConnector implements Connector {
         },
         'getChat',
       );
-      const avatar = await this.resolveTdFileUrl(client, chat.photo?.small);
+      const avatar = await resolveTdFileUrl({
+        client,
+        file: chat.photo?.small,
+        invokeWithTimeout: this.invokeWithTimeout.bind(this),
+        downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+        mediaDataUrlCache: this.mediaDataUrlCache,
+      });
       this.chatAvatarCache.set(chatId, avatar);
       return avatar;
     } catch {
@@ -1489,204 +1391,149 @@ export class TelegramConnector implements Connector {
   }
 
   private async extractImageUrl(client: TdClient, content: unknown): Promise<string | undefined> {
-    if (!content || typeof content !== 'object') {
+    const imageDocument = extractTelegramImageDocumentSource(content);
+    if (imageDocument) {
+      return resolveTdFileUrl({
+        client,
+        file: imageDocument.file,
+        preferredMimeType: imageDocument.mimeType,
+        invokeWithTimeout: this.invokeWithTimeout.bind(this),
+        downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+        mediaDataUrlCache: this.mediaDataUrlCache,
+      });
+    }
+
+    const photos = extractTelegramPhotoFiles(content);
+    if (photos.length < 1) {
       return undefined;
     }
 
-    const container = content as {
-      _?: string;
-      photo?: { sizes?: Array<{ photo?: { id?: number; local?: { path?: string } } }> };
-      document?: {
-        mime_type?: string;
-        document?: { id?: number; local?: { path?: string } };
-      };
-    };
-
-    if (container._ === 'messageDocument') {
-      const mime = container.document?.mime_type?.toLowerCase() ?? '';
-      if (!mime.startsWith('image/')) {
-        return undefined;
-      }
-      return this.resolveTdFileUrl(client, container.document?.document, mime);
-    }
-
-    if (container._ !== 'messagePhoto') {
-      return undefined;
-    }
-
-    const sizes = container.photo?.sizes ?? [];
-    if (sizes.length < 1) {
-      return undefined;
-    }
-
-    for (let i = sizes.length - 1; i >= 0; i -= 1) {
-      const candidate = sizes[i];
-      const localPath = candidate.photo?.local?.path?.trim();
+    for (let i = photos.length - 1; i >= 0; i -= 1) {
+      const localPath = photos[i]?.local?.path?.trim();
       if (localPath) {
-        return this.localPathToDataUrl(localPath);
+        return localPathToDataUrl(localPath, this.mediaDataUrlCache);
       }
     }
 
-    const fileId = sizes[sizes.length - 1]?.photo?.id;
-    if (!fileId) {
+    const localPath = await resolveTdFilePath({
+      client,
+      file: photos[photos.length - 1],
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+    });
+    if (!localPath) {
       return undefined;
     }
-
-    try {
-      const downloaded = (await client.invoke({
-        _: 'downloadFile',
-        file_id: fileId,
-        priority: 1,
-        offset: 0,
-        limit: 0,
-        synchronous: true,
-      })) as { local?: { path?: string } };
-      const downloadedPath = downloaded.local?.path?.trim();
-      if (!downloadedPath) {
-        return undefined;
-      }
-      return this.localPathToDataUrl(downloadedPath);
-    } catch {
-      return undefined;
-    }
+    return localPathToDataUrl(localPath, this.mediaDataUrlCache);
   }
 
   private async extractStickerUrl(
     client: TdClient,
     content: unknown,
   ): Promise<string | undefined> {
-    if (!content || typeof content !== 'object') {
+    const sticker = extractTelegramStickerSource(content);
+    if (!sticker) {
       return undefined;
     }
 
-    const container = content as {
-      _?: string;
-      sticker?: {
-        sticker?: { id?: number; local?: { path?: string } };
-        thumbnail?: { file?: { id?: number; local?: { path?: string } } };
-        format?: { _?: string };
-      };
-    };
-
-    if (container._ !== 'messageSticker') {
-      return undefined;
+    if (sticker.animated) {
+      return resolveTdFileUrl({
+        client,
+        file: sticker.thumbnail,
+        preferredMimeType: 'image/jpeg',
+        invokeWithTimeout: this.invokeWithTimeout.bind(this),
+        downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+        mediaDataUrlCache: this.mediaDataUrlCache,
+      });
     }
 
-    const format = container.sticker?.format?._;
-    if (format === 'stickerFormatTgs' || format === 'stickerFormatWebm') {
-      return this.resolveTdFileUrl(client, container.sticker?.thumbnail?.file, 'image/jpeg');
-    }
-
-    return this.resolveTdFileUrl(client, container.sticker?.sticker, 'image/webp');
+    return resolveTdFileUrl({
+      client,
+      file: sticker.sticker,
+      preferredMimeType: 'image/webp',
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      mediaDataUrlCache: this.mediaDataUrlCache,
+    });
   }
 
   private async extractAnimationUrl(
     client: TdClient,
     content: unknown,
   ): Promise<string | undefined> {
-    if (!content || typeof content !== 'object') {
+    const animation = extractTelegramAnimationSource(content);
+    if (!animation) {
       return undefined;
     }
 
-    const container = content as {
-      _?: string;
-      animation?: {
-        mime_type?: string;
-        animation?: { id?: number; local?: { path?: string } };
-      };
-    };
-
-    if (container._ !== 'messageAnimation') {
-      return undefined;
-    }
-
-    return this.resolveTdFileUrl(
+    return resolveTdFileUrl({
       client,
-      container.animation?.animation,
-      container.animation?.mime_type?.toLowerCase() ?? 'video/mp4',
-    );
+      file: animation.file,
+      preferredMimeType: animation.mimeType ?? 'video/mp4',
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      mediaDataUrlCache: this.mediaDataUrlCache,
+    });
   }
 
   private async extractVideoUrl(
     client: TdClient,
     content: unknown,
   ): Promise<string | undefined> {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-
-    const container = content as {
-      _?: string;
-      video?: {
-        mime_type?: string;
-        video?: { id?: number; local?: { path?: string } };
-      };
-      video_note?: {
-        video?: { id?: number; local?: { path?: string } };
-      };
-    };
-
-    const videoFile =
-      container._ === 'messageVideo'
-        ? container.video?.video
-        : container._ === 'messageVideoNote'
-          ? container.video_note?.video
-          : undefined;
-
+    const videoFile = extractTelegramVideoFile(content);
     if (!videoFile) {
       return undefined;
     }
 
-    const localPath = await this.resolveTdPlayableFilePath(client, videoFile);
+    const localPath = await resolveTdPlayableFilePath({
+      client,
+      file: videoFile,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      downloadPollIntervalMs: TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS,
+    });
     if (!localPath) {
       return undefined;
     }
 
-    const mediaUrl = new URL(`${PELEC_MEDIA_SCHEME}://local/`);
-    mediaUrl.searchParams.set('path', localPath);
-    return mediaUrl.toString();
+    return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
   }
 
   private async extractVoiceNoteUrl(client: TdClient, content: unknown): Promise<string | undefined> {
-    if (!content || typeof content !== 'object') {
+    const voiceFile = extractTelegramVoiceNoteFile(content);
+    if (!voiceFile) {
       return undefined;
     }
 
-    const container = content as {
-      _?: string;
-      voice_note?: { voice?: { id?: number; local?: { path?: string } } };
-    };
-
-    if (container._ !== 'messageVoiceNote') {
-      return undefined;
-    }
-
-    return this.resolveTdFileUrl(client, container.voice_note?.voice, 'audio/ogg;codecs=opus');
+    return resolveTdFileUrl({
+      client,
+      file: voiceFile,
+      preferredMimeType: 'audio/ogg;codecs=opus',
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      mediaDataUrlCache: this.mediaDataUrlCache,
+    });
   }
 
   private extractDocumentMetadata(content: unknown): ChatDocument | undefined {
-    const document = this.getTelegramDocument(content);
-    if (!document) {
-      return undefined;
-    }
-
-    return {
-      fileName: document.fileName,
-      mimeType: document.mimeType,
-      sizeBytes: document.sizeBytes,
-    };
+    return extractTelegramDocumentMetadata(content);
   }
 
   private async extractResolvedDocument(
     client: TdClient,
     content: unknown,
   ): Promise<ResolvedDocument | undefined> {
-    const document = this.getTelegramDocument(content);
+    const document = getTelegramDocument(content);
     if (!document) {
       return undefined;
     }
 
-    const filePath = await this.resolveTdFilePath(client, document.file);
+    const filePath = await resolveTdFilePath({
+      client,
+      file: document.file,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+    });
     if (!filePath) {
       return undefined;
     }
@@ -1700,377 +1547,6 @@ export class TelegramConnector implements Connector {
       mimeType: document.mimeType,
       sizeBytes: document.sizeBytes,
     };
-  }
-
-  private hasVideo(content: unknown): boolean {
-    if (!content || typeof content !== 'object') {
-      return false;
-    }
-
-    const kind = (content as { _?: string })._;
-    return kind === 'messageVideo' || kind === 'messageVideoNote';
-  }
-
-  private getTelegramDocument(
-    content: unknown,
-  ):
-    | {
-        file: TdFileRef | undefined;
-        fileName: string;
-        mimeType?: string;
-        sizeBytes?: number;
-      }
-    | undefined {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-
-    const container = content as {
-      _?: string;
-      document?: {
-        file_name?: string;
-        mime_type?: string;
-        document?: TdFileRef;
-      };
-    };
-
-    if (container._ !== 'messageDocument') {
-      return undefined;
-    }
-
-    const mimeType = container.document?.mime_type?.trim().toLowerCase() || undefined;
-    if (mimeType?.startsWith('image/')) {
-      return undefined;
-    }
-
-    const file = container.document?.document;
-    const fileName = container.document?.file_name?.trim() || 'Document';
-    const rawSize = Number(file?.size ?? file?.expected_size ?? 0);
-    const sizeBytes = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : undefined;
-
-    return {
-      file,
-      fileName,
-      mimeType,
-      sizeBytes,
-    };
-  }
-
-  private extractVoiceDurationSeconds(content: unknown): number | undefined {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-    const container = content as {
-      _?: string;
-      voice_note?: { duration?: number };
-    };
-    if (container._ !== 'messageVoiceNote') {
-      return undefined;
-    }
-    const duration = container.voice_note?.duration;
-    if (!duration || duration < 1) {
-      return undefined;
-    }
-    return Math.floor(duration);
-  }
-
-  private hasVoiceNote(content: unknown): boolean {
-    if (!content || typeof content !== 'object') {
-      return false;
-    }
-    const container = content as { _?: string };
-    return container._ === 'messageVoiceNote';
-  }
-
-  private extractAnimationMimeType(content: unknown): string | undefined {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-    const container = content as {
-      _?: string;
-      animation?: { mime_type?: string };
-    };
-    if (container._ !== 'messageAnimation') {
-      return undefined;
-    }
-    return container.animation?.mime_type?.trim().toLowerCase() || undefined;
-  }
-
-  private extractVideoMimeType(content: unknown): string | undefined {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-    const container = content as {
-      _?: string;
-      video?: { mime_type?: string };
-      video_note?: { mime_type?: string };
-    };
-    if (container._ === 'messageVideo') {
-      return container.video?.mime_type?.trim().toLowerCase() || undefined;
-    }
-    if (container._ === 'messageVideoNote') {
-      return container.video_note?.mime_type?.trim().toLowerCase() || 'video/mp4';
-    }
-    return undefined;
-  }
-
-  private extractStickerEmoji(content: unknown): string | undefined {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-    const container = content as { _?: string; emoji?: string };
-    if (container._ !== 'messageSticker') {
-      return undefined;
-    }
-    const emoji = container.emoji?.trim();
-    return emoji || undefined;
-  }
-
-  private isAnimatedSticker(content: unknown): boolean {
-    if (!content || typeof content !== 'object') {
-      return false;
-    }
-    const container = content as {
-      _?: string;
-      sticker?: { format?: { _?: string } };
-    };
-    if (container._ !== 'messageSticker') {
-      return false;
-    }
-    const format = container.sticker?.format?._;
-    return format === 'stickerFormatTgs' || format === 'stickerFormatWebm';
-  }
-
-  private extractReactions(interactionInfo: unknown): ChatReaction[] | undefined {
-    if (!interactionInfo || typeof interactionInfo !== 'object') {
-      return undefined;
-    }
-
-    const container = interactionInfo as {
-      reactions?: {
-        reactions?: Array<{
-          type?: {
-            _?: string;
-            emoji?: string;
-          };
-          total_count?: number;
-          is_chosen?: boolean;
-        }>;
-      };
-    };
-
-    const reactions = (container.reactions?.reactions ?? [])
-      .map((reaction) => {
-        const type = reaction.type?._;
-        const value =
-          type === 'reactionTypeEmoji'
-            ? reaction.type?.emoji?.trim()
-            : type === 'reactionTypeCustomEmoji'
-              ? 'Custom'
-              : type === 'reactionTypePaid'
-                ? 'Paid'
-                : undefined;
-        const count = Number(reaction.total_count ?? 0);
-        if (!value || count < 1) {
-          return undefined;
-        }
-        return {
-          value,
-          count,
-          chosen: reaction.is_chosen === true || undefined,
-        };
-      })
-      .filter((reaction): reaction is ChatReaction => !!reaction);
-
-    return reactions.length > 0 ? reactions : undefined;
-  }
-
-  private async resolveTdFileUrl(
-    client: TdClient,
-    file: TdFileRef | undefined,
-    preferredMimeType?: string,
-  ): Promise<string | undefined> {
-    const localPath = await this.resolveTdFilePath(client, file);
-    if (!localPath) {
-      return undefined;
-    }
-
-    return this.localPathToDataUrl(localPath, preferredMimeType);
-  }
-
-  private async resolveTdFilePath(
-    client: TdClient,
-    file: TdFileRef | undefined,
-  ): Promise<string | undefined> {
-    const localPath = file?.local?.path?.trim();
-    if (localPath) {
-      return localPath;
-    }
-
-    const fileId = file?.id;
-    if (!fileId) {
-      return undefined;
-    }
-
-    try {
-      const downloaded = await this.invokeWithTimeout<TdFileRef>(
-        client,
-        {
-          _: 'downloadFile',
-          file_id: fileId,
-          priority: 1,
-          offset: 0,
-          limit: 0,
-          synchronous: true,
-        },
-        'downloadFile',
-        TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
-      );
-      return downloaded.local?.path?.trim() || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  private isTdFileDownloadComplete(file: TdFileRef | undefined): boolean {
-    return file?.local?.is_downloading_completed === true && !!file.local?.path?.trim();
-  }
-
-  private getTdFileSize(file: TdFileRef | undefined): number | undefined {
-    const size = Number(file?.size ?? file?.expected_size ?? 0);
-    return Number.isFinite(size) && size > 0 ? size : undefined;
-  }
-
-  private logIncompleteVideoFile(file: TdFileRef | undefined, context: string): void {
-    console.warn(`[telegram-video] ${context}`, {
-      fileId: file?.id,
-      path: file?.local?.path?.trim() || undefined,
-      isDownloadingActive: file?.local?.is_downloading_active === true,
-      isDownloadingCompleted: file?.local?.is_downloading_completed === true,
-      downloadedPrefixSize:
-        Number.isFinite(Number(file?.local?.downloaded_prefix_size))
-          ? Number(file?.local?.downloaded_prefix_size)
-          : undefined,
-      size: this.getTdFileSize(file),
-    });
-  }
-
-  private async sleep(ms: number): Promise<void> {
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, ms);
-    });
-  }
-
-  private async resolveTdPlayableFilePath(
-    client: TdClient,
-    file: TdFileRef | undefined,
-  ): Promise<string | undefined> {
-    if (this.isTdFileDownloadComplete(file)) {
-      return file?.local?.path?.trim();
-    }
-
-    if (file?.local?.path?.trim()) {
-      this.logIncompleteVideoFile(file, 'Video file path exists before download completed.');
-    }
-
-    const fileId = file?.id;
-    if (!fileId) {
-      return undefined;
-    }
-
-    const startedAt = Date.now();
-    let latestFile = file;
-
-    try {
-      latestFile = await this.invokeWithTimeout<TdFileRef>(
-        client,
-        {
-          _: 'downloadFile',
-          file_id: fileId,
-          priority: 1,
-          offset: 0,
-          limit: 0,
-          synchronous: true,
-        },
-        'downloadFile',
-        TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
-      );
-    } catch {
-      return undefined;
-    }
-
-    if (this.isTdFileDownloadComplete(latestFile)) {
-      return latestFile.local?.path?.trim();
-    }
-
-    if (latestFile?.local?.path?.trim()) {
-      this.logIncompleteVideoFile(latestFile, 'downloadFile returned an incomplete Telegram video file.');
-    }
-
-    while (Date.now() - startedAt < TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS) {
-      await this.sleep(TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS);
-      try {
-        latestFile = await this.invokeWithTimeout<TdFileRef>(
-          client,
-          {
-            _: 'getFile',
-            file_id: fileId,
-          },
-          'getFile',
-          TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS * 2,
-        );
-      } catch {
-        continue;
-      }
-
-      if (this.isTdFileDownloadComplete(latestFile)) {
-        return latestFile.local?.path?.trim();
-      }
-    }
-
-    this.logIncompleteVideoFile(latestFile, 'Timed out waiting for Telegram video download to complete.');
-    return undefined;
-  }
-
-  private async localPathToDataUrl(
-    localPath: string,
-    preferredMimeType?: string,
-  ): Promise<string | undefined> {
-    const cached = this.mediaDataUrlCache.get(localPath);
-    if (cached) {
-      return cached;
-    }
-
-    try {
-      const bytes = await readFile(localPath);
-      const ext = path.extname(localPath).toLowerCase();
-      const mimeType =
-        preferredMimeType ??
-        (ext === '.png'
-          ? 'image/png'
-          : ext === '.webp'
-            ? 'image/webp'
-            : ext === '.gif'
-              ? 'image/gif'
-              : ext === '.ogg' || ext === '.oga' || ext === '.opus'
-                ? 'audio/ogg;codecs=opus'
-                : ext === '.mp3'
-                  ? 'audio/mpeg'
-                  : ext === '.m4a'
-                    ? 'audio/mp4'
-                    : ext === '.aac'
-                      ? 'audio/aac'
-                      : ext === '.wav'
-                        ? 'audio/wav'
-                        : ext === '.webm'
-                          ? 'audio/webm'
-                          : 'image/jpeg');
-      const value = `data:${mimeType};base64,${bytes.toString('base64')}`;
-      this.mediaDataUrlCache.set(localPath, value);
-      return value;
-    } catch {
-      return undefined;
-    }
   }
 
   private extractReplyTargetId(message: TdMessage): string | undefined {
@@ -2109,49 +1585,6 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  private parseDataUrl(dataUrl: string): ParsedDataUrl | undefined {
-    const trimmed = dataUrl.trim();
-    if (!trimmed.toLowerCase().startsWith('data:')) {
-      return undefined;
-    }
-
-    const commaIndex = trimmed.indexOf(',');
-    if (commaIndex < 0) {
-      return undefined;
-    }
-
-    const metadata = trimmed.slice(5, commaIndex);
-    const base64 = trimmed.slice(commaIndex + 1);
-    if (!metadata || !base64) {
-      return undefined;
-    }
-
-    const lowerMetadata = metadata.toLowerCase();
-    const base64MarkerIndex = lowerMetadata.lastIndexOf(';base64');
-    if (base64MarkerIndex < 0) {
-      return undefined;
-    }
-
-    const fullMimeType = metadata.slice(0, base64MarkerIndex).trim().toLowerCase();
-    const essenceMimeType = fullMimeType.split(';')[0]?.trim() ?? '';
-    if (!fullMimeType || !essenceMimeType || !essenceMimeType.includes('/')) {
-      return undefined;
-    }
-    if (!/^[A-Za-z0-9+/=]+$/u.test(base64) || base64.length % 4 !== 0) {
-      return undefined;
-    }
-
-    try {
-      return {
-        fullMimeType,
-        essenceMimeType,
-        bytes: Buffer.from(base64, 'base64'),
-      };
-    } catch {
-      return undefined;
-    }
-  }
-
   private async prepareUploadFile(
     tempPrefix: string,
     dataUrl: string,
@@ -2159,7 +1592,7 @@ export class TelegramConnector implements Connector {
     validateMimeType: (fullMimeType: string, essenceMimeType: string) => boolean,
     fallbackBaseName: string,
   ): Promise<PreparedUploadFile | undefined> {
-    const parsed = this.parseDataUrl(dataUrl);
+    const parsed = parseDataUrl(dataUrl);
     if (!parsed) {
       this.status.lastError = 'Attachment payload is invalid.';
       this.status.details = `Failed preparing upload: ${this.status.lastError}`;
@@ -2181,11 +1614,7 @@ export class TelegramConnector implements Connector {
     }
 
     const tempDir = await mkdtemp(path.join(os.tmpdir(), tempPrefix));
-    const resolvedFileName = this.resolveUploadFileName(
-      fileName,
-      parsed.essenceMimeType,
-      fallbackBaseName,
-    );
+    const resolvedFileName = resolveUploadFileName(fileName, parsed.essenceMimeType, fallbackBaseName);
     const filePath = path.join(tempDir, resolvedFileName);
     await writeFile(filePath, parsed.bytes);
     return {
@@ -2198,13 +1627,13 @@ export class TelegramConnector implements Connector {
   private async prepareVoiceNoteUpload(
     document: OutgoingAttachmentDocument,
   ): Promise<PreparedVoiceNoteUpload | undefined> {
-    const parsed = this.parseDataUrl(document.dataUrl);
+    const parsed = parseDataUrl(document.dataUrl);
     if (!parsed) {
       this.setVoiceNoteError('Voice note payload is invalid.');
       return undefined;
     }
 
-    if (!this.isSupportedVoiceNoteMimeType(parsed.fullMimeType)) {
+    if (!isSupportedVoiceNoteMimeType(parsed.fullMimeType)) {
       this.setVoiceNoteError(`Unsupported Telegram voice note format: ${parsed.fullMimeType}`);
       return undefined;
     }
@@ -2220,7 +1649,7 @@ export class TelegramConnector implements Connector {
 
     try {
       tempDir = await mkdtemp(path.join(os.tmpdir(), 'pelec-telegram-voice-'));
-      const sourceFileName = this.resolveUploadFileName(
+      const sourceFileName = resolveUploadFileName(
         document.fileName,
         parsed.essenceMimeType,
         'voice-note',
@@ -2290,90 +1719,6 @@ export class TelegramConnector implements Connector {
     await this.tdClient.invoke(baseRequest);
   }
 
-  private extensionFromMime(mimeType: string): string {
-    if (mimeType.startsWith('audio/webm')) {
-      return '.webm';
-    }
-    if (mimeType === 'audio/ogg;codecs=opus') {
-      return '.ogg';
-    }
-    if (mimeType.startsWith('audio/ogg')) {
-      return '.ogg';
-    }
-    if (mimeType === 'audio/opus') {
-      return '.opus';
-    }
-    if (mimeType === 'application/pdf') {
-      return '.pdf';
-    }
-    if (mimeType === 'text/plain') {
-      return '.txt';
-    }
-    if (mimeType === 'application/zip') {
-      return '.zip';
-    }
-    if (mimeType === 'application/json') {
-      return '.json';
-    }
-    if (mimeType === 'text/csv') {
-      return '.csv';
-    }
-    if (mimeType === 'image/png') {
-      return '.png';
-    }
-    if (mimeType === 'image/webp') {
-      return '.webp';
-    }
-    if (mimeType === 'image/gif') {
-      return '.gif';
-    }
-    if (mimeType === 'image/bmp') {
-      return '.bmp';
-    }
-    if (mimeType === 'image/jpeg') {
-      return '.jpg';
-    }
-    if (mimeType === 'image/heic') {
-      return '.heic';
-    }
-    if (mimeType === 'image/heif') {
-      return '.heif';
-    }
-    if (mimeType === 'audio/mpeg') {
-      return '.mp3';
-    }
-    if (mimeType === 'video/mp4') {
-      return '.mp4';
-    }
-    if (mimeType === 'application/octet-stream') {
-      return '.bin';
-    }
-    return '.bin';
-  }
-
-  private sanitizeUploadFileName(value: string): string {
-    const base = path
-      .basename(value.trim())
-      .replace(/[<>:"/\\|?*]/g, '_')
-      .replaceAll(/[\n\r\t]/g, '_');
-    const cleaned = [...base].map((char) => (char.charCodeAt(0) < 32 ? '_' : char)).join('');
-    return cleaned || 'attachment';
-  }
-
-  private resolveUploadFileName(
-    fileName: string | undefined,
-    mimeType: string,
-    fallbackBaseName: string,
-  ): string {
-    const candidate = this.sanitizeUploadFileName(fileName?.trim() || fallbackBaseName);
-    const parsed = path.parse(candidate);
-    if (parsed.ext) {
-      return candidate;
-    }
-    const ext = this.extensionFromMime(mimeType);
-    return `${candidate}${ext}`;
-  }
-
   private scheduleUploadTempCleanup(tempDir: string): void {
     const existing = this.uploadTempCleanupTimers.get(tempDir);
     if (existing) {
@@ -2394,48 +1739,11 @@ export class TelegramConnector implements Connector {
     this.status.details = `Failed sending voice note: ${message}`;
   }
 
-  private isSupportedVoiceNoteMimeType(mimeType: string): boolean {
-    return TELEGRAM_VOICE_NOTE_MIME_TYPES.has(mimeType.trim().toLowerCase());
-  }
-
-  private async getFfmpegBinaryPath(): Promise<string> {
-    if (!ffmpegBinaryPathPromise) {
-      ffmpegBinaryPathPromise = (async () => {
-        const moduleValue = await loadFfmpegStaticModule();
-        const binaryPath =
-          typeof moduleValue === 'string'
-            ? moduleValue
-            : typeof moduleValue.default === 'string'
-              ? moduleValue.default
-              : undefined;
-        if (!binaryPath) {
-          throw new Error('Bundled ffmpeg binary is unavailable.');
-        }
-        return binaryPath;
-      })();
-    }
-    return ffmpegBinaryPathPromise;
-  }
-
-  private async getFfprobeBinaryPath(): Promise<string> {
-    if (!ffprobeBinaryPathPromise) {
-      ffprobeBinaryPathPromise = (async () => {
-        const moduleValue = await loadFfprobeStaticModule();
-        const binaryPath = moduleValue.path ?? moduleValue.default?.path;
-        if (!binaryPath) {
-          throw new Error('Bundled ffprobe binary is unavailable.');
-        }
-        return binaryPath;
-      })();
-    }
-    return ffprobeBinaryPathPromise;
-  }
-
   private async transcodeVoiceNoteToOgg(
     sourceFilePath: string,
     outputFilePath: string,
   ): Promise<void> {
-    const ffmpegBinaryPath = await this.getFfmpegBinaryPath().catch((error) => {
+    const ffmpegBinaryPath = await getFfmpegBinaryPath().catch((error) => {
       throw new Error(
         error instanceof Error ? error.message : 'Bundled ffmpeg binary is unavailable.',
       );
@@ -2465,7 +1773,7 @@ export class TelegramConnector implements Connector {
 
   private async probeAudioDurationSeconds(filePath: string): Promise<number> {
     try {
-      const ffprobeBinaryPath = await this.getFfprobeBinaryPath();
+      const ffprobeBinaryPath = await getFfprobeBinaryPath();
       const result = await this.runBinary(ffprobeBinaryPath, [
         '-v',
         'error',
@@ -2519,193 +1827,6 @@ export class TelegramConnector implements Connector {
         });
       });
     });
-  }
-
-  private formatCallDuration(seconds: number): string {
-    const total = Math.max(0, Math.floor(seconds));
-    const hours = Math.floor(total / 3600);
-    const mins = Math.floor((total % 3600) / 60);
-    const secs = total % 60;
-
-    if (hours > 0) {
-      return `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-    }
-
-    return `${mins}:${String(secs).padStart(2, '0')}`;
-  }
-
-  private extractCallInfo(content: unknown): ChatCall | undefined {
-    if (!content || typeof content !== 'object') {
-      return undefined;
-    }
-
-    const container = content as {
-      _?: string;
-      is_video?: boolean;
-      duration?: number;
-      discard_reason?: { _?: string };
-    };
-
-    if (container._ !== 'messageCall') {
-      return undefined;
-    }
-
-    let discardReason: ChatCall['discardReason'];
-    switch (container.discard_reason?._) {
-      case 'callDiscardReasonMissed':
-        discardReason = 'missed';
-        break;
-      case 'callDiscardReasonDeclined':
-        discardReason = 'declined';
-        break;
-      case 'callDiscardReasonDisconnected':
-        discardReason = 'disconnected';
-        break;
-      case 'callDiscardReasonHungUp':
-        discardReason = 'hung_up';
-        break;
-      case 'callDiscardReasonEmpty':
-        discardReason = 'empty';
-        break;
-      default:
-        discardReason = undefined;
-        break;
-    }
-
-    return {
-      isVideo: container.is_video === true,
-      durationSeconds:
-        typeof container.duration === 'number' && container.duration > 0
-          ? Math.floor(container.duration)
-          : undefined,
-      discardReason,
-    };
-  }
-
-  private extractMessageText(
-    content: unknown,
-    options?: {
-      outgoing?: boolean;
-    },
-  ): string {
-    if (!content || typeof content !== 'object') {
-      return '';
-    }
-    const container = content as {
-      _: string;
-      text?: { text?: string };
-      caption?: { text?: string };
-      emoji?: string;
-      title?: string;
-      performer?: string;
-      file_name?: string;
-      contact?: { first_name?: string; last_name?: string; phone_number?: string };
-      location?: { latitude?: number; longitude?: number };
-    };
-
-    if (container.text?.text) {
-      return container.text.text;
-    }
-    if (container.caption?.text) {
-      return container.caption.text;
-    }
-
-    if (container._ === 'messageSticker') {
-      return container.emoji ? `Sticker ${container.emoji}` : 'Sticker';
-    }
-    if (container._ === 'messageAnimatedEmoji') {
-      return container.emoji ? `Animated emoji ${container.emoji}` : 'Animated emoji';
-    }
-    if (container._ === 'messageVoiceNote') {
-      return 'Voice message';
-    }
-    if (container._ === 'messageVideoNote') {
-      return 'Video message';
-    }
-    if (container._ === 'messagePhoto') {
-      return 'Photo';
-    }
-    if (container._ === 'messageVideo') {
-      return 'Video';
-    }
-    if (container._ === 'messageAnimation') {
-      return 'GIF/Animation';
-    }
-    if (container._ === 'messageAudio') {
-      const title = container.title?.trim();
-      const performer = container.performer?.trim();
-      if (title && performer) {
-        return `Audio: ${performer} - ${title}`;
-      }
-      if (title) {
-        return `Audio: ${title}`;
-      }
-      return 'Audio file';
-    }
-    if (container._ === 'messageDocument') {
-      return container.file_name ? `Document: ${container.file_name}` : 'Document';
-    }
-    if (container._ === 'messageContact') {
-      const firstName = container.contact?.first_name?.trim() ?? '';
-      const lastName = container.contact?.last_name?.trim() ?? '';
-      const fullName = `${firstName} ${lastName}`.trim();
-      if (fullName) {
-        return `Contact: ${fullName}`;
-      }
-      return container.contact?.phone_number
-        ? `Contact: ${container.contact.phone_number}`
-        : 'Contact';
-    }
-    if (container._ === 'messageLocation') {
-      const lat = container.location?.latitude;
-      const lon = container.location?.longitude;
-      if (typeof lat === 'number' && typeof lon === 'number') {
-        return `Location: ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
-      }
-      return 'Location';
-    }
-    if (container._ === 'messageCall') {
-      const call = this.extractCallInfo(content);
-      const kind = call?.isVideo ? 'video call' : 'voice call';
-      if (call?.discardReason === 'missed') {
-        return options?.outgoing ? `Unanswered ${kind}` : `Missed ${kind}`;
-      }
-      if (call?.discardReason === 'declined') {
-        return options?.outgoing ? `Declined ${kind}` : `You declined ${kind}`;
-      }
-      if (call?.discardReason === 'disconnected') {
-        return call.durationSeconds
-          ? `${call.isVideo ? 'Video' : 'Voice'} call (${this.formatCallDuration(call.durationSeconds)})`
-          : `Dropped ${kind}`;
-      }
-      if (call?.durationSeconds) {
-        return `${call.isVideo ? 'Video' : 'Voice'} call (${this.formatCallDuration(call.durationSeconds)})`;
-      }
-      return `${call?.isVideo ? 'Video' : 'Voice'} call`;
-    }
-    if (container._ === 'messageChatAddMembers') {
-      return 'Members added';
-    }
-    if (container._ === 'messageChatDeleteMember') {
-      return 'Member removed';
-    }
-    if (container._ === 'messageChatJoinByLink') {
-      return 'Joined via invite link';
-    }
-    if (container._ === 'messageChatJoinByRequest') {
-      return 'Join request approved';
-    }
-    if (container._ === 'messageChatChangeTitle') {
-      return 'Group title changed';
-    }
-    if (container._ === 'messagePinMessage') {
-      return 'Pinned a message';
-    }
-    if (container._ === 'messagePoll') {
-      return 'Poll';
-    }
-
-    return `[${container._ ?? 'message'}]`;
   }
 
   private async tryInitTdlib(): Promise<void> {

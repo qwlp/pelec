@@ -1,20 +1,63 @@
-import './index.css';
+import '../index.css';
 import QRCode from 'qrcode';
 import type {
   AuthStartResult,
-  ChatCall,
   ChatMessage,
   ChatSummary,
   ConnectorUpdateEvent,
   ConnectorStatus,
-} from './shared/connectors';
-import type {
-  AppActivity,
-  AppMode,
-  NetworkDefinition,
-  NetworkId,
-  UserConfig,
-} from './shared/types';
+} from '../shared/connectors';
+import type { AppActivity, AppMode, NetworkDefinition, NetworkId } from '../shared/types';
+import { renderStatusToast } from './components/statusToast';
+import {
+  checkpointInDetails,
+  clearInstagramCooldownUntil,
+  formatCooldownRemaining,
+  getInstagramCheckpointCooldownUntil,
+  readInstagramCooldownUntil,
+  writeInstagramCooldownUntil,
+} from './features/instagram/cooldown';
+import { createTelegramCallCard, describeTelegramCall } from './features/telegram/calls';
+import { buildLinkedTextNodes } from './features/telegram/links';
+import {
+  buildVoiceBarHeights,
+  createTelegramAttachmentId,
+  extractLocalMediaPath,
+  formatTelegramAttachmentMeta,
+  formatTelegramDocumentKind,
+  formatTelegramDocumentSubtitle,
+  getSupportedTelegramVoiceRecordingMimeType,
+  getTelegramAttachmentKind,
+  getTelegramMeaningfulAlbumCaption,
+  getTelegramVoiceRecordingFileName,
+  isTelegramAlbumEligibleMessage,
+  isTelegramDocumentFallbackText,
+  isTelegramImageFallbackText,
+  isTelegramVideoFallbackText,
+  readBlobAsDataUrl,
+  readFileAsDataUrl,
+  TELEGRAM_MAX_ATTACHMENTS,
+  TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES,
+  TELEGRAM_VOICE_RECORDING_MIN_DURATION_MS,
+} from './features/telegram/media';
+import type { PendingTelegramAttachment } from './features/telegram/media';
+import {
+  buildTelegramEmojiSuggestions,
+  getTelegramEmojiTokenMatch,
+  type TelegramEmojiSuggestion,
+} from './lib/emoji';
+import {
+  formatChatTimestamp,
+  formatDuration,
+  formatFullDateTime,
+  formatMessageDayLabel,
+  formatMessageTimestamp,
+  formatTelegramUnreadBadge,
+  hasValidTimestamp,
+  safeLabel,
+  safeText,
+} from './lib/format';
+import { applyUserTheme } from './lib/theme';
 
 interface AppState {
   mode: AppMode;
@@ -70,38 +113,6 @@ type PendingTelegramMessage = RenderableTelegramMessage & {
   signature: string;
 };
 
-type PendingTelegramAttachment = {
-  id: string;
-  kind: 'image' | 'document' | 'voice';
-  name: string;
-  mimeType?: string;
-  sizeBytes?: number;
-  dataUrl: string;
-};
-
-type TelegramEmojiCatalogEntry = {
-  emoji: string;
-  aliases: string[];
-};
-
-type TelegramEmojiAliasEntry = {
-  emoji: string;
-  alias: string;
-  canonicalAlias: string;
-};
-
-type TelegramEmojiSuggestion = {
-  emoji: string;
-  canonicalAlias: string;
-  matchedAlias: string;
-};
-
-type TelegramEmojiTokenMatch = {
-  query: string;
-  tokenStart: number;
-  tokenEnd: number;
-};
-
 type TelegramEmojiCompletionState = {
   visible: boolean;
   query: string;
@@ -126,813 +137,13 @@ type TelegramForwardState = {
   sending: boolean;
 };
 
-const appEl = document.querySelector<HTMLDivElement>('#app');
-
-if (!appEl) {
-  throw new Error('App root not found');
-}
-
-const INSTAGRAM_CHECKPOINT_COOLDOWN_MS = 48 * 60 * 60 * 1000;
-const INSTAGRAM_CHECKPOINT_COOLDOWN_KEY = 'pelec.instagramCheckpointCooldownUntil';
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
-const TELEGRAM_MAX_ATTACHMENTS = 10;
-const TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
-const TELEGRAM_VOICE_NOTE_MIME_TYPES = new Set([
-  'audio/ogg',
-  'audio/ogg;codecs=opus',
-  'audio/opus',
-  'audio/webm',
-  'audio/webm;codecs=opus',
-]);
-const TELEGRAM_VOICE_RECORDING_MIME_TYPES = [
-  'audio/ogg;codecs=opus',
-  'audio/ogg',
-  'audio/webm;codecs=opus',
-  'audio/webm',
-];
-const TELEGRAM_VOICE_RECORDING_MIN_DURATION_MS = 250;
-const TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS = 7;
-const TELEGRAM_EMOJI_ALIAS_MAX_LENGTH = 32;
-const TELEGRAM_EMOJI_ALIAS_PATTERN = /^[a-z0-9_+-]+$/i;
-const MESSAGE_LINK_PATTERN = /\b((?:https?:\/\/|mailto:|tg:\/\/|www\.)[^\s<]+)/giu;
-const TELEGRAM_EMOJI_CATALOG: TelegramEmojiCatalogEntry[] = [
-  { emoji: '😄', aliases: ['smile', 'happy', 'smiley'] },
-  { emoji: '😀', aliases: ['grinning', 'grin'] },
-  { emoji: '😂', aliases: ['joy', 'laugh', 'laughing'] },
-  { emoji: '🤣', aliases: ['rofl', 'rolling_on_the_floor_laughing'] },
-  { emoji: '🙂', aliases: ['slight_smile', 'slightly_smiling_face'] },
-  { emoji: '😊', aliases: ['blush', 'shy'] },
-  { emoji: '😉', aliases: ['wink'] },
-  { emoji: '😍', aliases: ['heart_eyes', 'love_eyes'] },
-  { emoji: '😘', aliases: ['kissing_heart', 'kiss'] },
-  { emoji: '😋', aliases: ['yum', 'tongue'] },
-  { emoji: '😎', aliases: ['sunglasses', 'cool'] },
-  { emoji: '🤔', aliases: ['thinking', 'think'] },
-  { emoji: '😐', aliases: ['neutral_face', 'meh'] },
-  { emoji: '🙄', aliases: ['roll_eyes', 'eyeroll'] },
-  { emoji: '😴', aliases: ['sleeping', 'sleep'] },
-  { emoji: '😪', aliases: ['sleepy_face'] },
-  { emoji: '😩', aliases: ['weary', 'exhausted'] },
-  { emoji: '🥺', aliases: ['pleading_face', 'please'] },
-  { emoji: '😢', aliases: ['cry', 'sad', 'crying'] },
-  { emoji: '😭', aliases: ['sob', 'sobbing', 'tears'] },
-  { emoji: '😡', aliases: ['rage', 'angry', 'mad'] },
-  { emoji: '😱', aliases: ['scream', 'shocked'] },
-  { emoji: '😳', aliases: ['flushed', 'embarrassed'] },
-  { emoji: '🤯', aliases: ['mind_blown', 'exploding_head'] },
-  { emoji: '😇', aliases: ['innocent', 'angel'] },
-  { emoji: '🥳', aliases: ['partying_face', 'party'] },
-  { emoji: '🤡', aliases: ['clown_face', 'clown'] },
-  { emoji: '💩', aliases: ['poop', 'shit'] },
-  { emoji: '👋', aliases: ['wave', 'hello', 'hi'] },
-  { emoji: '🙌', aliases: ['raised_hands', 'celebrate'] },
-  { emoji: '👏', aliases: ['clap', 'applause'] },
-  { emoji: '🙏', aliases: ['pray', 'thanks', 'thank_you'] },
-  { emoji: '💪', aliases: ['muscle', 'strong'] },
-  { emoji: '👍', aliases: ['thumbsup', 'thumbs_up', 'yes', 'like'] },
-  { emoji: '👎', aliases: ['thumbsdown', 'thumbs_down', 'dislike', 'no'] },
-  { emoji: '👌', aliases: ['ok_hand', 'ok'] },
-  { emoji: '✌️', aliases: ['v', 'victory_hand', 'peace'] },
-  { emoji: '🤝', aliases: ['handshake', 'deal'] },
-  { emoji: '❤️', aliases: ['heart', 'love'] },
-  { emoji: '🧡', aliases: ['orange_heart'] },
-  { emoji: '💛', aliases: ['yellow_heart'] },
-  { emoji: '💚', aliases: ['green_heart'] },
-  { emoji: '💙', aliases: ['blue_heart'] },
-  { emoji: '💜', aliases: ['purple_heart'] },
-  { emoji: '🖤', aliases: ['black_heart'] },
-  { emoji: '🤍', aliases: ['white_heart'] },
-  { emoji: '🤎', aliases: ['brown_heart'] },
-  { emoji: '💔', aliases: ['broken_heart', 'heartbreak'] },
-  { emoji: '🔥', aliases: ['fire', 'lit'] },
-  { emoji: '✨', aliases: ['sparkles', 'sparkle'] },
-  { emoji: '⭐', aliases: ['star'] },
-  { emoji: '🌟', aliases: ['glowing_star'] },
-  { emoji: '🎉', aliases: ['tada', 'party_popper', 'celebration'] },
-  { emoji: '🎊', aliases: ['confetti_ball', 'confetti'] },
-  { emoji: '🚀', aliases: ['rocket'] },
-  { emoji: '☕', aliases: ['coffee'] },
-  { emoji: '✅', aliases: ['white_check_mark', 'check', 'done'] },
-  { emoji: '❌', aliases: ['x', 'cross_mark'] },
-  { emoji: '💯', aliases: ['100', 'hundred'] },
-  { emoji: '👀', aliases: ['eyes', 'look'] },
-  { emoji: '🤷', aliases: ['shrug', 'idk'] },
-  { emoji: '🤦', aliases: ['facepalm'] },
-  { emoji: '😅', aliases: ['sweat_smile', 'phew'] },
-  { emoji: '🥲', aliases: ['smiling_face_with_tear', 'bittersweet'] },
-  { emoji: '😬', aliases: ['grimacing', 'awkward'] },
-  { emoji: '😌', aliases: ['relieved', 'calm'] },
-];
-
-const TELEGRAM_EMOJI_INDEX: TelegramEmojiAliasEntry[] = [];
-for (const entry of TELEGRAM_EMOJI_CATALOG) {
-  const canonicalAlias = entry.aliases[0];
-  if (!canonicalAlias) {
-    continue;
-  }
-  for (const alias of entry.aliases) {
-    TELEGRAM_EMOJI_INDEX.push({
-      emoji: entry.emoji,
-      alias,
-      canonicalAlias,
-    });
-  }
-}
-
-TELEGRAM_EMOJI_INDEX.sort(
-  (left, right) =>
-    left.alias.localeCompare(right.alias) ||
-    left.canonicalAlias.localeCompare(right.canonicalAlias),
-);
-
-const applyUserTheme = (userConfig: UserConfig): void => {
-  const rootStyle = document.documentElement.style;
-  rootStyle.setProperty('--window-padding', `${userConfig.appearance.windowPadding}px`);
-  rootStyle.setProperty(
-    '--window-border-radius',
-    `${userConfig.appearance.windowBorderRadius}px`,
-  );
-  rootStyle.setProperty('--app-font-family', userConfig.appearance.fontFamily);
-  rootStyle.setProperty('--app-font-size', `${userConfig.appearance.fontSize}px`);
-  rootStyle.setProperty('--font-scale', String(userConfig.appearance.fontSize / 14));
-  rootStyle.setProperty(
-    '--background-opacity',
-    String(userConfig.appearance.backgroundOpacity),
-  );
-  rootStyle.setProperty('--text-opacity', String(userConfig.appearance.textOpacity));
-};
-
-const readInstagramCooldownUntil = (): number => {
-  const raw = window.localStorage.getItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY);
-  if (!raw) {
-    return 0;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    window.localStorage.removeItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY);
-    return 0;
-  }
-  return parsed;
-};
-
-const writeInstagramCooldownUntil = (value: number): void => {
-  window.localStorage.setItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY, String(value));
-};
-
-const checkpointInDetails = (value?: string): boolean =>
-  (value ?? '').toLowerCase().includes('checkpoint');
-
-const formatCooldownRemaining = (untilMs: number): string => {
-  const remainingMs = Math.max(0, untilMs - Date.now());
-  const totalMinutes = Math.ceil(remainingMs / 60000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}h ${minutes}m`;
-};
-
-const formatDuration = (seconds: number): string => {
-  const total = Math.max(0, Math.floor(seconds));
-  const hours = Math.floor(total / 3600);
-  const mins = Math.floor((total % 3600) / 60);
-  const secs = total % 60;
-  if (hours > 0) {
-    return `${hours}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  }
-  return `${mins}:${String(secs).padStart(2, '0')}`;
-};
-
-const formatFileSize = (bytes?: number): string | undefined => {
-  if (!bytes || bytes < 1) {
-    return undefined;
+export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> => {
+  const appEl = mountRoot ?? document.querySelector<HTMLDivElement>('#app');
+  if (!appEl) {
+    throw new Error('App root not found');
   }
 
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let value = bytes;
-  let unitIndex = 0;
-
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex += 1;
-  }
-
-  const precision = value >= 100 || unitIndex === 0 ? 0 : 1;
-  return `${value.toFixed(precision)} ${units[unitIndex]}`;
-};
-
-const safeText = (value: unknown): string => (typeof value === 'string' ? value : '');
-
-const safeLabel = (value: unknown, fallback: string): string => {
-  const text = safeText(value).trim();
-  return text || fallback;
-};
-
-const createTelegramAttachmentId = (): string =>
-  `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
-const readBlobAsDataUrl = (blob: Blob): Promise<string | null> =>
-  new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      resolve(typeof reader.result === 'string' ? reader.result : null);
-    };
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(blob);
-  });
-
-const readFileAsDataUrl = (file: File): Promise<string | null> => readBlobAsDataUrl(file);
-
-const getSupportedTelegramVoiceRecordingMimeType = (): string | undefined => {
-  if (typeof MediaRecorder === 'undefined') {
-    return undefined;
-  }
-
-  return TELEGRAM_VOICE_RECORDING_MIME_TYPES.find((mimeType) =>
-    MediaRecorder.isTypeSupported(mimeType),
-  );
-};
-
-const getTelegramVoiceRecordingFileName = (mimeType: string): string =>
-  mimeType.includes('ogg') ? 'voice-note.ogg' : 'voice-note.webm';
-
-const getTelegramAttachmentKind = (mimeType?: string): PendingTelegramAttachment['kind'] => {
-  const normalizedMimeType = (mimeType ?? '').toLowerCase();
-  if (normalizedMimeType.startsWith('image/')) {
-    return 'image';
-  }
-  if (TELEGRAM_VOICE_NOTE_MIME_TYPES.has(normalizedMimeType)) {
-    return 'voice';
-  }
-  return 'document';
-};
-
-const formatTelegramAttachmentMeta = (attachment: PendingTelegramAttachment): string => {
-  const detail =
-    attachment.kind === 'voice'
-      ? 'Voice note'
-      : safeLabel(attachment.mimeType, attachment.kind === 'image' ? 'Image' : 'Document');
-  const size = formatFileSize(attachment.sizeBytes);
-  return size ? `${detail} • ${size}` : detail;
-};
-
-const trimLinkSuffix = (value: string): { linkText: string; suffix: string } => {
-  let end = value.length;
-  while (end > 0) {
-    const current = value[end - 1];
-    if (current === '.' || current === ',' || current === '!' || current === '?' || current === ':' || current === ';') {
-      end -= 1;
-      continue;
-    }
-    if (current === ')' || current === ']' || current === '}') {
-      const openChar = current === ')' ? '(' : current === ']' ? '[' : '{';
-      const candidate = value.slice(0, end);
-      const openCount = [...candidate].filter((char) => char === openChar).length;
-      const closeCount = [...candidate].filter((char) => char === current).length;
-      if (closeCount > openCount) {
-        end -= 1;
-        continue;
-      }
-    }
-    break;
-  }
-
-  return {
-    linkText: value.slice(0, end),
-    suffix: value.slice(end),
-  };
-};
-
-const normalizeExternalLink = (value: string): string | undefined => {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  if (/^(?:https?:\/\/|mailto:|tg:\/\/)/iu.test(trimmed)) {
-    return trimmed;
-  }
-  if (/^www\./iu.test(trimmed)) {
-    return `https://${trimmed}`;
-  }
-  return undefined;
-};
-
-const buildLinkedTextNodes = (value: string): Node[] => {
-  const source = safeText(value);
-  if (!source) {
-    return [document.createTextNode('')];
-  }
-
-  const nodes: Node[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  MESSAGE_LINK_PATTERN.lastIndex = 0;
-
-  while ((match = MESSAGE_LINK_PATTERN.exec(source)) !== null) {
-    const fullMatch = match[0];
-    const matchIndex = match.index;
-    const { linkText, suffix } = trimLinkSuffix(fullMatch);
-    const href = normalizeExternalLink(linkText);
-    const consumedLength = linkText.length + suffix.length;
-
-    if (!href || !linkText) {
-      continue;
-    }
-
-    if (matchIndex > lastIndex) {
-      nodes.push(document.createTextNode(source.slice(lastIndex, matchIndex)));
-    }
-
-    const link = document.createElement('a');
-    link.className = 'telegram-message-link';
-    link.href = href;
-    link.target = '_blank';
-    link.rel = 'noreferrer noopener';
-    link.textContent = linkText;
-    link.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      void window.pelec.openExternal(href);
-    });
-    nodes.push(link);
-
-    if (suffix) {
-      nodes.push(document.createTextNode(suffix));
-    }
-
-    lastIndex = matchIndex + consumedLength;
-  }
-
-  if (lastIndex < source.length) {
-    nodes.push(document.createTextNode(source.slice(lastIndex)));
-  }
-
-  return nodes.length > 0 ? nodes : [document.createTextNode(source)];
-};
-
-const formatTelegramDocumentKind = (fileName: string | undefined, mimeType?: string): string => {
-  const normalizedFileName = safeLabel(fileName, 'FILE');
-  const ext = normalizedFileName.split('.').pop()?.trim();
-  if (ext && ext !== normalizedFileName) {
-    return ext.slice(0, 8).toUpperCase();
-  }
-  if (mimeType) {
-    return mimeType.split('/').pop()?.slice(0, 8).toUpperCase() || 'FILE';
-  }
-  return 'FILE';
-};
-
-const formatTelegramDocumentSubtitle = (
-  fileName: string | undefined,
-  mimeType?: string,
-  sizeBytes?: number,
-): string => {
-  const size = formatFileSize(sizeBytes);
-  if (size) {
-    return size;
-  }
-
-  const kind = formatTelegramDocumentKind(fileName, mimeType);
-  return kind === 'FILE' ? 'Telegram document' : kind;
-};
-
-const isTelegramDocumentFallbackText = (message: ChatMessage): boolean => {
-  if (!message.document) {
-    return false;
-  }
-
-  const text = safeText(message.text).trim().toLowerCase();
-  if (!text) {
-    return false;
-  }
-
-  const fileName = safeLabel(message.document.fileName, 'Document');
-  return text === 'document' || text === `document: ${fileName}`.toLowerCase();
-};
-
-const isTelegramImageFallbackText = (message: ChatMessage): boolean => {
-  if (!message.imageUrl) {
-    return false;
-  }
-
-  const text = safeText(message.text).trim().toLowerCase();
-  if (!text) {
-    return false;
-  }
-
-  return text === 'image' || text === 'photo' || text === 'document/image' || text === 'document';
-};
-
-const isTelegramAlbumEligibleMessage = (message: ChatMessage): boolean =>
-  !!message.mediaAlbumId &&
-  (!!message.imageUrl || !!message.videoUrl || !!message.hasVideo) &&
-  !message.document &&
-  !message.animationUrl &&
-  !message.stickerUrl &&
-  !message.call &&
-  !(message.audioUrl || message.hasAudio);
-
-const getTelegramMeaningfulAlbumCaption = (message: ChatMessage): string | undefined => {
-  const text = safeText(message.text).trim();
-  if (!text) {
-    return undefined;
-  }
-  if (
-    isTelegramImageFallbackText(message) ||
-    isTelegramVideoFallbackText(message) ||
-    isTelegramDocumentFallbackText(message)
-  ) {
-    return undefined;
-  }
-  return text;
-};
-
-const isTelegramVideoFallbackText = (message: ChatMessage): boolean => {
-  if (!message.videoUrl && !message.hasVideo) {
-    return false;
-  }
-
-  const text = safeText(message.text).trim().toLowerCase();
-  if (!text) {
-    return false;
-  }
-
-  return text === 'video' || text === 'video message' || text === '[video]' || text === '[media]';
-};
-
-const hasValidTimestamp = (timestamp?: number): timestamp is number =>
-  typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0;
-
-const extractLocalMediaPath = (mediaUrl: string): string | undefined => {
-  try {
-    const parsed = new URL(mediaUrl);
-    const filePath = parsed.searchParams.get('path')?.trim();
-    return filePath || undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-const isSameCalendarDay = (left: Date, right: Date): boolean =>
-  left.getFullYear() === right.getFullYear() &&
-  left.getMonth() === right.getMonth() &&
-  left.getDate() === right.getDate();
-
-const formatShortTime = (timestamp: number): string =>
-  new Date(timestamp).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-const formatFullDateTime = (timestamp: number): string =>
-  new Date(timestamp).toLocaleString([], {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
-
-const formatChatTimestamp = (timestamp?: number): string => {
-  if (!hasValidTimestamp(timestamp)) {
-    return '';
-  }
-
-  const date = new Date(timestamp);
-  const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-
-  if (isSameCalendarDay(date, now)) {
-    return formatShortTime(timestamp);
-  }
-  if (isSameCalendarDay(date, yesterday)) {
-    return 'Yesterday';
-  }
-  if (date.getFullYear() === now.getFullYear()) {
-    return date.toLocaleDateString([], {
-      month: 'short',
-      day: 'numeric',
-    });
-  }
-  return date.toLocaleDateString([], {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-};
-
-const formatTelegramUnreadBadge = (count: number): string => {
-  const normalized = Math.max(0, Math.floor(count));
-  if (normalized > 99) {
-    return '99+';
-  }
-  return String(normalized);
-};
-
-const formatMessageTimestamp = (timestamp: number): string => {
-  if (!hasValidTimestamp(timestamp)) {
-    return '';
-  }
-
-  const date = new Date(timestamp);
-  const now = new Date();
-  if (isSameCalendarDay(date, now)) {
-    return formatShortTime(timestamp);
-  }
-
-  return `${date.toLocaleDateString([], {
-    month: 'short',
-    day: 'numeric',
-    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
-  })}, ${formatShortTime(timestamp)}`;
-};
-
-const formatMessageDayLabel = (timestamp: number): string => {
-  if (!hasValidTimestamp(timestamp)) {
-    return '';
-  }
-
-  const date = new Date(timestamp);
-  const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-
-  if (isSameCalendarDay(date, now)) {
-    return 'Today';
-  }
-  if (isSameCalendarDay(date, yesterday)) {
-    return 'Yesterday';
-  }
-  return date.toLocaleDateString([], {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
-  });
-};
-
-const formatCallDurationMeta = (seconds?: number): string | undefined => {
-  if (!seconds || seconds < 1) {
-    return undefined;
-  }
-  return `Duration ${formatDuration(seconds)}`;
-};
-
-const describeTelegramCall = (
-  call: ChatCall | undefined,
-  outgoing: boolean | undefined,
-): {
-  badge: string;
-  title: string;
-  meta: string;
-  preview: string;
-  tone: 'connected' | 'missed';
-} => {
-  const isVideo = call?.isVideo === true;
-  const kind = isVideo ? 'video call' : 'voice call';
-  const badge = isVideo ? 'VIDEO' : 'VOICE';
-  const durationMeta = formatCallDurationMeta(call?.durationSeconds);
-
-  if (call?.discardReason === 'missed') {
-    return {
-      badge,
-      title: outgoing ? `Unanswered ${kind}` : `Missed ${kind}`,
-      meta: 'No answer',
-      preview: outgoing ? `Unanswered ${kind}` : `Missed ${kind}`,
-      tone: 'missed',
-    };
-  }
-
-  if (call?.discardReason === 'declined') {
-    return {
-      badge,
-      title: isVideo ? 'Video call' : 'Voice call',
-      meta: outgoing ? 'Declined' : 'You declined',
-      preview: outgoing ? `Declined ${kind}` : `You declined ${kind}`,
-      tone: 'missed',
-    };
-  }
-
-  if (call?.discardReason === 'disconnected') {
-    return {
-      badge,
-      title: isVideo ? 'Video call' : 'Voice call',
-      meta: durationMeta ? `Dropped, ${durationMeta.toLowerCase()}` : 'Connection dropped',
-      preview: durationMeta
-        ? `${isVideo ? 'Video' : 'Voice'} call (${formatDuration(call.durationSeconds ?? 0)})`
-        : `Dropped ${kind}`,
-      tone: 'missed',
-    };
-  }
-
-  return {
-    badge,
-    title: isVideo ? 'Video call' : 'Voice call',
-    meta: durationMeta ?? (outgoing ? 'Outgoing' : 'Incoming'),
-    preview: durationMeta
-      ? `${isVideo ? 'Video' : 'Voice'} call (${formatDuration(call?.durationSeconds ?? 0)})`
-      : `${isVideo ? 'Video' : 'Voice'} call`,
-    tone: 'connected',
-  };
-};
-
-const createTelegramCallCard = (message: ChatMessage): HTMLElement => {
-  const details = describeTelegramCall(message.call, message.outgoing);
-  const card = document.createElement('section');
-  card.className = 'telegram-call-card';
-  card.classList.add(details.tone === 'missed' ? 'is-missed' : 'is-connected');
-  if (message.call?.isVideo) {
-    card.classList.add('is-video');
-  }
-
-  const badge = document.createElement('div');
-  badge.className = 'telegram-call-badge';
-  badge.textContent = details.badge;
-
-  const content = document.createElement('div');
-  content.className = 'telegram-call-content';
-  const title = document.createElement('div');
-  title.className = 'telegram-call-title';
-  title.textContent = details.title;
-  const meta = document.createElement('div');
-  meta.className = 'telegram-call-meta';
-  meta.textContent = details.meta;
-  content.replaceChildren(title, meta);
-
-  card.replaceChildren(badge, content);
-  return card;
-};
-
-const renderStatusToast = (
-  host: HTMLElement,
-  activity?: AppActivity | null,
-): void => {
-  host.replaceChildren();
-  host.classList.toggle('hidden', !activity);
-  if (!activity) {
-    return;
-  }
-
-  const card = document.createElement('aside');
-  card.className = 'status-toast';
-  card.classList.add(`state-${activity.state}`);
-  if (activity.indeterminate) {
-    card.classList.add('indeterminate');
-  }
-
-  const eyebrow = document.createElement('div');
-  eyebrow.className = 'status-toast-eyebrow';
-  eyebrow.textContent =
-    activity.state === 'running'
-      ? 'Background task'
-      : activity.state === 'success'
-        ? 'Completed'
-        : 'Attention';
-
-  const header = document.createElement('div');
-  header.className = 'status-toast-header';
-
-  const label = document.createElement('div');
-  label.className = 'status-toast-label';
-  label.textContent = activity.label;
-
-  const value = document.createElement('div');
-  value.className = 'status-toast-value';
-  if (typeof activity.progress === 'number' && Number.isFinite(activity.progress)) {
-    value.textContent = `${Math.round(Math.max(0, Math.min(activity.progress, 1)) * 100)}%`;
-  } else if (activity.state === 'running') {
-    value.textContent = 'WORKING';
-  } else {
-    value.textContent = activity.state.toUpperCase();
-  }
-
-  const detail = document.createElement('div');
-  detail.className = 'status-toast-detail';
-  detail.textContent = activity.detail?.trim() || '\u00a0';
-
-  const track = document.createElement('div');
-  track.className = 'status-toast-track';
-  const bar = document.createElement('div');
-  bar.className = 'status-toast-bar';
-  if (!activity.indeterminate && typeof activity.progress === 'number' && Number.isFinite(activity.progress)) {
-    bar.style.width = `${Math.max(0, Math.min(activity.progress, 1)) * 100}%`;
-  }
-  track.append(bar);
-
-  header.replaceChildren(label, value);
-  card.replaceChildren(eyebrow, header, detail, track);
-  host.append(card);
-};
-
-const buildVoiceBarHeights = (seed: string, count = 38): number[] => {
-  let value = 0;
-  for (let i = 0; i < seed.length; i += 1) {
-    value = (value * 33 + seed.charCodeAt(i)) >>> 0;
-  }
-  if (value === 0) {
-    value = 0x9e3779b9;
-  }
-  const bars: number[] = [];
-  for (let i = 0; i < count; i += 1) {
-    value = (value * 1664525 + 1013904223) >>> 0;
-    bars.push(20 + (value % 68));
-  }
-  return bars;
-};
-
-const getTelegramEmojiTokenMatch = (
-  value: string,
-  selectionStart: number | null,
-  selectionEnd: number | null,
-): TelegramEmojiTokenMatch | null => {
-  if (
-    selectionStart === null ||
-    selectionEnd === null ||
-    selectionStart !== selectionEnd
-  ) {
-    return null;
-  }
-
-  let tokenStart = selectionStart;
-  while (tokenStart > 0 && !/\s/.test(value[tokenStart - 1])) {
-    tokenStart -= 1;
-  }
-
-  let tokenEnd = selectionStart;
-  while (tokenEnd < value.length && !/\s/.test(value[tokenEnd])) {
-    tokenEnd += 1;
-  }
-
-  const token = value.slice(tokenStart, tokenEnd);
-  if (!token.startsWith(':')) {
-    return null;
-  }
-
-  const previousChar = tokenStart > 0 ? value[tokenStart - 1] : '';
-  if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
-    return null;
-  }
-
-  const query = value.slice(tokenStart + 1, selectionStart).toLowerCase();
-  const suffix = value.slice(selectionStart, tokenEnd);
-  if (
-    query.length < 1 ||
-    query.length > TELEGRAM_EMOJI_ALIAS_MAX_LENGTH ||
-    !TELEGRAM_EMOJI_ALIAS_PATTERN.test(query)
-  ) {
-    return null;
-  }
-
-  if (suffix && !TELEGRAM_EMOJI_ALIAS_PATTERN.test(suffix)) {
-    return null;
-  }
-
-  return {
-    query,
-    tokenStart,
-    tokenEnd,
-  };
-};
-
-const buildTelegramEmojiSuggestions = (query: string): TelegramEmojiSuggestion[] => {
-  if (!query) {
-    return [];
-  }
-
-  const normalizedQuery = query.toLowerCase();
-  const matches = TELEGRAM_EMOJI_INDEX.filter((entry) => entry.alias.startsWith(normalizedQuery));
-  matches.sort((left, right) => {
-    const leftPriority =
-      left.alias === normalizedQuery ? 0 : left.canonicalAlias === normalizedQuery ? 1 : 2;
-    const rightPriority =
-      right.alias === normalizedQuery ? 0 : right.canonicalAlias === normalizedQuery ? 1 : 2;
-    return (
-      leftPriority - rightPriority ||
-      left.alias.length - right.alias.length ||
-      left.canonicalAlias.length - right.canonicalAlias.length ||
-      left.canonicalAlias.localeCompare(right.canonicalAlias)
-    );
-  });
-
-  const suggestions: TelegramEmojiSuggestion[] = [];
-  const seen = new Set<string>();
-
-  for (const match of matches) {
-    const key = `${match.emoji}:${match.canonicalAlias}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    suggestions.push({
-      emoji: match.emoji,
-      canonicalAlias: match.canonicalAlias,
-      matchedAlias: match.alias,
-    });
-    if (suggestions.length >= TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS) {
-      break;
-    }
-  }
-
-  return suggestions;
-};
-
-const boot = async (): Promise<void> => {
   const appConfig = await window.pelec.getConfig();
   applyUserTheme(appConfig.userConfig);
   const initialStatuses = await window.pelec.getConnectorStatuses();
@@ -1840,14 +1051,14 @@ const boot = async (): Promise<void> => {
     }
     if (Date.now() >= instagramCheckpointCooldownUntil) {
       instagramCheckpointCooldownUntil = 0;
-      window.localStorage.removeItem(INSTAGRAM_CHECKPOINT_COOLDOWN_KEY);
+      clearInstagramCooldownUntil();
       return false;
     }
     return true;
   };
 
   const setInstagramCheckpointCooldown = (reason: string): void => {
-    const until = Date.now() + INSTAGRAM_CHECKPOINT_COOLDOWN_MS;
+    const until = getInstagramCheckpointCooldownUntil();
     instagramCheckpointCooldownUntil = until;
     writeInstagramCooldownUntil(until);
     console.info('[instagram-auth][renderer] checkpoint cooldown enabled', {
@@ -4958,12 +4169,11 @@ const boot = async (): Promise<void> => {
         label: 'Verification code',
         placeholder: 'Code',
         submitLabel: 'Verify',
-        onCancel: () => {
+        onCancel: async () => {
           if (result.network === 'instagram') {
             stopInstagramBrowserSessionPolling();
-            return window.pelec.resetConnectorAuth('instagram');
+            await window.pelec.resetConnectorAuth('instagram');
           }
-          return undefined;
         },
       });
       if (!code) {
@@ -6876,5 +6086,3 @@ const boot = async (): Promise<void> => {
   await loadInstagramChats();
   render();
 };
-
-void boot();

@@ -17,7 +17,8 @@
     "appimage:fresh": "bun scripts/build-appimage.js --fresh",
     "make": "bun scripts/run-forge.js make",
     "publish": "bun scripts/run-forge.js publish",
-    "lint": "bun x eslint --ext .ts,.tsx ."
+    "lint": "bun x eslint --ext .ts,.tsx .",
+    "test": "vitest run"
   },
   "keywords": [],
   "author": {
@@ -45,14 +46,21 @@
     "@electron-forge/plugin-fuses": "^7.11.1",
     "@electron-forge/plugin-vite": "^7.11.1",
     "@electron/fuses": "^1.8.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/electron-squirrel-startup": "^1.0.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^5.62.0",
     "@typescript-eslint/parser": "^5.62.0",
+    "@vitejs/plugin-react": "^4.3.4",
     "electron": "40.7.0",
     "eslint": "^8.57.1",
     "eslint-plugin-import": "^2.32.0",
-    "typescript": "~4.5.4",
-    "vite": "^5.4.21"
+    "jsdom": "^29.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vitest": "^4.1.2"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
@@ -62,6 +70,8 @@
     "instagram-private-api": "^1.46.1",
     "prebuilt-tdlib": "^0.1008062.0",
     "qrcode": "^1.5.4",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "tdl": "^8.0.2"
   }
 }
