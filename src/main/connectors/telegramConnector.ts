@@ -1561,13 +1561,23 @@ export class TelegramConnector implements Connector {
         mime_type?: string;
         video?: { id?: number; local?: { path?: string } };
       };
+      video_note?: {
+        video?: { id?: number; local?: { path?: string } };
+      };
     };
 
-    if (container._ !== 'messageVideo') {
+    const videoFile =
+      container._ === 'messageVideo'
+        ? container.video?.video
+        : container._ === 'messageVideoNote'
+          ? container.video_note?.video
+          : undefined;
+
+    if (!videoFile) {
       return undefined;
     }
 
-    const localPath = await this.resolveTdPlayableFilePath(client, container.video?.video);
+    const localPath = await this.resolveTdPlayableFilePath(client, videoFile);
     if (!localPath) {
       return undefined;
     }
@@ -1637,7 +1647,8 @@ export class TelegramConnector implements Connector {
       return false;
     }
 
-    return (content as { _?: string })._ === 'messageVideo';
+    const kind = (content as { _?: string })._;
+    return kind === 'messageVideo' || kind === 'messageVideoNote';
   }
 
   private getTelegramDocument(
@@ -1732,11 +1743,15 @@ export class TelegramConnector implements Connector {
     const container = content as {
       _?: string;
       video?: { mime_type?: string };
+      video_note?: { mime_type?: string };
     };
-    if (container._ !== 'messageVideo') {
-      return undefined;
+    if (container._ === 'messageVideo') {
+      return container.video?.mime_type?.trim().toLowerCase() || undefined;
     }
-    return container.video?.mime_type?.trim().toLowerCase() || undefined;
+    if (container._ === 'messageVideoNote') {
+      return container.video_note?.mime_type?.trim().toLowerCase() || 'video/mp4';
+    }
+    return undefined;
   }
 
   private extractStickerEmoji(content: unknown): string | undefined {
