@@ -1,5 +1,4 @@
 import '../index.css';
-import QRCode from 'qrcode';
 import type {
   AuthStartResult,
   ChatMessage,
@@ -42,6 +41,18 @@ import {
 } from './features/telegram/media';
 import type { PendingTelegramAttachment } from './features/telegram/media';
 import {
+  createTelegramChatListItem,
+  getTelegramChatRenderSignature,
+} from './features/telegram/chatList';
+import { syncTelegramMessageListNodes } from './features/telegram/messageList';
+import {
+  createTelegramDocumentCard,
+  createTelegramMessageFooter,
+  createTelegramMessageReactions,
+  createTelegramVoiceNoteNodes,
+} from './features/telegram/messageNodes';
+import { getTelegramMessageRenderSignature } from './features/telegram/messageRender';
+import {
   buildTelegramEmojiSuggestions,
   getTelegramEmojiTokenMatch,
   type TelegramEmojiSuggestion,
@@ -58,6 +69,17 @@ import {
   safeText,
 } from './lib/format';
 import { applyUserTheme } from './lib/theme';
+import type {
+  BootLegacyAppOptions,
+  LegacyAppBridgeApi,
+  LegacyAppSnapshot,
+  LegacyCommandItem,
+} from './legacyBridge';
+import { AsyncLruCache } from './services/mediaCache';
+import { beginMeasure } from './services/performance';
+import { resolveRefreshDelay, shouldRefreshActiveMessages } from './services/refreshScheduler';
+import { InstagramController } from './services/instagramController';
+import { TelegramController } from './services/telegramController';
 
 interface AppState {
   mode: AppMode;
@@ -101,6 +123,7 @@ interface AppState {
 type AppCommand = {
   id: string;
   label: string;
+  group: LegacyCommandItem['group'];
   run: () => void;
 };
 
@@ -138,9 +161,30 @@ type TelegramForwardState = {
   sending: boolean;
 };
 
+type AuthPromptState = {
+  title: string;
+  message: string;
+  placeholder: string;
+  label: string;
+  stepLabel: string | null;
+  secret: boolean;
+  trim: boolean;
+  submitLabel: string;
+  onCancel?: () => void | Promise<void>;
+};
+
+type QrAuthState = {
+  network: NetworkId;
+  passwordRequired: boolean;
+  qrLink: string | null;
+};
+
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
 const NETWORK_RAIL_VISIBLE = false;
-export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> => {
+export const bootLegacyApp = async (
+  mountRoot?: HTMLDivElement,
+  options: BootLegacyAppOptions = {},
+): Promise<void> => {
   const appEl = mountRoot ?? document.querySelector<HTMLDivElement>('#app');
   if (!appEl) {
     throw new Error('App root not found');
@@ -149,6 +193,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   const appConfig = await window.pelec.getConfig();
   applyUserTheme(appConfig.userConfig);
   const initialStatuses = await window.pelec.getConnectorStatuses();
+  const instagramEnabled = appConfig.networks.some((network) => network.id === 'instagram');
 
   if (appConfig.networks.length < 1) {
     throw new Error('No networks configured');
@@ -194,6 +239,87 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     replyingToInstagramSender: null,
     instagramLoading: false,
     instagramSearchQuery: '',
+  };
+
+  const snapshotListeners = new Set<(snapshot: LegacyAppSnapshot) => void>();
+  const bridge = options.bridge;
+  const useReactTelegramMessageList = !!bridge;
+
+  const mapVimPaneToAppPane = (): LegacyAppSnapshot['activePane'] => {
+    if (state.mode === 'insert' && state.activeNetwork === 'telegram') {
+      return 'telegram-composer';
+    }
+
+    return state.vimPane;
+  };
+
+  const getSnapshot = (): LegacyAppSnapshot => ({
+    authPrompt: authPromptState
+      ? {
+          label: authPromptState.label,
+          message: authPromptState.message,
+          placeholder: authPromptState.placeholder,
+          secret: authPromptState.secret,
+          stepLabel: authPromptState.stepLabel,
+          submitLabel: authPromptState.submitLabel,
+          title: authPromptState.title,
+          visible: true,
+        }
+      : null,
+    mode: state.mode,
+    activeNetwork: state.activeNetwork,
+    activePane: mapVimPaneToAppPane(),
+    qrAuth: qrAuthState
+      ? {
+          network: qrAuthState.network,
+          passwordRequired: qrAuthState.passwordRequired,
+          qrLink: qrAuthState.qrLink,
+          visible: true,
+        }
+      : null,
+    telegram: {
+      activeChatTitle: safeLabel(
+        state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId)?.title,
+        'Telegram',
+      ),
+      activeChatId: state.activeTelegramChatId,
+      chatListMinimized: state.telegramChatListMinimized,
+      contextMenu: { ...telegramContextMenuState },
+      draftText: telegramComposeInput.value,
+      filteredChats: filterChatsByQuery(state.telegramChats, state.telegramSearchQuery),
+      forward: {
+        candidates: getTelegramForwardCandidates(),
+        query: telegramForwardState.query,
+        sending: telegramForwardState.sending,
+        visible: telegramForwardState.visible,
+      },
+      imagePreviewUrl: activeTelegramImageUrl,
+      loadError: state.telegramLoadError,
+      loading: state.telegramLoading,
+      messageLoadError: state.telegramLoadError,
+      messages: getVisibleTelegramMessages(),
+      messagesLoading: state.telegramMessagesLoading,
+      pendingAttachments: [...state.pendingTelegramAttachments],
+      replyPreview: getTelegramReplyPreview(),
+      searchQuery: state.telegramSearchQuery,
+      selectedChatId: state.selectedTelegramChatId,
+      selectedMessageId: state.selectedTelegramMessageId,
+      voiceRecorderState: telegramVoiceRecorder
+        ? 'recording'
+        : telegramVoiceRecorderBusy
+          ? 'busy'
+          : getSupportedTelegramVoiceRecordingMimeType()
+            ? 'idle'
+            : 'unsupported',
+    },
+  });
+
+  const emitSnapshotChange = (): void => {
+    const snapshot = getSnapshot();
+    bridge?.onSnapshotChange?.(snapshot);
+    for (const listener of snapshotListeners) {
+      listener(snapshot);
+    }
   };
 
   const commandPalette = document.createElement('div');
@@ -248,9 +374,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     throw new Error('Required UI elements missing');
   }
 
+  shellEl.tabIndex = -1;
+
   const webviewMap = new Map<NetworkId, Electron.WebviewTag>();
-  let telegramChatsRequestSeq = 0;
-  let telegramMessagesRequestSeq = 0;
+  const telegramController = new TelegramController();
+  const instagramController = new InstagramController();
+  const telegramAudioUrlCache = new AsyncLruCache<string | undefined>(96);
+  const telegramVideoUrlCache = new AsyncLruCache<string | undefined>(64);
   let telegramChatsVersion = 0;
   let telegramMessagesVersion = 0;
   const pendingTelegramMessagesByChat = new Map<string, PendingTelegramMessage[]>();
@@ -270,17 +400,15 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   let telegramScrollFollowupTimer: number | null = null;
   let telegramReadAcknowledgeTimer: number | null = null;
   let lastTelegramReadAcknowledgeKey: string | null = null;
-  let instagramChatsRequestSeq = 0;
-  let instagramMessagesRequestSeq = 0;
   let instagramChatsRefreshTimer: number | null = null;
   let instagramMessagesRefreshTimer: number | null = null;
-  let instagramChatsInFlight = false;
-  let instagramMessagesInFlight = false;
   let telegramBackgroundRefreshTimer: number | null = null;
   let instagramBackgroundRefreshTimer: number | null = null;
   let instagramWebFallbackMonitorTimer: number | null = null;
   let telegramNotificationScanInFlight = false;
   let instagramNotificationScanInFlight = false;
+  let windowHasFocus = document.hasFocus();
+  let documentVisible = document.visibilityState === 'visible';
   let instagramCheckpointCooldownUntil = readInstagramCooldownUntil();
   let statusActivity: AppActivity | null = null;
   let statusActivityClearTimer: number | null = null;
@@ -303,7 +431,12 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   let lastInstagramWebFallbackState: InstagramWebFallbackState | null = null;
   let lastInstagramWebFallbackNotificationKey: string | null = null;
   const renderedTelegramChatButtonById = new Map<string, HTMLButtonElement>();
+  const renderedTelegramChatSignatureById = new Map<string, string>();
   const renderedTelegramMessageNodeById = new Map<string, HTMLElement>();
+  const renderedTelegramMessageBundleById = new Map<
+    string,
+    { nodes: HTMLElement[]; signature: string }
+  >();
   let telegramEmojiCompletionState: TelegramEmojiCompletionState = {
     visible: false,
     query: '',
@@ -939,6 +1072,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const pollInstagramWebFallbackNotifications = async (): Promise<void> => {
+    if (!instagramEnabled) {
+      return;
+    }
     const instagramStatus = getStatusByNetwork('instagram');
     if (instagramStatus.mode !== 'web-fallback') {
       lastInstagramWebFallbackState = null;
@@ -991,6 +1127,15 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const ensureInstagramWebFallbackMonitor = (): void => {
+    if (!instagramEnabled) {
+      if (instagramWebFallbackMonitorTimer !== null) {
+        window.clearInterval(instagramWebFallbackMonitorTimer);
+        instagramWebFallbackMonitorTimer = null;
+      }
+      lastInstagramWebFallbackState = null;
+      lastInstagramWebFallbackNotificationKey = null;
+      return;
+    }
     const instagramStatus = getStatusByNetwork('instagram');
     if (instagramStatus.mode !== 'web-fallback') {
       if (instagramWebFallbackMonitorTimer !== null) {
@@ -1089,8 +1234,12 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     </aside>
     <section class="telegram-chat-pane">
       <header id="telegram-chat-title" class="telegram-chat-title">Telegram</header>
-      <div id="telegram-message-list" class="telegram-message-list"></div>
+      <div id="telegram-message-list" class="telegram-message-list">
+        <div id="telegram-message-legacy-root" class="telegram-message-root"></div>
+        <div id="telegram-message-react-root" class="telegram-message-root"></div>
+      </div>
       <footer class="telegram-composer">
+        <div id="telegram-compose-react-root" class="telegram-compose-react-root"></div>
         <div id="telegram-compose-reply" class="telegram-compose-reply hidden">
           <div class="telegram-compose-reply-body">
             <div id="telegram-compose-reply-sender" class="telegram-compose-reply-sender"></div>
@@ -1127,6 +1276,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   const telegramChatListEl = nativeTelegram.querySelector<HTMLElement>('#telegram-chat-list');
   const telegramChatTitleEl = nativeTelegram.querySelector<HTMLElement>('#telegram-chat-title');
   const telegramMessageListEl = nativeTelegram.querySelector<HTMLElement>('#telegram-message-list');
+  const telegramMessageLegacyRootEl = nativeTelegram.querySelector<HTMLElement>(
+    '#telegram-message-legacy-root',
+  );
   const telegramSearchInput = nativeTelegram.querySelector<HTMLInputElement>('.telegram-search');
   const telegramComposeReplyEl = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-reply');
   const telegramComposeReplySenderEl = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-reply-sender');
@@ -1150,6 +1302,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     !telegramChatListEl ||
     !telegramChatTitleEl ||
     !telegramMessageListEl ||
+    !telegramMessageLegacyRootEl ||
     !telegramSearchInput ||
     !telegramComposeReplyEl ||
     !telegramComposeReplySenderEl ||
@@ -1165,6 +1318,57 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   ) {
     throw new Error('Native Telegram UI elements missing');
   }
+
+  nativeTelegram.tabIndex = -1;
+  telegramChatListEl.tabIndex = -1;
+  telegramMessageListEl.tabIndex = -1;
+
+  const focusTelegramPaneSurface = (
+    pane: Extract<AppState['vimPane'], 'telegram-chats' | 'telegram-messages'>,
+  ): void => {
+    const target = pane === 'telegram-chats' ? telegramChatListEl : telegramMessageListEl;
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && activeElement !== target) {
+      activeElement.blur?.();
+    }
+    target.focus({ preventScroll: true });
+  };
+
+  const focusTelegramKeyboardSurface = (): void => {
+    if (state.activeNetwork !== 'telegram' || state.mode === 'insert') {
+      return;
+    }
+
+    if (state.vimPane === 'telegram-chats') {
+      focusTelegramPaneSurface('telegram-chats');
+      return;
+    }
+
+    focusTelegramPaneSurface('telegram-messages');
+  };
+
+  const focusAppKeyboardSurface = (): void => {
+    if (state.activeNetwork === 'telegram') {
+      focusTelegramKeyboardSurface();
+      return;
+    }
+
+    shellEl.focus();
+  };
+
+  const scheduleTelegramKeyboardSurfaceFocus = (): void => {
+    focusTelegramKeyboardSurface();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        focusTelegramKeyboardSurface();
+      });
+      return;
+    }
+
+    window.setTimeout(() => {
+      focusTelegramKeyboardSurface();
+    }, 0);
+  };
 
   const setTelegramChatListMinimized = (minimized: boolean): void => {
     if (state.telegramChatListMinimized === minimized) {
@@ -1349,94 +1553,24 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     return true;
   };
 
-  const instagramWebShell = document.createElement('section');
-  instagramWebShell.className = 'instagram-web-shell hidden';
-  instagramWebShell.innerHTML = `
-    <div class="instagram-web-stage">
-      <div class="instagram-web-frame">
-        <div id="instagram-webview-host" class="instagram-webview-host"></div>
-      </div>
-    </div>
-  `;
-  views.append(instagramWebShell);
-
-  const instagramWebviewHost = instagramWebShell.querySelector<HTMLElement>('#instagram-webview-host');
-
-  if (!instagramWebviewHost) {
-    throw new Error('Instagram web shell elements missing');
-  }
-
-  const qrModal = document.createElement('div');
-  qrModal.className = 'qr-modal hidden';
-  qrModal.innerHTML = `
-    <div class="qr-card">
-      <h3>Telegram QR Login</h3>
-      <p class="qr-subtitle">Scan with Telegram app, then continue to password.</p>
-      <canvas id="qr-canvas" width="260" height="260"></canvas>
-      <div class="qr-primary-actions">
-        <button id="qr-refresh" class="ghost-button" type="button">Refresh QR</button>
-        <button id="qr-scanned" class="ghost-button" type="button">I scanned the QR</button>
-        <button id="qr-close" class="ghost-button" type="button">Close</button>
-      </div>
-      <div id="qr-password-wrap" class="qr-password-wrap hidden">
-        <input id="qr-password-input" class="quick-filter" type="password" placeholder="2FA password" />
-        <div class="qr-actions">
-          <button id="qr-password-submit" class="ghost-button" type="button">Submit Password</button>
+  const instagramWebShell = instagramEnabled ? document.createElement('section') : null;
+  if (instagramWebShell) {
+    instagramWebShell.className = 'instagram-web-shell hidden';
+    instagramWebShell.innerHTML = `
+      <div class="instagram-web-stage">
+        <div class="instagram-web-frame">
+          <div id="instagram-webview-host" class="instagram-webview-host"></div>
         </div>
       </div>
-    </div>
-  `;
-  appEl.append(qrModal);
-
-  const qrCanvas = qrModal.querySelector<HTMLCanvasElement>('#qr-canvas');
-  const qrRefreshButton = qrModal.querySelector<HTMLButtonElement>('#qr-refresh');
-  const qrScannedButton = qrModal.querySelector<HTMLButtonElement>('#qr-scanned');
-  const qrPasswordWrap = qrModal.querySelector<HTMLDivElement>('#qr-password-wrap');
-  const qrPasswordInput = qrModal.querySelector<HTMLInputElement>('#qr-password-input');
-  const qrPasswordSubmit = qrModal.querySelector<HTMLButtonElement>('#qr-password-submit');
-  const qrClose = qrModal.querySelector<HTMLButtonElement>('#qr-close');
-
-  if (
-    !qrCanvas ||
-    !qrRefreshButton ||
-    !qrScannedButton ||
-    !qrPasswordWrap ||
-    !qrPasswordInput ||
-    !qrPasswordSubmit ||
-    !qrClose
-  ) {
-    throw new Error('QR modal elements missing');
+    `;
+    views.append(instagramWebShell);
   }
 
-  const authModal = document.createElement('div');
-  authModal.className = 'qr-modal hidden';
-  authModal.innerHTML = `
-    <div class="qr-card">
-      <div id="auth-step" class="auth-step hidden"></div>
-      <h3 id="auth-title">Authentication</h3>
-      <p id="auth-message" class="qr-subtitle"></p>
-      <label id="auth-label" class="auth-label" for="auth-input"></label>
-      <div class="auth-input-shell">
-        <input id="auth-input" class="quick-filter auth-input" type="text" />
-      </div>
-      <div class="qr-actions">
-        <button id="auth-submit" class="ghost-button" type="button">Submit</button>
-        <button id="auth-cancel" class="ghost-button" type="button">Cancel</button>
-      </div>
-    </div>
-  `;
-  appEl.append(authModal);
+  const instagramWebviewHost =
+    instagramWebShell?.querySelector<HTMLElement>('#instagram-webview-host') ?? null;
 
-  const authTitleEl = authModal.querySelector<HTMLHeadingElement>('#auth-title');
-  const authStepEl = authModal.querySelector<HTMLDivElement>('#auth-step');
-  const authMessageEl = authModal.querySelector<HTMLParagraphElement>('#auth-message');
-  const authLabelEl = authModal.querySelector<HTMLLabelElement>('#auth-label');
-  const authInputEl = authModal.querySelector<HTMLInputElement>('#auth-input');
-  const authSubmitEl = authModal.querySelector<HTMLButtonElement>('#auth-submit');
-  const authCancelEl = authModal.querySelector<HTMLButtonElement>('#auth-cancel');
-
-  if (!authTitleEl || !authStepEl || !authMessageEl || !authLabelEl || !authInputEl || !authSubmitEl || !authCancelEl) {
-    throw new Error('Auth modal elements missing');
+  if (instagramEnabled && !instagramWebviewHost) {
+    throw new Error('Instagram web shell elements missing');
   }
 
   const telegramImageModal = document.createElement('div');
@@ -1458,8 +1592,6 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   `;
   appEl.append(telegramImageModal);
 
-  const telegramImagePreviewEl =
-    telegramImageModal.querySelector<HTMLImageElement>('#telegram-image-preview');
   const telegramImageCopyEl =
     telegramImageModal.querySelector<HTMLButtonElement>('#telegram-image-copy');
   const telegramImageDownloadEl =
@@ -1468,7 +1600,6 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     telegramImageModal.querySelector<HTMLButtonElement>('#telegram-image-close');
 
   if (
-    !telegramImagePreviewEl ||
     !telegramImageCopyEl ||
     !telegramImageDownloadEl ||
     !telegramImageCloseEl
@@ -1508,10 +1639,8 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     telegramForwardModal.querySelector<HTMLButtonElement>('#telegram-forward-close');
   const telegramForwardSearchEl =
     telegramForwardModal.querySelector<HTMLInputElement>('#telegram-forward-search');
-  const telegramForwardListEl =
-    telegramForwardModal.querySelector<HTMLElement>('#telegram-forward-list');
 
-  if (!telegramForwardCloseEl || !telegramForwardSearchEl || !telegramForwardListEl) {
+  if (!telegramForwardCloseEl || !telegramForwardSearchEl) {
     throw new Error('Telegram forward modal elements missing');
   }
 
@@ -1520,6 +1649,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   let instagramBrowserSessionPollTimer: number | null = null;
   let instagramBrowserSessionPollBusy = false;
   let activeTelegramImageUrl: string | null = null;
+  let authPromptResolver: ((value: string | null) => void) | null = null;
+  let authPromptState: AuthPromptState | null = null;
+  let qrAuthState: QrAuthState | null = null;
   let telegramContextMenuOpenedAt = 0;
   let telegramContextMenuState: TelegramContextMenuState = {
     visible: false,
@@ -1535,15 +1667,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     sending: false,
   };
 
-  const telegramContextMenu = document.createElement('div');
-  telegramContextMenu.className = 'telegram-context-menu hidden';
-  telegramContextMenu.setAttribute('role', 'menu');
-  appEl.append(telegramContextMenu);
-
   const closeTelegramImagePreview = (): void => {
     activeTelegramImageUrl = null;
-    telegramImagePreviewEl.removeAttribute('src');
-    telegramImageModal.classList.add('hidden');
+    render();
   };
 
   const closeTelegramForwardMenu = (shouldRender = true): void => {
@@ -1848,6 +1974,15 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     state.selectedTelegramMessageId = messageId;
   };
 
+  const activateTelegramMessagesPane = (): void => {
+    state.vimPane = 'telegram-messages';
+    if (!state.selectedTelegramMessageId) {
+      const telegramMessages = getVisibleTelegramMessages();
+      state.selectedTelegramMessageId =
+        telegramMessages[telegramMessages.length - 1]?.id ?? null;
+    }
+  };
+
   const openTelegramContextMenu = (messageId: string, x: number, y: number): void => {
     const message = findTelegramMessageById(messageId);
     if (isPendingTelegramMessage(message)) {
@@ -1879,10 +2014,14 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       sending: false,
     };
     render();
-    window.setTimeout(() => {
-      telegramForwardSearchEl.focus();
-      telegramForwardSearchEl.select();
-    }, 0);
+  };
+
+  const setTelegramForwardQuery = (query: string): void => {
+    telegramForwardState = {
+      ...telegramForwardState,
+      query,
+    };
+    render();
   };
 
   const buildTelegramMessageActionText = (message: ChatMessage): string => {
@@ -1933,6 +2072,16 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   const copyTelegramMessageText = async (message: ChatMessage): Promise<void> => {
     const copied = await writeTextToClipboard(buildTelegramMessageActionText(message));
     statusBar.textContent = copied ? 'Message copied.' : 'Copy failed.';
+  };
+
+  const copyTelegramMessageById = (messageId: string): void => {
+    const message = findTelegramMessageById(messageId);
+    if (!message || isPendingTelegramMessage(message)) {
+      statusBar.textContent = 'Message unavailable.';
+      render();
+      return;
+    }
+    void copyTelegramMessageText(message);
   };
 
   const clearTelegramReplyState = (options: { clearAttachments?: boolean } = {}): void => {
@@ -2010,16 +2159,27 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     closeTelegramForwardMenu(false);
-    state.selectedTelegramChatId = chat.id;
-    clearTelegramReplyState({ clearAttachments: true });
-    state.vimPane = 'telegram-chats';
     await loadTelegramChats();
-    await loadTelegramMessages(chat.id, 0, true, true, true);
+    await selectTelegramChat(chat.id, {
+      forceScroll: true,
+      suppressNotification: true,
+      showLoadingState: true,
+    });
     statusBar.textContent = `Forwarded to ${safeLabel(chat.title, 'chat')}.`;
     render();
   };
 
-  const renderTelegramForwardMenu = (): void => {
+  const forwardTelegramMessageToChatById = (chatId: string): void => {
+    const chat = state.telegramChats.find((candidate) => candidate.id === chatId);
+    if (!chat) {
+      statusBar.textContent = 'Telegram chat unavailable.';
+      render();
+      return;
+    }
+    void forwardTelegramMessageToChat(chat);
+  };
+
+  const getTelegramForwardCandidates = (): ChatSummary[] => {
     const message = findTelegramMessageById(telegramForwardState.messageId);
     if (
       !telegramForwardState.visible ||
@@ -2032,129 +2192,18 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       if (telegramForwardState.visible || telegramForwardState.messageId || telegramForwardState.fromChatId) {
         telegramForwardState = {
           visible: false,
-          messageId: null,
-          fromChatId: null,
-          query: '',
-          sending: false,
-        };
-      }
-      telegramForwardModal.classList.add('hidden');
-      telegramForwardListEl.replaceChildren();
-      telegramForwardSearchEl.value = '';
-      return;
+        messageId: null,
+        fromChatId: null,
+        query: '',
+        sending: false,
+      };
+    }
+      return [];
     }
 
-    telegramForwardSearchEl.value = telegramForwardState.query;
-    const chats = filterChatsByQuery(state.telegramChats, telegramForwardState.query).filter(
+    return filterChatsByQuery(state.telegramChats, telegramForwardState.query).filter(
       (chat) => chat.id !== telegramForwardState.fromChatId,
     );
-
-    if (chats.length < 1) {
-      const empty = document.createElement('div');
-      empty.className = 'telegram-forward-empty';
-      empty.textContent = telegramForwardState.query.trim()
-        ? 'No chats match your search.'
-        : 'No other Telegram chats are available.';
-      telegramForwardListEl.replaceChildren(empty);
-    } else {
-      telegramForwardListEl.replaceChildren(
-        ...chats.map((chat) => {
-          const title = safeLabel(chat.title, 'Untitled chat');
-          const preview = safeText(chat.lastMessagePreview).trim() || 'No recent activity';
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'telegram-forward-chat-item';
-          button.disabled = telegramForwardState.sending;
-
-          const avatar = createAvatarNode(title, chat.avatarUrl, 'telegram-avatar');
-          const content = document.createElement('div');
-          content.className = 'telegram-forward-chat-copy';
-          const heading = document.createElement('div');
-          heading.className = 'telegram-forward-chat-title';
-          heading.textContent = title;
-          const detail = document.createElement('div');
-          detail.className = 'telegram-forward-chat-preview';
-          detail.textContent = preview;
-
-          content.replaceChildren(heading, detail);
-          button.replaceChildren(avatar, content);
-          button.addEventListener('click', () => {
-            void forwardTelegramMessageToChat(chat);
-          });
-          return button;
-        }),
-      );
-    }
-
-    telegramForwardCloseEl.disabled = telegramForwardState.sending;
-    telegramForwardSearchEl.disabled = telegramForwardState.sending;
-    telegramForwardModal.classList.remove('hidden');
-  };
-
-  const renderTelegramContextMenu = (): void => {
-    const message = findTelegramMessageById(telegramContextMenuState.messageId);
-    if (
-      !telegramContextMenuState.visible ||
-      state.activeNetwork !== 'telegram' ||
-      getStatusByNetwork('telegram').authState !== 'authenticated' ||
-      !message ||
-      isPendingTelegramMessage(message)
-    ) {
-      telegramContextMenu.classList.add('hidden');
-      telegramContextMenu.replaceChildren();
-      telegramContextMenu.removeAttribute('style');
-      return;
-    }
-
-    const buildAction = (
-      label: string,
-      onSelect: (message: ChatMessage) => void | Promise<void>,
-    ): HTMLButtonElement => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'telegram-context-menu-item';
-      button.setAttribute('role', 'menuitem');
-      button.textContent = label;
-      button.addEventListener('click', () => {
-        closeTelegramContextMenu(false);
-        void onSelect(message);
-        render();
-      });
-      return button;
-    };
-
-    telegramContextMenu.replaceChildren(
-      buildAction('Copy', async (selectedMessage) => {
-        await copyTelegramMessageText(selectedMessage);
-      }),
-      buildAction('Select', (selectedMessage) => {
-        selectTelegramMessage(selectedMessage.id);
-        statusBar.textContent = `Selected message from ${safeLabel(selectedMessage.sender, 'Unknown')}.`;
-      }),
-      buildAction('Forward', (selectedMessage) => {
-        openTelegramForwardMenu(selectedMessage.id);
-      }),
-      buildAction('Reply', (selectedMessage) => {
-        beginReplyToTelegramMessage(selectedMessage);
-      }),
-    );
-
-    telegramContextMenu.classList.remove('hidden');
-    telegramContextMenu.style.left = `${telegramContextMenuState.x}px`;
-    telegramContextMenu.style.top = `${telegramContextMenuState.y}px`;
-
-    const menuRect = telegramContextMenu.getBoundingClientRect();
-    const left = Math.min(
-      Math.max(12, telegramContextMenuState.x),
-      Math.max(12, window.innerWidth - menuRect.width - 12),
-    );
-    const top = Math.min(
-      Math.max(12, telegramContextMenuState.y),
-      Math.max(12, window.innerHeight - menuRect.height - 12),
-    );
-
-    telegramContextMenu.style.left = `${left}px`;
-    telegramContextMenu.style.top = `${top}px`;
   };
 
   const downloadTelegramImage = (url: string): void => {
@@ -2251,24 +2300,49 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
   };
 
-  const openTelegramImagePreview = (url: string): void => {
-    activeTelegramImageUrl = url;
-    telegramImagePreviewEl.src = url;
-    telegramImageModal.classList.remove('hidden');
+  const resolveTelegramAudioUrl = async (
+    chatId: string,
+    messageId: string,
+  ): Promise<string | undefined> => {
+    return telegramAudioUrlCache.get(`${chatId}:${messageId}`, () =>
+      window.pelec.resolveConnectorAudioUrl('telegram', chatId, messageId),
+    );
   };
 
-  telegramImageCopyEl.addEventListener('click', () => {
+  const resolveTelegramVideoUrl = async (
+    chatId: string,
+    messageId: string,
+  ): Promise<string | undefined> => {
+    return telegramVideoUrlCache.get(`${chatId}:${messageId}`, () =>
+      window.pelec.resolveConnectorVideoUrl('telegram', chatId, messageId),
+    );
+  };
+
+  const openTelegramImagePreview = (url: string): void => {
+    activeTelegramImageUrl = url;
+    render();
+  };
+
+  const copyActiveTelegramImagePreview = (): void => {
     if (!activeTelegramImageUrl) {
       return;
     }
     void copyTelegramImage(activeTelegramImageUrl);
-  });
+  };
 
-  telegramImageDownloadEl.addEventListener('click', () => {
+  const downloadActiveTelegramImagePreview = (): void => {
     if (!activeTelegramImageUrl) {
       return;
     }
     downloadTelegramImage(activeTelegramImageUrl);
+  };
+
+  telegramImageCopyEl.addEventListener('click', () => {
+    copyActiveTelegramImagePreview();
+  });
+
+  telegramImageDownloadEl.addEventListener('click', () => {
+    downloadActiveTelegramImagePreview();
   });
 
   telegramImageCloseEl.addEventListener('click', () => {
@@ -2286,26 +2360,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   });
 
   telegramForwardSearchEl.addEventListener('input', () => {
-    telegramForwardState = {
-      ...telegramForwardState,
-      query: telegramForwardSearchEl.value,
-    };
-    render();
+    setTelegramForwardQuery(telegramForwardSearchEl.value);
   });
 
   telegramForwardModal.addEventListener('click', (event) => {
     if (event.target === telegramForwardModal && !telegramForwardState.sending) {
       closeTelegramForwardMenu();
     }
-  });
-
-  telegramContextMenu.addEventListener('click', (event) => {
-    event.stopPropagation();
-  });
-
-  telegramContextMenu.addEventListener('contextmenu', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
   });
 
   telegramMessageListEl.addEventListener('scroll', () => {
@@ -2323,22 +2384,24 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     closeTelegramContextMenu();
   });
 
-  document.addEventListener('pointerdown', (event) => {
-    if (!telegramContextMenuState.visible) {
-      return;
-    }
-    if (telegramContextMenu.contains(event.target as Node)) {
-      return;
-    }
-    closeTelegramContextMenu();
-  }, true);
-
   window.addEventListener('resize', () => {
     closeTelegramContextMenu();
   });
 
   window.addEventListener('focus', () => {
+    windowHasFocus = true;
+    ensureBackgroundRefreshLoops();
     scheduleTelegramReadAcknowledgement();
+  });
+
+  window.addEventListener('blur', () => {
+    windowHasFocus = false;
+    ensureBackgroundRefreshLoops();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    documentVisible = document.visibilityState === 'visible';
+    ensureBackgroundRefreshLoops();
   });
 
   const requestAuthInput = async ({
@@ -2363,59 +2426,95 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     onCancel?: () => void | Promise<void>;
   }): Promise<string | null> =>
     new Promise((resolve) => {
-      let done = false;
-
-      const finalize = (value: string | null): void => {
-        if (done) {
-          return;
-        }
-        done = true;
-        authModal.classList.add('hidden');
-        authSubmitEl.removeEventListener('click', onSubmit);
-        authCancelEl.removeEventListener('click', handleCancel);
-        authInputEl.removeEventListener('keydown', onKeyDown);
-        resolve(value);
+      authPromptResolver = resolve;
+      authPromptState = {
+        label,
+        message,
+        onCancel,
+        placeholder,
+        secret,
+        stepLabel: stepLabel ?? null,
+        submitLabel,
+        title,
+        trim,
       };
-
-      const onSubmit = (): void => {
-        const value = trim ? authInputEl.value.trim() : authInputEl.value;
-        finalize(value || null);
-      };
-
-      const handleCancel = (): void => {
-        void onCancel?.();
-        finalize(null);
-      };
-
-      const onKeyDown = (event: KeyboardEvent): void => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          onSubmit();
-          return;
-        }
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          handleCancel();
-        }
-      };
-
-      authTitleEl.textContent = title;
-      authStepEl.textContent = stepLabel ?? '';
-      authStepEl.classList.toggle('hidden', !stepLabel);
-      authMessageEl.textContent = message;
-      authLabelEl.textContent = label;
-      authInputEl.placeholder = placeholder;
-      authInputEl.type = secret ? 'password' : 'text';
-      authInputEl.value = '';
-      authSubmitEl.textContent = submitLabel;
-      authModal.classList.remove('hidden');
-
-      authSubmitEl.addEventListener('click', onSubmit);
-      authCancelEl.addEventListener('click', handleCancel);
-      authInputEl.addEventListener('keydown', onKeyDown);
-
-      window.setTimeout(() => authInputEl.focus(), 0);
+      render();
     });
+
+  const finalizeAuthPrompt = (value: string | null): void => {
+    const resolve = authPromptResolver;
+    authPromptResolver = null;
+    authPromptState = null;
+    render();
+    resolve?.(value);
+  };
+
+  const submitAuthPrompt = (value: string): void => {
+    const prompt = authPromptState;
+    if (!prompt) {
+      return;
+    }
+    const nextValue = prompt.trim ? value.trim() : value;
+    finalizeAuthPrompt(nextValue || null);
+  };
+
+  const cancelAuthPrompt = (): void => {
+    const prompt = authPromptState;
+    if (!prompt) {
+      return;
+    }
+    const onCancel = prompt.onCancel;
+    authPromptState = null;
+    render();
+    void Promise.resolve(onCancel?.()).finally(() => {
+      finalizeAuthPrompt(null);
+    });
+  };
+
+  const refreshQrAuth = (): void => {
+    if (!qrAuthState) {
+      return;
+    }
+    statusBar.textContent = 'Requesting a fresh Telegram QR...';
+    void startAuthForNetwork(qrAuthState.network);
+  };
+
+  const revealQrPassword = (): void => {
+    if (!qrAuthState) {
+      return;
+    }
+    qrAuthState = {
+      ...qrAuthState,
+      passwordRequired: true,
+    };
+    render();
+  };
+
+  const submitQrPassword = (value: string): void => {
+    if (!qrAuthState) {
+      return;
+    }
+    const password = value.trim();
+    if (!password) {
+      return;
+    }
+
+    void (async () => {
+      await window.pelec.submitConnectorAuth(qrAuthState.network, {
+        type: 'password',
+        value: password,
+      });
+      await refreshConnectorStatuses();
+      const status = getStatusByNetwork(qrAuthState.network);
+      if (status.authState === 'authenticated') {
+        hideQrModal();
+        await loadTelegramChats();
+      } else {
+        statusBar.textContent = status.details;
+        render();
+      }
+    })();
+  };
 
   const stopQrStatusPolling = (): void => {
     if (qrStatusPollTimer !== null) {
@@ -2462,9 +2561,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const hideQrModal = (): void => {
-    qrModal.classList.add('hidden');
-    qrPasswordWrap.classList.add('hidden');
+    qrAuthState = null;
     stopQrStatusPolling();
+    render();
   };
 
   const startQrStatusPolling = (network: NetworkId): void => {
@@ -2505,14 +2604,14 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   const getStatusByNetwork = (id: NetworkId): ConnectorStatus => {
     const status = state.connectorStatuses[id];
     if (!status) {
-      const network = getNetworkById(id);
+      const network = appConfig.networks.find((value) => value.id === id);
       return {
         network: id,
         mode: 'web-fallback',
         authState: 'unauthenticated',
         capabilities: { qr: false, twoFactor: false, officialApi: false },
-        partition: network.partition,
-        webUrl: network.homeUrl,
+        partition: network?.partition ?? `persist:${id}`,
+        webUrl: network?.homeUrl ?? 'about:blank',
         details: 'No connector status available. Using web fallback.',
       };
     }
@@ -2521,6 +2620,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
   const setStatusActivity = (activity: AppActivity | null): void => {
     statusActivity = activity;
+    bridge?.onActivityChange?.(activity);
 
     if (statusActivityClearTimer !== null) {
       window.clearTimeout(statusActivityClearTimer);
@@ -2555,6 +2655,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const isInstagramNativeReady = (): boolean => {
+    if (!instagramEnabled) {
+      return false;
+    }
     const status = getStatusByNetwork('instagram');
     return status.mode === 'native' && status.authState === 'authenticated';
   };
@@ -2565,7 +2668,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
         ? ['networks', 'telegram-chats', 'telegram-messages']
         : ['telegram-chats', 'telegram-messages'];
     }
-    if (state.activeNetwork === 'instagram' && isInstagramNativeReady()) {
+    if (instagramEnabled && state.activeNetwork === 'instagram' && isInstagramNativeReady()) {
       return NETWORK_RAIL_VISIBLE
         ? ['networks', 'instagram-chats', 'instagram-messages']
         : ['instagram-chats', 'instagram-messages'];
@@ -2826,13 +2929,32 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     view.setAttribute('partition', connectorStatus.partition);
     view.setAttribute('src', connectorStatus.webUrl || network.homeUrl);
     view.setAttribute('allowpopups', 'false');
+    view.tabIndex = -1;
+
+    view.addEventListener('focus', () => {
+      const isAllowedFocus = state.mode === 'insert' && state.activeNetwork === network.id;
+      if (isAllowedFocus) {
+        return;
+      }
+
+      view.blur?.();
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          focusAppKeyboardSurface();
+        });
+      } else {
+        window.setTimeout(() => {
+          focusAppKeyboardSurface();
+        }, 0);
+      }
+    });
 
     view.addEventListener('did-start-loading', () => {
       state.loading[network.id] = true;
       render();
     });
 
-    if (network.id === 'instagram') {
+    if (network.id === 'instagram' && instagramEnabled) {
       view.addEventListener('dom-ready', () => {
         void injectInstagramWebTheme(view);
         void pollInstagramWebFallbackNotifications();
@@ -2841,13 +2963,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
     view.addEventListener('did-stop-loading', () => {
       state.loading[network.id] = false;
-      if (network.id === 'instagram') {
+      if (network.id === 'instagram' && instagramEnabled) {
         void injectInstagramWebTheme(view);
         void pollInstagramWebFallbackNotifications();
       }
       render();
 
-      if (network.id === 'instagram' && isInstagramCheckpointCooldownActive()) {
+      if (network.id === 'instagram' && instagramEnabled && isInstagramCheckpointCooldownActive()) {
         const remaining = formatCooldownRemaining(instagramCheckpointCooldownUntil);
         statusBar.textContent = `Instagram checkpoint cooldown active (${remaining} remaining).`;
         render();
@@ -2860,7 +2982,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       render();
     });
 
-    if (network.id === 'instagram') {
+    if (network.id === 'instagram' && instagramWebviewHost) {
       view.classList.add('instagram-webview');
       instagramWebviewHost.append(view);
     } else {
@@ -2876,76 +2998,104 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     suppressNotification = false,
     showLoadingState = false,
   ): Promise<void> => {
-    const requestSeq = ++telegramMessagesRequestSeq;
-    const hasVisibleMessages = getVisibleTelegramMessages(chatId).length > 0;
-    const shouldShowLoadingIndicator = showLoadingState || !hasVisibleMessages;
-    state.activeTelegramChatId = chatId;
-    state.telegramMessagesLoading = shouldShowLoadingIndicator;
-    state.telegramLoadError = null;
-    if (showLoadingState) {
-      state.telegramMessages = [];
-      telegramMessagesVersion += 1;
-      state.selectedTelegramMessageId = null;
-      render();
-    }
-
-    try {
-      const messages = await window.pelec.listConnectorMessages('telegram', chatId, {
-        passive: true,
-      });
-      if (requestSeq !== telegramMessagesRequestSeq || chatId !== state.activeTelegramChatId) {
-        return;
-      }
-      const changed = !areMessageListsEqual(state.telegramMessages, messages);
-      const pendingChanged = reconcilePendingTelegramMessages(chatId, messages);
-      const chatTitle = safeLabel(
-        state.telegramChats.find((chat) => chat.id === chatId)?.title,
-        'Telegram',
-      );
-      maybeNotifyNewMessages('telegram', chatId, chatTitle, messages, suppressNotification);
-      if (changed) {
-        state.telegramMessages = messages;
+    return telegramController.refreshMessages(chatId, async () => {
+      const endMeasure = beginMeasure('telegram.messages.load');
+      const requestSeq = telegramController.beginMessagesRequest();
+      const previousActiveTelegramChatId = state.activeTelegramChatId;
+      const hasVisibleMessages = getVisibleTelegramMessages(chatId).length > 0;
+      const shouldShowLoadingIndicator = showLoadingState || !hasVisibleMessages;
+      state.activeTelegramChatId = chatId;
+      state.telegramMessagesLoading = shouldShowLoadingIndicator;
+      state.telegramLoadError = null;
+      if (showLoadingState) {
+        state.telegramMessages = [];
         telegramMessagesVersion += 1;
-      }
-      const currentSelectedMessageId = state.selectedTelegramMessageId;
-      const visibleMessages = getVisibleTelegramMessages(chatId);
-      state.selectedTelegramMessageId =
-        currentSelectedMessageId &&
-        visibleMessages.some((message) => message.id === currentSelectedMessageId)
-          ? currentSelectedMessageId
-          : messages[messages.length - 1]?.id ?? null;
-      await window.pelec.setConnectorActiveChat('telegram', chatId);
-      state.telegramMessagesLoading = false;
-      if (changed || pendingChanged || forceScroll || showLoadingState) {
-        telegramForceScrollBottom = true;
+        state.selectedTelegramMessageId = null;
         render();
       }
-      scheduleTelegramReadAcknowledgement();
 
-      // TDLib can return a partial first page right after chat open; re-fetch once to hydrate.
-      if (attempt === 0 && messages.length <= 1) {
-        if (telegramMessagesHydrationTimer !== null) {
-          window.clearTimeout(telegramMessagesHydrationTimer);
+      try {
+        const messages = await window.pelec.listConnectorMessages('telegram', chatId, {
+          passive: true,
+        });
+        if (!telegramController.isCurrentMessagesRequest(requestSeq) || chatId !== state.activeTelegramChatId) {
+          return;
         }
-        telegramMessagesHydrationTimer = window.setTimeout(() => {
-          telegramMessagesHydrationTimer = null;
-          if (state.activeTelegramChatId === chatId) {
-            void loadTelegramMessages(chatId, 1, forceScroll, suppressNotification);
+        const changed = !areMessageListsEqual(state.telegramMessages, messages);
+        const pendingChanged = reconcilePendingTelegramMessages(chatId, messages);
+        const chatTitle = safeLabel(
+          state.telegramChats.find((chat) => chat.id === chatId)?.title,
+          'Telegram',
+        );
+        maybeNotifyNewMessages('telegram', chatId, chatTitle, messages, suppressNotification);
+        if (changed) {
+          state.telegramMessages = messages;
+          telegramMessagesVersion += 1;
+        }
+        const currentSelectedMessageId = state.selectedTelegramMessageId;
+        const visibleMessages = getVisibleTelegramMessages(chatId);
+        const shouldPreserveSelectedMessage =
+          previousActiveTelegramChatId === chatId && !forceScroll;
+        state.selectedTelegramMessageId =
+          shouldPreserveSelectedMessage &&
+          currentSelectedMessageId &&
+          visibleMessages.some((message) => message.id === currentSelectedMessageId)
+            ? currentSelectedMessageId
+            : messages[messages.length - 1]?.id ?? null;
+        await window.pelec.setConnectorActiveChat('telegram', chatId);
+        state.telegramMessagesLoading = false;
+        if (changed || pendingChanged || forceScroll || showLoadingState) {
+          telegramForceScrollBottom = true;
+          render();
+        }
+        endMeasure();
+        scheduleTelegramReadAcknowledgement();
+
+        if (attempt === 0 && messages.length <= 1) {
+          if (telegramMessagesHydrationTimer !== null) {
+            window.clearTimeout(telegramMessagesHydrationTimer);
           }
-        }, 220);
+          telegramMessagesHydrationTimer = window.setTimeout(() => {
+            telegramMessagesHydrationTimer = null;
+            if (state.activeTelegramChatId === chatId) {
+              void loadTelegramMessages(chatId, 1, forceScroll, suppressNotification);
+            }
+          }, 220);
+        }
+      } catch (error) {
+        if (!telegramController.isCurrentMessagesRequest(requestSeq) || chatId !== state.activeTelegramChatId) {
+          return;
+        }
+        endMeasure();
+        state.telegramMessagesLoading = false;
+        state.telegramMessages = [];
+        telegramMessagesVersion += 1;
+        state.selectedTelegramMessageId = null;
+        state.telegramLoadError =
+          error instanceof Error ? error.message : 'Failed to load Telegram messages.';
+        render();
       }
-    } catch (error) {
-      if (requestSeq !== telegramMessagesRequestSeq || chatId !== state.activeTelegramChatId) {
-        return;
-      }
-      state.telegramMessagesLoading = false;
-      state.telegramMessages = [];
-      telegramMessagesVersion += 1;
-      state.selectedTelegramMessageId = null;
-      state.telegramLoadError =
-        error instanceof Error ? error.message : 'Failed to load Telegram messages.';
-      render();
-    }
+    });
+  };
+
+  const selectTelegramChat = (
+    chatId: string,
+    options: {
+      forceScroll?: boolean;
+      suppressNotification?: boolean;
+      showLoadingState?: boolean;
+    } = {},
+  ): Promise<void> => {
+    state.selectedTelegramChatId = chatId;
+    clearTelegramReplyState({ clearAttachments: true });
+    state.vimPane = 'telegram-chats';
+    return loadTelegramMessages(
+      chatId,
+      0,
+      options.forceScroll ?? true,
+      options.suppressNotification ?? false,
+      options.showLoadingState ?? true,
+    );
   };
 
   const loadTelegramChats = async (
@@ -2953,244 +3103,296 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       refreshActiveMessages?: boolean;
     } = {},
   ): Promise<void> => {
-    const requestSeq = ++telegramChatsRequestSeq;
-    const telegramStatus = getStatusByNetwork('telegram');
-    if (!(telegramStatus.mode === 'native' && telegramStatus.authState === 'authenticated')) {
-      void window.pelec.setConnectorActiveChat('telegram', null);
-      resetNotificationTracking('telegram');
-      state.telegramChats = [];
-      state.telegramMessages = [];
-      pendingTelegramMessagesByChat.clear();
-      telegramChatsVersion += 1;
-      telegramMessagesVersion += 1;
-      state.activeTelegramChatId = null;
-      state.selectedTelegramChatId = null;
-      state.selectedTelegramMessageId = null;
-      clearTelegramReplyState({ clearAttachments: true });
-      state.telegramMessagesLoading = false;
-      state.telegramLoadError = null;
-      render();
-      return;
-    }
-
-    const hasExistingChats = state.telegramChats.length > 0;
-    state.telegramLoading = !hasExistingChats;
-    if (!hasExistingChats) {
-      render();
-    }
-
-    try {
-      const chats = await window.pelec.listConnectorChats('telegram');
-      if (requestSeq !== telegramChatsRequestSeq) {
-        return;
-      }
-      const chatsChanged = !areChatListsEqual(state.telegramChats, chats);
-      if (chatsChanged) {
-        state.telegramChats = chats;
-        telegramChatsVersion += 1;
-      }
-      state.telegramLoading = false;
-      state.telegramLoadError = null;
-      const suppressNotifications = !notificationBaselineReady.telegram;
-
-      if (!state.activeTelegramChatId && chats.length > 0) {
-        state.activeTelegramChatId = chats[0].id;
-      }
-      if (!state.selectedTelegramChatId && chats.length > 0) {
-        state.selectedTelegramChatId = chats[0].id;
-      }
-      if (
-        state.selectedTelegramChatId &&
-        !chats.some((chat) => chat.id === state.selectedTelegramChatId)
-      ) {
-        state.selectedTelegramChatId = chats[0]?.id ?? null;
-      }
-      if (
-        state.activeTelegramChatId &&
-        !chats.some((chat) => chat.id === state.activeTelegramChatId)
-      ) {
-        state.activeTelegramChatId = chats[0]?.id ?? null;
+    return telegramController.refreshChats(async () => {
+      const endMeasure = beginMeasure('telegram.chats.load');
+      const requestSeq = telegramController.beginChatsRequest();
+      const telegramStatus = getStatusByNetwork('telegram');
+      if (!(telegramStatus.mode === 'native' && telegramStatus.authState === 'authenticated')) {
+        void window.pelec.setConnectorActiveChat('telegram', null);
+        resetNotificationTracking('telegram');
+        state.telegramChats = [];
         state.telegramMessages = [];
+        pendingTelegramMessagesByChat.clear();
+        telegramAudioUrlCache.clear();
+        telegramVideoUrlCache.clear();
+        telegramController.clearMessageRefresh();
+        telegramChatsVersion += 1;
         telegramMessagesVersion += 1;
+        state.activeTelegramChatId = null;
+        state.selectedTelegramChatId = null;
         state.selectedTelegramMessageId = null;
-      }
-
-      if (chatsChanged) {
+        clearTelegramReplyState({ clearAttachments: true });
+        state.telegramMessagesLoading = false;
+        state.telegramLoadError = null;
         render();
-      }
-
-      if (state.activeTelegramChatId && options.refreshActiveMessages !== false) {
-        await loadTelegramMessages(state.activeTelegramChatId, 0, false, suppressNotifications);
-      }
-
-      if (!telegramNotificationScanInFlight) {
-        telegramNotificationScanInFlight = true;
-        try {
-          await scanChatsForNotifications(
-            'telegram',
-            chats,
-            state.activeTelegramChatId,
-            suppressNotifications,
-          );
-        } finally {
-          telegramNotificationScanInFlight = false;
-        }
-      }
-
-      if (suppressNotifications) {
-        notificationBaselineReady.telegram = true;
-      }
-
-      if (getStatusByNetwork('telegram').mode === 'native' && getStatusByNetwork('telegram').authState === 'authenticated') {
-        scheduleBackgroundRefresh('telegram', 5000);
-      }
-    } catch (error) {
-      if (requestSeq !== telegramChatsRequestSeq) {
-        return;
-      }
-      state.telegramLoading = false;
-      state.telegramMessagesLoading = false;
-      state.telegramLoadError =
-        error instanceof Error ? error.message : 'Failed to load Telegram chats.';
-      render();
-    }
-  };
-
-  const loadInstagramMessages = async (chatId: string): Promise<void> => {
-    if (instagramMessagesInFlight) {
-      return;
-    }
-    instagramMessagesInFlight = true;
-    const requestSeq = ++instagramMessagesRequestSeq;
-    try {
-      state.activeInstagramChatId = chatId;
-      const messages = await window.pelec.listConnectorMessages('instagram', chatId);
-      if (requestSeq !== instagramMessagesRequestSeq || chatId !== state.activeInstagramChatId) {
-        return;
-      }
-      const changed = !areMessageListsEqual(state.instagramMessages, messages);
-      const chatTitle =
-        state.instagramChats.find((chat) => chat.id === chatId)?.title ?? 'Instagram';
-      maybeNotifyNewMessages('instagram', chatId, chatTitle, messages);
-      state.instagramMessages = messages;
-      state.selectedInstagramMessageId = messages[messages.length - 1]?.id ?? null;
-      if (changed) {
-        render();
-      }
-    } finally {
-      instagramMessagesInFlight = false;
-    }
-  };
-
-  const loadInstagramChats = async (): Promise<void> => {
-    if (instagramChatsInFlight) {
-      return;
-    }
-    instagramChatsInFlight = true;
-    const requestSeq = ++instagramChatsRequestSeq;
-    try {
-      if (!isInstagramNativeReady()) {
-        resetNotificationTracking('instagram');
-        state.instagramChats = [];
-        state.instagramMessages = [];
-        state.activeInstagramChatId = null;
-        state.selectedInstagramChatId = null;
-        state.selectedInstagramMessageId = null;
-        state.replyingToInstagramMessageId = null;
-        state.replyingToInstagramSender = null;
-        render();
+        endMeasure();
         return;
       }
 
-      const hasExistingChats = state.instagramChats.length > 0;
-      state.instagramLoading = !hasExistingChats;
+      const hasExistingChats = state.telegramChats.length > 0;
+      state.telegramLoading = !hasExistingChats;
       if (!hasExistingChats) {
         render();
       }
 
-      const chats = await window.pelec.listConnectorChats('instagram');
-      if (requestSeq !== instagramChatsRequestSeq) {
-        return;
-      }
+      try {
+        const chats = await window.pelec.listConnectorChats('telegram');
+        if (!telegramController.isCurrentChatsRequest(requestSeq)) {
+          return;
+        }
+        const chatsChanged = !areChatListsEqual(state.telegramChats, chats);
+        if (chatsChanged) {
+          state.telegramChats = chats;
+          telegramChatsVersion += 1;
+        }
+        state.telegramLoading = false;
+        state.telegramLoadError = null;
+        const suppressNotifications = !notificationBaselineReady.telegram;
 
-      const chatsChanged = !areChatListsEqual(state.instagramChats, chats);
-      state.instagramChats = chats;
-      state.instagramLoading = false;
-      const suppressNotifications = !notificationBaselineReady.instagram;
+        if (!state.activeTelegramChatId && chats.length > 0) {
+          state.activeTelegramChatId = chats[0].id;
+        }
+        if (!state.selectedTelegramChatId && chats.length > 0) {
+          state.selectedTelegramChatId = chats[0].id;
+        }
+        if (
+          state.selectedTelegramChatId &&
+          !chats.some((chat) => chat.id === state.selectedTelegramChatId)
+        ) {
+          state.selectedTelegramChatId = chats[0]?.id ?? null;
+        }
+        if (
+          state.activeTelegramChatId &&
+          !chats.some((chat) => chat.id === state.activeTelegramChatId)
+        ) {
+          telegramController.clearMessageRefresh(state.activeTelegramChatId);
+          state.activeTelegramChatId = chats[0]?.id ?? null;
+          state.telegramMessages = [];
+          telegramMessagesVersion += 1;
+          state.selectedTelegramMessageId = null;
+        }
 
-      if (!state.activeInstagramChatId && chats.length > 0) {
-        state.activeInstagramChatId = chats[0].id;
-      }
-      if (!state.selectedInstagramChatId && chats.length > 0) {
-        state.selectedInstagramChatId = chats[0].id;
-      }
-      if (
-        state.selectedInstagramChatId &&
-        !chats.some((chat) => chat.id === state.selectedInstagramChatId)
-      ) {
-        state.selectedInstagramChatId = chats[0]?.id ?? null;
-      }
-      if (
-        state.activeInstagramChatId &&
-        !chats.some((chat) => chat.id === state.activeInstagramChatId)
-      ) {
-        state.activeInstagramChatId = chats[0]?.id ?? null;
-        state.instagramMessages = [];
-        state.selectedInstagramMessageId = null;
-      }
+        if (chatsChanged) {
+          render();
+        }
 
-      if (chatsChanged) {
+        if (state.activeTelegramChatId && options.refreshActiveMessages !== false) {
+          await loadTelegramMessages(state.activeTelegramChatId, 0, false, suppressNotifications);
+        }
+
+        if (!telegramNotificationScanInFlight) {
+          telegramNotificationScanInFlight = true;
+          try {
+            await scanChatsForNotifications(
+              'telegram',
+              chats,
+              state.activeTelegramChatId,
+              suppressNotifications,
+            );
+          } finally {
+            telegramNotificationScanInFlight = false;
+          }
+        }
+
+        if (suppressNotifications) {
+          notificationBaselineReady.telegram = true;
+        }
+
+        if (
+          getStatusByNetwork('telegram').mode === 'native' &&
+          getStatusByNetwork('telegram').authState === 'authenticated'
+        ) {
+          scheduleBackgroundRefresh('telegram');
+        }
+        endMeasure();
+      } catch (error) {
+        if (!telegramController.isCurrentChatsRequest(requestSeq)) {
+          return;
+        }
+        state.telegramLoading = false;
+        state.telegramMessagesLoading = false;
+        state.telegramLoadError =
+          error instanceof Error ? error.message : 'Failed to load Telegram chats.';
+        endMeasure();
         render();
       }
-
-      if (state.activeInstagramChatId) {
-        await loadInstagramMessages(state.activeInstagramChatId);
-      }
-
-      if (!instagramNotificationScanInFlight) {
-        instagramNotificationScanInFlight = true;
-        try {
-          await scanChatsForNotifications(
-            'instagram',
-            chats,
-            state.activeInstagramChatId,
-            suppressNotifications,
-          );
-        } finally {
-          instagramNotificationScanInFlight = false;
-        }
-      }
-
-      if (suppressNotifications) {
-        notificationBaselineReady.instagram = true;
-      }
-
-      if (isInstagramNativeReady()) {
-        scheduleBackgroundRefresh('instagram', 7000);
-      }
-    } finally {
-      state.instagramLoading = false;
-      instagramChatsInFlight = false;
-    }
+    });
   };
 
-  const scheduleBackgroundRefresh = (
-    network: NetworkId,
-    delayMs: number,
-  ): void => {
+  const loadInstagramMessages = async (chatId: string): Promise<void> => {
+    return instagramController.refreshMessages(chatId, async () => {
+      const endMeasure = beginMeasure('instagram.messages.load');
+      const requestSeq = instagramController.beginMessagesRequest();
+      try {
+        state.activeInstagramChatId = chatId;
+        const messages = await window.pelec.listConnectorMessages('instagram', chatId);
+        if (!instagramController.isCurrentMessagesRequest(requestSeq) || chatId !== state.activeInstagramChatId) {
+          return;
+        }
+        const changed = !areMessageListsEqual(state.instagramMessages, messages);
+        const chatTitle =
+          state.instagramChats.find((chat) => chat.id === chatId)?.title ?? 'Instagram';
+        maybeNotifyNewMessages('instagram', chatId, chatTitle, messages);
+        state.instagramMessages = messages;
+        state.selectedInstagramMessageId = messages[messages.length - 1]?.id ?? null;
+        if (changed) {
+          render();
+        }
+        endMeasure();
+      } catch (error) {
+        endMeasure();
+        throw error;
+      }
+    });
+  };
+
+  const loadInstagramChats = async (
+    options: {
+      refreshActiveMessages?: boolean;
+    } = {},
+  ): Promise<void> => {
+    return instagramController.refreshChats(async () => {
+      const endMeasure = beginMeasure('instagram.chats.load');
+      const requestSeq = instagramController.beginChatsRequest();
+      try {
+        if (!isInstagramNativeReady()) {
+          resetNotificationTracking('instagram');
+          state.instagramChats = [];
+          state.instagramMessages = [];
+          instagramController.clearMessageRefresh();
+          state.activeInstagramChatId = null;
+          state.selectedInstagramChatId = null;
+          state.selectedInstagramMessageId = null;
+          state.replyingToInstagramMessageId = null;
+          state.replyingToInstagramSender = null;
+          render();
+          endMeasure();
+          return;
+        }
+
+        const hasExistingChats = state.instagramChats.length > 0;
+        state.instagramLoading = !hasExistingChats;
+        if (!hasExistingChats) {
+          render();
+        }
+
+        const chats = await window.pelec.listConnectorChats('instagram');
+        if (!instagramController.isCurrentChatsRequest(requestSeq)) {
+          return;
+        }
+
+        const chatsChanged = !areChatListsEqual(state.instagramChats, chats);
+        state.instagramChats = chats;
+        state.instagramLoading = false;
+        const suppressNotifications = !notificationBaselineReady.instagram;
+
+        if (!state.activeInstagramChatId && chats.length > 0) {
+          state.activeInstagramChatId = chats[0].id;
+        }
+        if (!state.selectedInstagramChatId && chats.length > 0) {
+          state.selectedInstagramChatId = chats[0].id;
+        }
+        if (
+          state.selectedInstagramChatId &&
+          !chats.some((chat) => chat.id === state.selectedInstagramChatId)
+        ) {
+          state.selectedInstagramChatId = chats[0]?.id ?? null;
+        }
+        if (
+          state.activeInstagramChatId &&
+          !chats.some((chat) => chat.id === state.activeInstagramChatId)
+        ) {
+          instagramController.clearMessageRefresh(state.activeInstagramChatId);
+          state.activeInstagramChatId = chats[0]?.id ?? null;
+          state.instagramMessages = [];
+          state.selectedInstagramMessageId = null;
+        }
+
+        if (chatsChanged) {
+          render();
+        }
+
+        if (state.activeInstagramChatId && options.refreshActiveMessages !== false) {
+          await loadInstagramMessages(state.activeInstagramChatId);
+        }
+
+        if (!instagramNotificationScanInFlight) {
+          instagramNotificationScanInFlight = true;
+          try {
+            await scanChatsForNotifications(
+              'instagram',
+              chats,
+              state.activeInstagramChatId,
+              suppressNotifications,
+            );
+          } finally {
+            instagramNotificationScanInFlight = false;
+          }
+        }
+
+        if (suppressNotifications) {
+          notificationBaselineReady.instagram = true;
+        }
+
+        if (isInstagramNativeReady()) {
+          scheduleBackgroundRefresh('instagram');
+        }
+      } finally {
+        state.instagramLoading = false;
+        endMeasure();
+      }
+    });
+  };
+
+  const scheduleBackgroundRefresh = (network: NetworkId): void => {
+    if (network === 'instagram' && !instagramEnabled) {
+      if (instagramBackgroundRefreshTimer !== null) {
+        window.clearTimeout(instagramBackgroundRefreshTimer);
+        instagramBackgroundRefreshTimer = null;
+      }
+      return;
+    }
+    const status = getStatusByNetwork(network);
+    const delayMs = resolveRefreshDelay({
+      activeNetwork: state.activeNetwork,
+      authState: status.authState,
+      focused: windowHasFocus,
+      mode: status.mode,
+      network,
+      visible: documentVisible,
+    });
     const currentTimer =
       network === 'telegram' ? telegramBackgroundRefreshTimer : instagramBackgroundRefreshTimer;
+
+    if (delayMs === null) {
+      if (currentTimer !== null) {
+        window.clearTimeout(currentTimer);
+      }
+      if (network === 'telegram') {
+        telegramBackgroundRefreshTimer = null;
+      } else {
+        instagramBackgroundRefreshTimer = null;
+      }
+      return;
+    }
+
     if (currentTimer !== null) {
       window.clearTimeout(currentTimer);
     }
 
     const nextTimer = window.setTimeout(() => {
+      const refreshMessages = shouldRefreshActiveMessages({
+        activeNetwork: state.activeNetwork,
+        focused: windowHasFocus,
+        network,
+        visible: documentVisible,
+      });
       if (network === 'telegram') {
         telegramBackgroundRefreshTimer = null;
-        void loadTelegramChats();
+        void loadTelegramChats({ refreshActiveMessages: refreshMessages });
       } else {
         instagramBackgroundRefreshTimer = null;
-        void loadInstagramChats();
+        void loadInstagramChats({ refreshActiveMessages: refreshMessages });
       }
     }, delayMs);
 
@@ -3202,20 +3404,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const ensureBackgroundRefreshLoops = (): void => {
-    const telegramStatus = getStatusByNetwork('telegram');
-    if (telegramStatus.mode === 'native' && telegramStatus.authState === 'authenticated') {
-      scheduleBackgroundRefresh('telegram', 5000);
-    } else if (telegramBackgroundRefreshTimer !== null) {
-      window.clearTimeout(telegramBackgroundRefreshTimer);
-      telegramBackgroundRefreshTimer = null;
-    }
-
-    const instagramStatus = getStatusByNetwork('instagram');
-    if (instagramStatus.mode === 'native' && instagramStatus.authState === 'authenticated') {
-      scheduleBackgroundRefresh('instagram', 7000);
-    } else if (instagramBackgroundRefreshTimer !== null) {
-      window.clearTimeout(instagramBackgroundRefreshTimer);
-      instagramBackgroundRefreshTimer = null;
+    scheduleBackgroundRefresh('telegram');
+    if (instagramEnabled) {
+      scheduleBackgroundRefresh('instagram');
     }
   };
 
@@ -3225,14 +3416,16 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       next.map((status) => [status.network, status]),
     ) as Record<NetworkId, ConnectorStatus>;
     ensureBackgroundRefreshLoops();
-    ensureInstagramWebFallbackMonitor();
-    const instagramStatus = state.connectorStatuses.instagram;
-    if (
-      checkpointInDetails(instagramStatus?.lastError) ||
-      checkpointInDetails(instagramStatus?.details)
-    ) {
-      if (!isInstagramCheckpointCooldownActive()) {
-        setInstagramCheckpointCooldown(instagramStatus.lastError ?? instagramStatus.details);
+    if (instagramEnabled) {
+      ensureInstagramWebFallbackMonitor();
+      const instagramStatus = state.connectorStatuses.instagram;
+      if (
+        checkpointInDetails(instagramStatus?.lastError) ||
+        checkpointInDetails(instagramStatus?.details)
+      ) {
+        if (!isInstagramCheckpointCooldownActive()) {
+          setInstagramCheckpointCooldown(instagramStatus.lastError ?? instagramStatus.details);
+        }
       }
     }
 
@@ -3254,8 +3447,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const setMode = (mode: AppMode): void => {
-    state.mode = mode;
-    if (mode === 'normal') {
+    const normalizedMode = mode === 'command' ? 'normal' : mode;
+    state.mode = normalizedMode;
+    if (normalizedMode === 'normal') {
       telegramComposeInput.blur();
       quickFilter.blur();
       commandInput.blur();
@@ -3286,13 +3480,17 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const activateNetwork = (id: NetworkId): void => {
+    if (!appConfig.networks.some((network) => network.id === id)) {
+      return;
+    }
     state.activeNetwork = id;
     state.selectedNetwork = id;
-    const activeWebview = webviewMap.get(id);
-    activeWebview?.focus();
     statusBar.textContent = `Active ${getNetworkById(id).name}`;
 
     if (id === 'telegram') {
+      for (const webview of webviewMap.values()) {
+        webview.blur?.();
+      }
       state.vimPane = 'telegram-chats';
       void loadTelegramChats();
     } else if (id === 'instagram') {
@@ -3306,6 +3504,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     render();
 
     if (id === 'telegram') {
+      scheduleTelegramKeyboardSurfaceFocus();
       scheduleTelegramReadAcknowledgement();
     }
   };
@@ -4033,6 +4232,9 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     const nextIndex = Math.max(0, Math.min(panes.length - 1, safeIndex + direction));
     state.vimPane = panes[nextIndex];
     render();
+    if (state.activeNetwork === 'telegram' && state.mode !== 'insert') {
+      scheduleTelegramKeyboardSurfaceFocus();
+    }
   };
 
   const moveVimSelection = (direction: 1 | -1): void => {
@@ -4340,56 +4542,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     if (result.mode === 'qr') {
-      if (result.qrLink) {
-        await QRCode.toCanvas(qrCanvas, result.qrLink, {
-          margin: 1,
-          width: 260,
-        });
-      } else {
-        const ctx = qrCanvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
-        }
-      }
-
-      qrPasswordInput.value = '';
-      qrPasswordWrap.classList.add('hidden');
-      qrModal.classList.remove('hidden');
+      qrAuthState = {
+        network: result.network,
+        passwordRequired: false,
+        qrLink: result.qrLink ?? null,
+      };
       startQrStatusPolling(result.network);
       setMode('normal');
-
-      qrRefreshButton.onclick = () => {
-        statusBar.textContent = 'Requesting a fresh Telegram QR...';
-        void startAuthForNetwork(result.network);
-      };
-
-      qrScannedButton.onclick = () => {
-        qrPasswordWrap.classList.remove('hidden');
-        qrPasswordInput.focus();
-      };
-
-      qrPasswordSubmit.onclick = async () => {
-        const password = qrPasswordInput.value.trim();
-        if (password) {
-          await window.pelec.submitConnectorAuth(result.network, {
-            type: 'password',
-            value: password,
-          });
-          await refreshConnectorStatuses();
-          const status = getStatusByNetwork(result.network);
-          if (status.authState === 'authenticated') {
-            hideQrModal();
-            await loadTelegramChats();
-          } else {
-            statusBar.textContent = status.details;
-          }
-          render();
-        }
-      };
-
-      qrClose.onclick = () => {
-        hideQrModal();
-      };
 
       await refreshConnectorStatuses();
       render();
@@ -4414,11 +4573,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     ...appConfig.networks.map((network) => ({
       id: `switch-${network.id}`,
       label: `switch ${network.id}`,
+      group: 'network' as const,
       run: () => activateNetwork(network.id),
     })),
     ...appConfig.networks.map((network) => ({
       id: `auth-${network.id}`,
       label: `auth ${network.id}`,
+      group: 'network' as const,
       run: () => {
         void startAuthForNetwork(network.id);
       },
@@ -4426,6 +4587,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     {
       id: 'refresh-connectors',
       label: 'refresh connectors',
+      group: 'actions',
       run: () => {
         void refreshConnectorStatuses().then(async () => {
           await loadTelegramChats();
@@ -4436,45 +4598,27 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     {
       id: 'refresh-telegram',
       label: 'refresh telegram',
+      group: 'actions',
       run: () => {
         void loadTelegramChats();
       },
     },
     {
-      id: 'refresh-instagram',
-      label: 'refresh instagram',
-      run: () => {
-        void refreshConnectorStatuses().then(() => {
-          webviewMap.get('instagram')?.reload();
-          render();
-        });
-      },
-    },
-    {
-      id: 'reset-instagram-auth',
-      label: 'reset instagram auth',
-      run: () => {
-        void window.pelec.resetConnectorAuth('instagram').then(async () => {
-          stopInstagramBrowserSessionPolling();
-          await refreshConnectorStatuses();
-          statusBar.textContent = 'Instagram auth reset.';
-          render();
-        });
-      },
-    },
-    {
       id: 'mode-normal',
       label: 'mode normal',
+      group: 'mode',
       run: () => setMode('normal'),
     },
     {
       id: 'mode-insert',
       label: 'mode insert',
+      group: 'mode',
       run: () => setMode('insert'),
     },
     {
       id: 'open-browser',
       label: 'open browser',
+      group: 'actions',
       run: () => {
         const active = getStatusByNetwork(state.activeNetwork);
         if (active.webUrl !== 'about:blank') {
@@ -4485,6 +4629,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     {
       id: 'test-notification',
       label: 'test notification',
+      group: 'system',
       run: () => {
         void window.pelec
           .showNotification('PELEC', 'Test notification from PELEC')
@@ -4497,6 +4642,101 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       },
     },
   ];
+
+  const executeCommandById = (commandId: string): void => {
+    const command = availableCommands().find((item) => item.id === commandId);
+    if (!command) {
+      statusBar.textContent = `No command: ${commandId}`;
+      render();
+      return;
+    }
+
+    command.run();
+    statusBar.textContent = `Executed: ${command.label}`;
+    render();
+  };
+
+  const focusActiveSearch = (): void => {
+    if (state.activeNetwork === 'telegram') {
+      telegramSearchInput.focus();
+      telegramSearchInput.select();
+      return;
+    }
+
+    if (NETWORK_RAIL_VISIBLE) {
+      quickFilter.focus();
+      quickFilter.select();
+    }
+  };
+
+  const focusTelegramComposer = (): void => {
+    telegramComposeInput.focus();
+  };
+
+  const setTelegramSearchQuery = (query: string): void => {
+    state.telegramSearchQuery = query;
+    telegramSearchInput.value = query;
+    render();
+  };
+
+  const setTelegramDraftValue = (value: string): void => {
+    telegramComposeInput.value = value;
+    syncTelegramComposeInputHeight();
+    updateTelegramEmojiCompletion();
+  };
+
+  const removeTelegramAttachment = (attachmentId: string): void => {
+    state.pendingTelegramAttachments = state.pendingTelegramAttachments.filter(
+      (item) => item.id !== attachmentId,
+    );
+    render();
+  };
+
+  const handleGlobalEscape = (): void => {
+    if (authPromptState) {
+      cancelAuthPrompt();
+      return;
+    }
+
+    if (qrAuthState) {
+      hideQrModal();
+      return;
+    }
+
+    if (activeTelegramImageUrl) {
+      closeTelegramImagePreview();
+      return;
+    }
+
+    if (telegramForwardState.visible) {
+      if (!telegramForwardState.sending) {
+        closeTelegramForwardMenu();
+      }
+      return;
+    }
+
+    if (telegramContextMenuState.visible) {
+      closeTelegramContextMenu();
+      return;
+    }
+
+    clearGPending();
+    state.commandPaletteOpen = false;
+    state.commandQuery = '';
+    commandInput.value = '';
+    setMode('normal');
+  };
+
+  const toggleRuntimeSendBehavior = (): 'enter' | 'mod-enter' => {
+    appConfig.userConfig.keyboard.sendBehavior =
+      appConfig.userConfig.keyboard.sendBehavior === 'enter' ? 'mod-enter' : 'enter';
+    statusBar.textContent =
+      appConfig.userConfig.keyboard.sendBehavior === 'mod-enter'
+        ? 'Send mode: Mod+Enter'
+        : 'Send mode: Enter';
+    render();
+    return appConfig.userConfig.keyboard.sendBehavior;
+  };
 
   const executeCommandByQuery = (): void => {
     const query = state.commandQuery.trim().toLowerCase();
@@ -4794,7 +5034,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
       loading = true;
       setTriggerState('loading');
-      const resolved = await window.pelec.resolveConnectorVideoUrl('telegram', chatId, message.id);
+      const resolved = await resolveTelegramVideoUrl(chatId, message.id);
       loading = false;
 
       if (chatId !== state.activeTelegramChatId) {
@@ -4826,6 +5066,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
   const resetTelegramChatRenderCache = (): void => {
     renderedTelegramChatButtonById.clear();
+    renderedTelegramChatSignatureById.clear();
     lastRenderedTelegramChatsVersion = -1;
     lastRenderedTelegramSearchQuery = '';
     lastRenderedTelegramActiveChatButtonId = null;
@@ -4835,6 +5076,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
   const resetTelegramMessageRenderCache = (): void => {
     renderedTelegramMessageNodeById.clear();
+    renderedTelegramMessageBundleById.clear();
     lastRenderedTelegramMessagesVersion = -1;
     lastRenderedTelegramSelectedMessageId = null;
     lastRenderedTelegramMessagePane = null;
@@ -4845,8 +5087,52 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     resetTelegramChatRenderCache();
   };
 
+  const syncTelegramChatListNodes = (filteredTelegramChats: ChatSummary[]): void => {
+    const nextButtons: HTMLButtonElement[] = [];
+    const nextIds = new Set(filteredTelegramChats.map((chat) => chat.id));
+
+    for (const [chatId] of renderedTelegramChatButtonById.entries()) {
+      if (nextIds.has(chatId)) {
+        continue;
+      }
+      renderedTelegramChatButtonById.delete(chatId);
+      renderedTelegramChatSignatureById.delete(chatId);
+    }
+
+    for (const chat of filteredTelegramChats) {
+      const nextSignature = getTelegramChatRenderSignature(chat);
+      const previousSignature = renderedTelegramChatSignatureById.get(chat.id);
+      let button = renderedTelegramChatButtonById.get(chat.id);
+
+      if (!button || previousSignature !== nextSignature) {
+        button = createTelegramChatListItem(chat, {
+          createAvatarNode,
+          formatChatTimestamp,
+          formatFullDateTime,
+          formatTelegramUnreadBadge,
+          hasValidTimestamp,
+          onClick: () => {
+            closeTelegramContextMenu(false);
+            void selectTelegramChat(chat.id, {
+              forceScroll: true,
+              showLoadingState: true,
+            });
+          },
+          safeLabel,
+          safeText,
+        });
+        renderedTelegramChatButtonById.set(chat.id, button);
+        renderedTelegramChatSignatureById.set(chat.id, nextSignature);
+      }
+
+      nextButtons.push(button);
+    }
+
+    telegramChatListEl.replaceChildren(...nextButtons);
+  };
+
   const renderTelegramMessageEmptyState = (markup: string): void => {
-    telegramMessageListEl.innerHTML = markup;
+    telegramMessageLegacyRootEl.innerHTML = markup;
     resetTelegramMessageRenderCache();
     lastRenderedTelegramChatId = state.activeTelegramChatId;
   };
@@ -4884,6 +5170,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const syncTelegramMessageSelection = (): void => {
+    if (useReactTelegramMessageList) {
+      lastRenderedTelegramSelectedMessageId =
+        state.vimPane === 'telegram-messages' ? state.selectedTelegramMessageId : null;
+      lastRenderedTelegramMessagePane = state.vimPane;
+      return;
+    }
+
     const nextSelectedMessageId =
       state.vimPane === 'telegram-messages' ? state.selectedTelegramMessageId : null;
     if (
@@ -4923,6 +5216,29 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       renderTelegramChatEmptyState('<div class="telegram-empty">Telegram is not authenticated yet. Click Start Auth.</div>');
       renderTelegramMessageEmptyState(`<div class="telegram-empty">${telegramStatus.details}</div>`);
       telegramChatTitleEl.textContent = 'Telegram';
+      return;
+    }
+
+    if (useReactTelegramMessageList) {
+      const activeChatChanged = lastRenderedTelegramChatId !== state.activeTelegramChatId;
+      const activeChat = state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId);
+      telegramChatTitleEl.textContent = safeLabel(activeChat?.title, 'Telegram');
+      telegramMessageLegacyRootEl.replaceChildren();
+      lastRenderedTelegramChatId = state.activeTelegramChatId;
+      lastRenderedTelegramChatsVersion = telegramChatsVersion;
+      lastRenderedTelegramMessagesVersion = telegramMessagesVersion;
+      lastRenderedTelegramSearchQuery = state.telegramSearchQuery;
+      lastRenderedTelegramActiveChatButtonId = state.activeTelegramChatId;
+      lastRenderedTelegramSelectedChatId =
+        state.vimPane === 'telegram-chats' ? state.selectedTelegramChatId : null;
+      lastRenderedTelegramChatPane = state.vimPane;
+      lastRenderedTelegramSelectedMessageId =
+        state.vimPane === 'telegram-messages' ? state.selectedTelegramMessageId : null;
+      lastRenderedTelegramMessagePane = state.vimPane;
+      if (activeChatChanged || telegramForceScrollBottom) {
+        scheduleTelegramScrollToBottom();
+        telegramForceScrollBottom = false;
+      }
       return;
     }
 
@@ -4967,66 +5283,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
           renderedTelegramChatButtonById.size !== filteredTelegramChats.length;
 
         if (shouldRebuildChatList) {
-          renderedTelegramChatButtonById.clear();
-          telegramChatListEl.replaceChildren(
-            ...filteredTelegramChats.map((chat) => {
-              const chatTitle = safeLabel(chat.title, 'Untitled chat');
-              const chatPreview = safeText(chat.lastMessagePreview).trim() || 'No preview';
-              const unreadCount = Math.max(0, Math.floor(chat.unreadCount));
-              const button = document.createElement('button');
-              button.type = 'button';
-              button.className = 'telegram-chat-item';
-              button.classList.toggle('unread', unreadCount > 0);
-              button.classList.toggle('read', unreadCount < 1);
-              button.classList.toggle('muted', chat.isMuted === true);
-              const avatar = createAvatarNode(chatTitle, chat.avatarUrl, 'telegram-avatar');
-              const content = document.createElement('div');
-              content.className = 'telegram-chat-content';
-              const top = document.createElement('div');
-              top.className = 'telegram-chat-top';
-              const bottom = document.createElement('div');
-              bottom.className = 'telegram-chat-bottom';
-              const name = document.createElement('div');
-              name.className = 'telegram-chat-name';
-              name.textContent = chatTitle;
-              const date = document.createElement('div');
-              date.className = 'telegram-chat-date';
-              date.textContent = formatChatTimestamp(chat.lastMessageTimestamp);
-              if (hasValidTimestamp(chat.lastMessageTimestamp)) {
-                date.title = formatFullDateTime(chat.lastMessageTimestamp);
-              }
-              const preview = document.createElement('div');
-              preview.className = 'telegram-chat-preview';
-              preview.textContent = chatPreview;
-              const status = document.createElement('div');
-              status.className = 'telegram-chat-status';
-              if (unreadCount > 0) {
-                const badge = document.createElement('span');
-                badge.className = 'telegram-chat-unread-badge';
-                badge.textContent = formatTelegramUnreadBadge(unreadCount);
-                badge.title = `${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`;
-                status.append(badge);
-              } else {
-                const readDot = document.createElement('span');
-                readDot.className = 'telegram-chat-read-dot';
-                readDot.title = 'No unread messages';
-                status.append(readDot);
-              }
-              top.replaceChildren(name, date);
-              bottom.replaceChildren(preview, status);
-              content.replaceChildren(top, bottom);
-              button.replaceChildren(avatar, content);
-              button.addEventListener('click', () => {
-                closeTelegramContextMenu(false);
-                state.selectedTelegramChatId = chat.id;
-                clearTelegramReplyState({ clearAttachments: true });
-                state.vimPane = 'telegram-chats';
-                void loadTelegramMessages(chat.id, 0, true, false, true);
-              });
-              renderedTelegramChatButtonById.set(chat.id, button);
-              return button;
-            }),
-          );
+          syncTelegramChatListNodes(filteredTelegramChats);
           lastRenderedTelegramChatsVersion = telegramChatsVersion;
           lastRenderedTelegramSearchQuery = state.telegramSearchQuery;
           lastRenderedTelegramActiveChatButtonId = null;
@@ -5039,6 +5296,27 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
       const activeChat = state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId);
       telegramChatTitleEl.textContent = safeLabel(activeChat?.title, 'Telegram');
+
+      if (useReactTelegramMessageList) {
+        const wasNearBottom =
+          telegramMessageListEl.scrollHeight - telegramMessageListEl.scrollTop - telegramMessageListEl.clientHeight < 84;
+        const activeChatChanged = lastRenderedTelegramChatId !== state.activeTelegramChatId;
+        telegramMessageLegacyRootEl.replaceChildren();
+        lastRenderedTelegramMessagesVersion = telegramMessagesVersion;
+        lastRenderedTelegramSelectedMessageId =
+          state.vimPane === 'telegram-messages' ? state.selectedTelegramMessageId : null;
+        lastRenderedTelegramMessagePane = state.vimPane;
+        if (
+          activeChatChanged ||
+          telegramForceScrollBottom ||
+          (wasNearBottom && state.vimPane !== 'telegram-messages')
+        ) {
+          scheduleTelegramScrollToBottom();
+          telegramForceScrollBottom = false;
+        }
+        lastRenderedTelegramChatId = state.activeTelegramChatId;
+        return;
+      }
 
       if (state.telegramMessagesLoading) {
         renderTelegramMessageEmptyState('<div class="telegram-empty">Loading messages...</div>');
@@ -5058,8 +5336,13 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
           activeChatChanged || lastRenderedTelegramMessagesVersion !== telegramMessagesVersion;
 
         if (shouldRebuildMessages) {
-          renderedTelegramMessageNodeById.clear();
+          const endRenderMeasure = beginMeasure('telegram.messages.render');
+          if (activeChatChanged) {
+            renderedTelegramMessageNodeById.clear();
+            renderedTelegramMessageBundleById.clear();
+          }
           const messageNodes: HTMLElement[] = [];
+          const nextRenderedMessageIds = new Set<string>();
           for (let index = 0; index < visibleTelegramMessages.length; index += 1) {
             const message = visibleTelegramMessages[index];
             if (!message) {
@@ -5090,8 +5373,28 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
             const renderMessages = shouldCollapseAlbum ? albumMessages : [message];
 
             const primaryMessage = renderMessages[renderMessages.length - 1] ?? message;
-            const nodes: HTMLElement[] = [];
             const previousMessage = index > 0 ? visibleTelegramMessages[index - 1] : null;
+            const bundleSignature = getTelegramMessageRenderSignature({
+              albumCaption: albumDisplayCaption,
+              previousMessage,
+              primaryMessage,
+              renderMessages,
+              shouldCollapseAlbum,
+            });
+            const cachedBundle = renderedTelegramMessageBundleById.get(primaryMessage.id);
+            nextRenderedMessageIds.add(primaryMessage.id);
+
+            if (cachedBundle && cachedBundle.signature === bundleSignature) {
+              renderedTelegramMessageNodeById.set(
+                primaryMessage.id,
+                cachedBundle.nodes[cachedBundle.nodes.length - 1] as HTMLElement,
+              );
+              messageNodes.push(...cachedBundle.nodes);
+              index += renderMessages.length - 1;
+              continue;
+            }
+
+            const nodes: HTMLElement[] = [];
             const messageId = safeLabel(primaryMessage.id, String(index));
             const messageTextValue = shouldCollapseAlbum
               ? albumDisplayCaption
@@ -5134,7 +5437,14 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
             meta.textContent = primaryMessage.outgoing ? 'You' : senderLabel;
             const text = document.createElement('div');
             text.className = 'telegram-message-text';
-            text.replaceChildren(...buildLinkedTextNodes(messageTextTrimmed || '[empty]'));
+            text.replaceChildren(
+              ...buildLinkedTextNodes(
+                messageTextTrimmed || '[empty]',
+                !shouldCollapseAlbum && messageTextTrimmed === safeText(primaryMessage.text).trim()
+                  ? primaryMessage.textEntities
+                  : undefined,
+              ),
+            );
             if (primaryMessage.outgoing) {
               header.replaceChildren(meta);
             } else {
@@ -5253,175 +5563,29 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
               bodyNodes.push(sticker);
             }
             if (primaryMessage.hasAudio || primaryMessage.audioUrl) {
-              const voiceNote = document.createElement('div');
-              voiceNote.className = 'telegram-voice-note';
-              const playButton = document.createElement('button');
-              playButton.type = 'button';
-              playButton.className = 'telegram-voice-play';
-              const playIcon = document.createElement('span');
-              playIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-play';
-              playIcon.textContent = '▶';
-              const pauseIcon = document.createElement('span');
-              pauseIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-pause';
-              pauseIcon.setAttribute('aria-hidden', 'true');
-              playButton.replaceChildren(playIcon, pauseIcon);
-              const wave = document.createElement('div');
-              wave.className = 'telegram-voice-wave';
-              const barHeights = buildVoiceBarHeights(messageId);
-              for (const height of barHeights) {
-                const bar = document.createElement('span');
-                bar.style.height = `${height}%`;
-                wave.append(bar);
-              }
-              const duration = document.createElement('div');
-              duration.className = 'telegram-voice-duration';
-              duration.textContent = formatDuration(primaryMessage.audioDurationSeconds ?? 0);
-              const audio = document.createElement('audio');
-              audio.className = 'telegram-message-audio';
-              audio.preload = 'none';
-              let loading = false;
-
-              const updatePlayState = (): void => {
-                const isPlaying = !audio.paused && !audio.ended;
-                playButton.classList.toggle('playing', isPlaying);
-                voiceNote.classList.toggle('playing', isPlaying);
-              };
-
-              if (primaryMessage.audioUrl) {
-                const source = document.createElement('source');
-                source.src = primaryMessage.audioUrl;
-                source.type = 'audio/ogg;codecs=opus';
-                audio.replaceChildren(source);
-              }
-
-              const ensureAudioLoaded = async (): Promise<boolean> => {
-                if (primaryMessage.audioUrl) {
-                  return true;
-                }
-                if (loading || !state.activeTelegramChatId) {
-                  return false;
-                }
-                loading = true;
-                playButton.disabled = true;
-                voiceNote.classList.add('loading');
-                const resolved = await window.pelec.resolveConnectorAudioUrl(
-                  'telegram',
-                  state.activeTelegramChatId,
+              bodyNodes.push(
+                ...createTelegramVoiceNoteNodes({
+                  buildVoiceBarHeights,
+                  formatDuration,
+                  message: primaryMessage,
                   messageId,
-                );
-                loading = false;
-                playButton.disabled = false;
-                voiceNote.classList.remove('loading');
-                if (!resolved) {
-                  duration.textContent = 'retry';
-                  return false;
-                }
-                primaryMessage.audioUrl = resolved;
-                const source = document.createElement('source');
-                source.src = resolved;
-                source.type = 'audio/ogg;codecs=opus';
-                audio.replaceChildren(source);
-                audio.load();
-                return true;
-              };
-
-              playButton.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                if (!primaryMessage.audioUrl) {
-                  const loaded = await ensureAudioLoaded();
-                  if (!loaded) {
-                    return;
-                  }
-                }
-                if (!audio.paused && !audio.ended) {
-                  audio.pause();
-                  return;
-                }
-                void audio.play().catch(() => {
-                  // Keep control state if autoplay policy blocks immediate playback.
-                });
-              });
-
-              audio.addEventListener('play', updatePlayState);
-              audio.addEventListener('pause', updatePlayState);
-              audio.addEventListener('ended', updatePlayState);
-              audio.addEventListener('loadedmetadata', () => {
-                if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
-                  return;
-                }
-                duration.textContent = formatDuration(audio.duration);
-              });
-
-              voiceNote.replaceChildren(playButton, wave, duration);
-              bodyNodes.push(voiceNote, audio);
+                  renderChatId,
+                  resolveTelegramAudioUrl,
+                }),
+              );
             }
             if (primaryMessage.document) {
-              const fileName = safeLabel(primaryMessage.document.fileName, 'Document');
-              const documentKind = formatTelegramDocumentKind(
-                fileName,
-                primaryMessage.document.mimeType,
+              bodyNodes.push(
+                createTelegramDocumentCard({
+                  chatId: renderChatId,
+                  copyTelegramDocument,
+                  downloadTelegramDocument,
+                  formatTelegramDocumentKind,
+                  formatTelegramDocumentSubtitle,
+                  message: primaryMessage,
+                  safeLabel,
+                }),
               );
-              const documentSubtitle = formatTelegramDocumentSubtitle(
-                fileName,
-                primaryMessage.document.mimeType,
-                primaryMessage.document.sizeBytes,
-              );
-              const documentCard = document.createElement('section');
-              documentCard.className = 'telegram-message-document';
-              const documentTitle = [fileName, primaryMessage.document.mimeType].filter(Boolean).join('\n');
-              if (documentTitle) {
-                documentCard.title = documentTitle;
-              }
-              const main = document.createElement('div');
-              main.className = 'telegram-message-document-main';
-              const icon = document.createElement('div');
-              icon.className = 'telegram-message-document-icon';
-              icon.textContent = documentKind;
-              const info = document.createElement('div');
-              info.className = 'telegram-message-document-info';
-              const name = document.createElement('div');
-              name.className = 'telegram-message-document-title';
-              name.textContent = fileName;
-              name.title = fileName;
-              const documentMeta = document.createElement('div');
-              documentMeta.className = 'telegram-message-document-subtitle';
-              documentMeta.textContent = documentSubtitle;
-              if (primaryMessage.document.mimeType) {
-                documentMeta.title = primaryMessage.document.mimeType;
-              }
-              info.replaceChildren(name, documentMeta);
-              const actions = document.createElement('div');
-              actions.className = 'telegram-message-document-actions';
-              const copyButton = document.createElement('button');
-              copyButton.type = 'button';
-              copyButton.className = 'telegram-message-document-action';
-              copyButton.textContent = 'Copy';
-              copyButton.setAttribute('aria-label', `Copy ${fileName}`);
-              copyButton.title = `Copy ${fileName}`;
-              copyButton.addEventListener('click', (event) => {
-                event.stopPropagation();
-                if (!renderChatId) {
-                  return;
-                }
-                void copyTelegramDocument(renderChatId, primaryMessage, copyButton);
-              });
-              const downloadButton = document.createElement('button');
-              downloadButton.type = 'button';
-              downloadButton.className = 'telegram-message-document-action';
-              downloadButton.textContent = 'Save';
-              downloadButton.setAttribute('aria-label', `Download ${fileName}`);
-              downloadButton.title = `Download ${fileName}`;
-              downloadButton.addEventListener('click', (event) => {
-                event.stopPropagation();
-                if (!renderChatId) {
-                  return;
-                }
-                void downloadTelegramDocument(renderChatId, primaryMessage, downloadButton);
-              });
-              actions.replaceChildren(copyButton, downloadButton);
-              main.replaceChildren(icon, info);
-              documentCard.replaceChildren(main, actions);
-              bodyNodes.push(documentCard);
             }
 
             const suppressImageFallbackText =
@@ -5463,69 +5627,20 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
               bodyNodes.push(text);
             }
 
-            const messageReactions = primaryMessage.reactions ?? [];
-            if (messageReactions.length > 0) {
-              const reactions = document.createElement('div');
-              reactions.className = 'telegram-message-reactions';
-              reactions.replaceChildren(
-                ...messageReactions.map((reaction) => {
-                  const chip = document.createElement('span');
-                  chip.className = 'telegram-message-reaction';
-                  if (reaction.chosen) {
-                    chip.classList.add('chosen');
-                  }
-                  const value = document.createElement('span');
-                  value.className = 'telegram-message-reaction-value';
-                  value.textContent = safeLabel(reaction.value, '?');
-                  const count = document.createElement('span');
-                  count.className = 'telegram-message-reaction-count';
-                  count.textContent = String(reaction.count);
-                  chip.replaceChildren(value, count);
-                  return chip;
-                }),
-              );
+            const reactions = createTelegramMessageReactions(primaryMessage, safeLabel);
+            if (reactions) {
               bodyNodes.push(reactions);
             }
 
-            const footer = document.createElement('div');
-            footer.className = 'telegram-message-footer';
-            const time = document.createElement('span');
-            time.className = 'telegram-message-time';
-            time.textContent = formatMessageTimestamp(primaryMessage.timestamp);
-            if (hasValidTimestamp(primaryMessage.timestamp)) {
-              time.title = formatFullDateTime(primaryMessage.timestamp);
-            }
-            footer.append(time);
-            if (primaryMessage.outgoing) {
-              const receipt = document.createElement('span');
-              receipt.className = 'telegram-message-receipt';
-              if (isPendingTelegramMessage(primaryMessage)) {
-                const spinner = document.createElement('span');
-                spinner.className = 'telegram-message-spinner';
-                spinner.setAttribute('aria-hidden', 'true');
-                receipt.classList.add('sending');
-                receipt.title = 'Sending';
-                receipt.append(spinner);
-              } else {
-                const tickSingle = document.createElement('span');
-                tickSingle.className = 'telegram-message-tick';
-                tickSingle.textContent = '✓';
-                const tickDouble = document.createElement('span');
-                tickDouble.className = 'telegram-message-tick';
-                tickDouble.textContent = '✓';
-                if (primaryMessage.readByPeer) {
-                  receipt.classList.add('read');
-                  receipt.title = 'Read';
-                  receipt.append(tickSingle, tickDouble);
-                } else {
-                  receipt.classList.add('sent');
-                  receipt.title = 'Sent';
-                  receipt.append(tickSingle);
-                }
-              }
-              footer.append(receipt);
-            }
-            bodyNodes.push(footer);
+            bodyNodes.push(
+              createTelegramMessageFooter({
+                formatFullDateTime,
+                formatMessageTimestamp,
+                hasValidTimestamp,
+                isPendingTelegramMessage,
+                message: primaryMessage,
+              }),
+            );
 
             item.replaceChildren(...bodyNodes);
             item.addEventListener('click', () => {
@@ -5555,13 +5670,26 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
               }
             });
             renderedTelegramMessageNodeById.set(primaryMessage.id, item);
-            messageNodes.push(...nodes, item);
+            const nextBundleNodes = [...nodes, item];
+            renderedTelegramMessageBundleById.set(primaryMessage.id, {
+              nodes: nextBundleNodes,
+              signature: bundleSignature,
+            });
+            messageNodes.push(...nextBundleNodes);
             index += renderMessages.length - 1;
           }
-          telegramMessageListEl.replaceChildren(...messageNodes);
+          for (const messageId of [...renderedTelegramMessageBundleById.keys()]) {
+            if (nextRenderedMessageIds.has(messageId)) {
+              continue;
+            }
+            renderedTelegramMessageBundleById.delete(messageId);
+            renderedTelegramMessageNodeById.delete(messageId);
+          }
+          syncTelegramMessageListNodes(telegramMessageLegacyRootEl, messageNodes);
           lastRenderedTelegramMessagesVersion = telegramMessagesVersion;
           lastRenderedTelegramSelectedMessageId = null;
           lastRenderedTelegramMessagePane = null;
+          endRenderMeasure();
           if (
             activeChatChanged ||
             telegramForceScrollBottom ||
@@ -5655,7 +5783,11 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   };
 
   const renderInstagramWeb = (): void => {
-    if (state.activeNetwork !== 'instagram') {
+    if (!instagramWebShell) {
+      return;
+    }
+
+    if (state.activeNetwork !== 'instagram' || !instagramEnabled) {
       instagramWebShell.classList.add('hidden');
       return;
     }
@@ -5710,24 +5842,34 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
     for (const [id, webview] of webviewMap.entries()) {
       const hiddenForNativeView = id === 'telegram';
+      const isActiveWebview = id === state.activeNetwork && !hiddenForNativeView;
+      const shouldAllowWebviewInteraction = state.mode === 'insert' && isActiveWebview;
       webview.classList.toggle('active', id === state.activeNetwork && !hiddenForNativeView);
-      webview.style.pointerEvents =
-        ((state.mode === 'insert') || id === 'instagram') &&
-        id === state.activeNetwork &&
-        !hiddenForNativeView
-          ? 'auto'
-          : 'none';
+      webview.style.display = isActiveWebview ? 'block' : 'none';
+      webview.style.pointerEvents = shouldAllowWebviewInteraction ? 'auto' : 'none';
+      webview.style.visibility = isActiveWebview ? 'visible' : 'hidden';
+      if (!shouldAllowWebviewInteraction) {
+        webview.blur?.();
+      }
+    }
+
+    if (
+      state.activeNetwork === 'telegram' &&
+      state.mode !== 'insert' &&
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.tagName === 'WEBVIEW'
+    ) {
+      scheduleTelegramKeyboardSurfaceFocus();
     }
 
     renderTelegramNative();
-    renderTelegramContextMenu();
-    renderTelegramForwardMenu();
     renderInstagramWeb();
 
     renderCurrentStatusBar();
 
     commandPalette.classList.toggle('hidden', !state.commandPaletteOpen);
     renderCommandPalette();
+    emitSnapshotChange();
   };
 
   const syncTelegramComposeInputHeight = (): void => {
@@ -5853,10 +5995,18 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
       }
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      void sendTelegramMessage();
-      return;
+    if (event.key === 'Enter') {
+      const sendBehavior = appConfig.userConfig.keyboard.sendBehavior;
+      const modPressed = event.ctrlKey || event.metaKey;
+      const shouldSend =
+        (sendBehavior === 'enter' && !event.shiftKey) ||
+        (sendBehavior === 'mod-enter' && modPressed);
+
+      if (modPressed || shouldSend) {
+        event.preventDefault();
+        void sendTelegramMessage();
+        return;
+      }
     }
 
     if (event.key === 'Escape') {
@@ -5894,8 +6044,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
   quickFilter.addEventListener('input', () => render());
 
   telegramSearchInput.addEventListener('input', () => {
-    state.telegramSearchQuery = telegramSearchInput.value;
-    render();
+    setTelegramSearchQuery(telegramSearchInput.value);
   });
 
   commandInput.addEventListener('input', () => {
@@ -5941,7 +6090,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
 
   window.pelec.onConnectorUpdate((event: ConnectorUpdateEvent) => {
     if (event.network === 'telegram') {
-      if (event.kind === 'status') {
+      if (event.kind === 'status-changed') {
         void refreshConnectorStatuses().then(async () => {
           const telegramStatus = getStatusByNetwork('telegram');
           if (
@@ -5957,19 +6106,20 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
         return;
       }
 
-      if (event.kind === 'chats') {
+      if (event.kind === 'chat-list-invalidated') {
+        const changedChatId = event.changedChatIds?.[0];
         if (
           state.activeNetwork === 'telegram' &&
-          event.chatId &&
-          state.activeTelegramChatId === event.chatId
+          changedChatId &&
+          state.activeTelegramChatId === changedChatId
         ) {
-          scheduleTelegramMessagesRefresh(event.chatId);
+          scheduleTelegramMessagesRefresh(changedChatId);
         }
         scheduleTelegramChatsRefresh(300, false);
         return;
       }
 
-      if (event.kind === 'messages') {
+      if (event.kind === 'messages-invalidated') {
         if (event.chatId && state.activeTelegramChatId && event.chatId !== state.activeTelegramChatId) {
           scheduleTelegramChatsRefresh(300, false);
           return;
@@ -5983,14 +6133,14 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
 
     if (event.network === 'instagram') {
-      if (event.kind === 'status') {
+      if (event.kind === 'status-changed') {
         void refreshConnectorStatuses().then(() => {
           render();
         });
         return;
       }
 
-      if (event.kind === 'chats') {
+      if (event.kind === 'chat-list-invalidated') {
         scheduleInstagramChatsRefresh();
         if (state.activeNetwork === 'instagram') {
           render();
@@ -5998,7 +6148,7 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
         return;
       }
 
-      if (event.kind === 'messages') {
+      if (event.kind === 'messages-invalidated') {
         if (state.activeNetwork === 'instagram' && event.chatId === state.activeInstagramChatId) {
           scheduleInstagramMessagesRefresh(event.chatId);
         }
@@ -6021,92 +6171,105 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
     }
   };
 
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !telegramImageModal.classList.contains('hidden')) {
-      event.preventDefault();
-      closeTelegramImagePreview();
-      return;
-    }
-
-    if (event.key === 'Escape' && !telegramForwardModal.classList.contains('hidden')) {
-      event.preventDefault();
-      if (!telegramForwardState.sending) {
-        closeTelegramForwardMenu();
-      }
-      return;
-    }
-
-    if (!telegramForwardModal.classList.contains('hidden')) {
-      return;
-    }
-
-    if (event.key === 'Escape' && telegramContextMenuState.visible) {
-      event.preventDefault();
-      closeTelegramContextMenu();
-      return;
-    }
-
-    if (state.activeNetwork === 'telegram' && event.ctrlKey && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      clearGPending();
-      toggleTelegramChatListMinimized();
-      return;
-    }
-
-    const target = event.target as HTMLElement | null;
-    const isTypingTarget =
-      !!target &&
-      (target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.isContentEditable);
-
-    if (isTypingTarget && event.key !== 'Escape') {
-      return;
-    }
-
-    if (state.commandPaletteOpen && event.key !== 'Escape') {
-      return;
-    }
-
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      clearGPending();
-      state.commandPaletteOpen = false;
-      state.commandQuery = '';
-      commandInput.value = '';
-      setMode('normal');
-      return;
-    }
-
-    if (state.mode === 'insert') {
-      return;
-    }
-
-    if (event.key === '/' && document.activeElement !== quickFilter) {
-      if (!NETWORK_RAIL_VISIBLE) {
+  if (!options.disableDefaultKeyboardHandling) {
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && authPromptState) {
+        event.preventDefault();
+        cancelAuthPrompt();
         return;
       }
-      event.preventDefault();
-      quickFilter.focus();
-      quickFilter.select();
-      return;
-    }
 
-    if (event.key === ':') {
-      clearGPending();
-      event.preventDefault();
-      state.commandPaletteOpen = true;
-      commandInput.focus();
-      render();
-      return;
-    }
+      if (event.key === 'Escape' && qrAuthState) {
+        event.preventDefault();
+        hideQrModal();
+        return;
+      }
 
-    if (event.key === 'j') {
-      clearGPending();
-      event.preventDefault();
-      moveVimSelection(1);
-      return;
-    }
+      if (event.key === 'Escape' && activeTelegramImageUrl) {
+        event.preventDefault();
+        closeTelegramImagePreview();
+        return;
+      }
+
+      if (event.key === 'Escape' && telegramForwardState.visible) {
+        event.preventDefault();
+        if (!telegramForwardState.sending) {
+          closeTelegramForwardMenu();
+        }
+        return;
+      }
+
+      if (telegramForwardState.visible) {
+        return;
+      }
+
+      if (event.key === 'Escape' && telegramContextMenuState.visible) {
+        event.preventDefault();
+        closeTelegramContextMenu();
+        return;
+      }
+
+      if (state.activeNetwork === 'telegram' && event.ctrlKey && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        clearGPending();
+        toggleTelegramChatListMinimized();
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const isTypingTarget =
+        !!target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+
+      if (isTypingTarget && event.key !== 'Escape') {
+        return;
+      }
+
+      if (state.commandPaletteOpen && event.key !== 'Escape') {
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        clearGPending();
+        state.commandPaletteOpen = false;
+        state.commandQuery = '';
+        commandInput.value = '';
+        setMode('normal');
+        return;
+      }
+
+      if (state.mode === 'insert') {
+        return;
+      }
+
+      if (event.key === '/' && document.activeElement !== quickFilter) {
+        if (!NETWORK_RAIL_VISIBLE) {
+          return;
+        }
+        event.preventDefault();
+        quickFilter.focus();
+        quickFilter.select();
+        return;
+      }
+
+      if (event.key === ':') {
+        clearGPending();
+        event.preventDefault();
+        state.commandPaletteOpen = true;
+        commandInput.focus();
+        render();
+        return;
+      }
+
+      if (event.key === 'j') {
+        clearGPending();
+        event.preventDefault();
+        moveVimSelection(1);
+        return;
+      }
 
     if (event.key === 'k') {
       clearGPending();
@@ -6185,9 +6348,6 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
         beginReplyToSelectedTelegramMessage();
       } else if (state.activeNetwork === 'telegram') {
         void loadTelegramChats();
-      } else if (state.activeNetwork === 'instagram') {
-        const activeWebview = webviewMap.get('instagram');
-        activeWebview?.reload();
       } else {
         const activeWebview = webviewMap.get(state.activeNetwork);
         activeWebview?.reload();
@@ -6219,10 +6379,124 @@ export const bootLegacyApp = async (mountRoot?: HTMLDivElement): Promise<void> =
         void window.pelec.openExternal(active.webUrl);
       }
     }
-  });
+    });
+  }
+
+  const bridgeApi: LegacyAppBridgeApi = {
+    activateNetwork,
+    activateTelegramChat: (chatId) => {
+      void selectTelegramChat(chatId, {
+        forceScroll: true,
+        showLoadingState: true,
+      });
+    },
+    activateTelegramMessagesPane: () => {
+      activateTelegramMessagesPane();
+      render();
+      if (state.activeNetwork === 'telegram' && state.mode !== 'insert') {
+        scheduleTelegramKeyboardSurfaceFocus();
+      }
+    },
+    activateSelection: activateVimSelection,
+    deleteSelection: () => {
+      void deleteSelectedTelegramMessage();
+    },
+    cancelAuthPrompt,
+    closeQrAuth: hideQrModal,
+    executeCommand: executeCommandById,
+    focusSearch: focusActiveSearch,
+    forwardTelegramMessageToChat: forwardTelegramMessageToChatById,
+    getCommands: () =>
+      availableCommands().map((command) => ({
+        id: command.id,
+        label: command.label,
+        group: command.group,
+      })),
+    getSnapshot,
+    handleEscape: handleGlobalEscape,
+    movePane: moveVimPane,
+    moveSelection: moveVimSelection,
+    moveSelectionByPage,
+    moveSelectionToEdge,
+    openBrowser: () => {
+      const active = getStatusByNetwork(state.activeNetwork);
+      if (active.webUrl !== 'about:blank') {
+        void window.pelec.openExternal(active.webUrl);
+      }
+    },
+    appendTelegramFiles: (files) => {
+      void appendTelegramFiles(files, 'selected');
+    },
+    clearTelegramReply: () => {
+      clearTelegramReplyState();
+      render();
+    },
+    closeTelegramContextMenu: () => {
+      closeTelegramContextMenu();
+    },
+    closeTelegramForwardMenu: () => {
+      closeTelegramForwardMenu();
+    },
+    closeTelegramImagePreview,
+    copyTelegramMessage: copyTelegramMessageById,
+    copyTelegramImagePreview: copyActiveTelegramImagePreview,
+    downloadTelegramImagePreview: downloadActiveTelegramImagePreview,
+    focusTelegramComposer,
+    openTelegramContextMenu,
+    openTelegramForwardMenu,
+    openTelegramImagePreview,
+    refreshQrAuth,
+    removeTelegramAttachment,
+    revealQrPassword,
+    refresh: () => {
+      if (state.activeNetwork === 'telegram') {
+        void loadTelegramChats();
+      } else {
+        webviewMap.get(state.activeNetwork)?.reload();
+      }
+    },
+    reply: beginReplyToSelectedTelegramMessage,
+    selectTelegramMessage: (messageId) => {
+      selectTelegramMessage(messageId);
+      render();
+      if (state.activeNetwork === 'telegram' && state.mode !== 'insert') {
+        scheduleTelegramKeyboardSurfaceFocus();
+      }
+    },
+    submitAuthPrompt,
+    submitQrPassword,
+    setTelegramForwardQuery,
+    sendTelegramMessage: () => {
+      void sendTelegramMessage();
+    },
+    setTelegramDraftValue,
+    setTelegramSearchQuery,
+    startTelegramVoiceRecording: (pointerId) => {
+      void startTelegramVoiceRecording(pointerId);
+    },
+    stopTelegramVoiceRecording: (pointerId) => {
+      handleTelegramVoiceRecordingRelease(pointerId);
+    },
+    toggleSendBehavior: toggleRuntimeSendBehavior,
+    setMode,
+    startAuth: () => {
+      void startAuthForNetwork(state.activeNetwork);
+    },
+    subscribe: (listener) => {
+      snapshotListeners.add(listener);
+      return () => {
+        snapshotListeners.delete(listener);
+      };
+    },
+  };
+
+  bridge?.onReady?.(bridgeApi);
+  emitSnapshotChange();
 
   await refreshConnectorStatuses();
   await loadTelegramChats();
-  await loadInstagramChats();
+  if (instagramEnabled) {
+    await loadInstagramChats();
+  }
   render();
 };

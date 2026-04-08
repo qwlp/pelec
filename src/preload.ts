@@ -9,10 +9,12 @@ import type {
   ListMessagesOptions,
   OutgoingAttachmentDocument,
 } from './shared/connectors';
-import type { AppActivity, AppConfig, NetworkId } from './shared/types';
+import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from './shared/types';
 
 const api = {
   getConfig: () => ipcRenderer.invoke('app:get-config') as Promise<AppConfig>,
+  getRuntimeDiagnostics: () =>
+    ipcRenderer.invoke('app:get-runtime-diagnostics') as Promise<RuntimeDiagnostics | null>,
   showNotification: (title: string, body: string, silent?: boolean) =>
     ipcRenderer.invoke('app:notify', { title, body, silent }) as Promise<boolean>,
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<boolean>,
@@ -145,6 +147,16 @@ const api = {
       handler(payload);
     ipcRenderer.on('app:activate-network', wrapped);
     return () => ipcRenderer.removeListener('app:activate-network', wrapped);
+  },
+  onOpenCommandPalette: (handler: () => void) => {
+    const wrapped = () => handler();
+    ipcRenderer.on('app:open-command-palette', wrapped);
+    return () => ipcRenderer.removeListener('app:open-command-palette', wrapped);
+  },
+  onOpenKeyboardHelp: (handler: () => void) => {
+    const wrapped = () => handler();
+    ipcRenderer.on('app:open-keyboard-help', wrapped);
+    return () => ipcRenderer.removeListener('app:open-keyboard-help', wrapped);
   },
   onAppActivity: (handler: (activity: AppActivity) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: AppActivity) =>

@@ -1,4 +1,95 @@
-import type { ChatCall, ChatReaction } from '../../../shared/connectors';
+import type { ChatCall, ChatReaction, ChatTextEntity } from '../../../shared/connectors';
+
+const extractFormattedTextContainer = (
+  content: unknown,
+): { text?: string; entities?: unknown[] } | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    text?: { text?: string; entities?: unknown[] };
+    caption?: { text?: string; entities?: unknown[] };
+  };
+
+  if (container.text?.text) {
+    return container.text;
+  }
+  if (container.caption?.text) {
+    return container.caption;
+  }
+
+  return undefined;
+};
+
+export const extractTelegramMessageEntities = (content: unknown): ChatTextEntity[] | undefined => {
+  const formatted = extractFormattedTextContainer(content);
+  const rawEntities = formatted?.entities;
+  if (!rawEntities || rawEntities.length < 1) {
+    return undefined;
+  }
+
+  const entities = rawEntities
+    .map<ChatTextEntity | undefined>((entity) => {
+      if (!entity || typeof entity !== 'object') {
+        return undefined;
+      }
+      const container = entity as {
+        offset?: number;
+        length?: number;
+        type?: {
+          _?: string;
+          url?: string;
+          language?: string;
+        };
+      };
+
+      const offset = Math.max(0, Math.floor(Number(container.offset ?? -1)));
+      const length = Math.max(0, Math.floor(Number(container.length ?? 0)));
+      if (offset < 0 || length < 1) {
+        return undefined;
+      }
+
+      switch (container.type?._) {
+        case 'textEntityTypeBold':
+          return { offset, length, type: 'bold' };
+        case 'textEntityTypeItalic':
+          return { offset, length, type: 'italic' };
+        case 'textEntityTypeStrikethrough':
+          return { offset, length, type: 'strikethrough' };
+        case 'textEntityTypeUnderline':
+          return { offset, length, type: 'underline' };
+        case 'textEntityTypeSpoiler':
+          return { offset, length, type: 'spoiler' };
+        case 'textEntityTypeCode':
+          return { offset, length, type: 'code' };
+        case 'textEntityTypePre':
+          return { offset, length, type: 'pre' };
+        case 'textEntityTypePreCode':
+          return {
+            offset,
+            length,
+            type: 'preCode',
+            language: container.type.language?.trim() || undefined,
+          };
+        case 'textEntityTypeTextUrl':
+          return {
+            offset,
+            length,
+            type: 'textUrl',
+            url: container.type.url?.trim() || undefined,
+          };
+        case 'textEntityTypeUrl':
+          return { offset, length, type: 'url' };
+        default:
+          return undefined;
+      }
+    })
+    .filter((entity): entity is ChatTextEntity => entity !== undefined)
+    .sort((a, b) => a.offset - b.offset || b.length - a.length);
+
+  return entities.length > 0 ? entities : undefined;
+};
 
 export const formatTelegramCallDuration = (seconds: number): string => {
   const total = Math.max(0, Math.floor(seconds));
@@ -72,8 +163,6 @@ export const extractTelegramMessageText = (
   }
   const container = content as {
     _: string;
-    text?: { text?: string };
-    caption?: { text?: string };
     emoji?: string;
     title?: string;
     performer?: string;
@@ -82,11 +171,9 @@ export const extractTelegramMessageText = (
     location?: { latitude?: number; longitude?: number };
   };
 
-  if (container.text?.text) {
-    return container.text.text;
-  }
-  if (container.caption?.text) {
-    return container.caption.text;
+  const formatted = extractFormattedTextContainer(content);
+  if (formatted?.text) {
+    return formatted.text;
   }
 
   if (container._ === 'messageSticker') {

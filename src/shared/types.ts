@@ -1,6 +1,42 @@
-export type AppMode = 'normal' | 'insert';
+export type AppMode = 'normal' | 'insert' | 'command';
+
+export type AppPane =
+  | 'networks'
+  | 'telegram-chats'
+  | 'telegram-messages'
+  | 'telegram-composer'
+  | 'instagram-chats'
+  | 'instagram-messages'
+  | 'command-palette'
+  | 'modal'
+  | 'webview';
 
 export type NetworkId = 'telegram' | 'instagram';
+
+export type SendBehavior = 'enter' | 'mod-enter';
+
+export type KeyboardActionId =
+  | 'activateSelection'
+  | 'deleteMessage'
+  | 'focusSearch'
+  | 'moveDown'
+  | 'moveLeft'
+  | 'movePageDown'
+  | 'movePageUp'
+  | 'moveRight'
+  | 'moveToBottom'
+  | 'moveToTop'
+  | 'moveUp'
+  | 'nextPane'
+  | 'openBrowser'
+  | 'openCommandPalette'
+  | 'openKeyboardHelp'
+  | 'previousPane'
+  | 'refresh'
+  | 'reply'
+  | 'startAuth'
+  | 'switchTelegram'
+  | 'toggleInsertMode';
 
 export interface NetworkDefinition {
   id: NetworkId;
@@ -24,17 +60,35 @@ export interface AppearanceUserConfig {
   textOpacity: number;
 }
 
+export interface KeyboardUserConfig {
+  showHints: boolean;
+  sendBehavior: SendBehavior;
+  captureInWebview: boolean;
+  enableCounts: boolean;
+  keymap: Partial<Record<KeyboardActionId, string>>;
+}
+
+export interface ShortcutConfig {
+  forceNormalMode: string;
+  openCommandPalette: string;
+  openKeyboardHelp: string;
+  focusSearch: string;
+  nextPane: string;
+  previousPane: string;
+  telegramNetwork: string;
+}
+
 export interface UserConfig {
   telegram: TelegramUserConfig;
   appearance: AppearanceUserConfig;
+  keyboard: KeyboardUserConfig;
+  shortcuts: ShortcutConfig;
 }
 
 export interface AppConfig {
   version: string;
   networks: NetworkDefinition[];
-  shortcuts: {
-    forceNormalMode: string;
-  };
+  shortcuts: ShortcutConfig;
   userConfig: UserConfig;
   configPath: string;
 }
@@ -48,4 +102,15 @@ export interface AppActivity {
   progress?: number;
   indeterminate?: boolean;
   state: AppActivityState;
+}
+
+export interface RuntimeDiagnostics {
+  appVersion: string;
+  chromeVersion: string;
+  electronVersion: string;
+  nodeVersion: string;
+  platform: NodeJS.Platform;
+  arch: string;
+  pid: number;
+  memoryUsage: NodeJS.MemoryUsage;
 }

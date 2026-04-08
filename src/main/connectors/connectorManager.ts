@@ -11,7 +11,6 @@ import type {
   ConnectorStatus,
 } from '../../shared/connectors';
 import type { AppConfig, NetworkDefinition, NetworkId } from '../../shared/types';
-import { InstagramConnector } from './instagramConnector';
 import { TelegramConnector } from './telegramConnector';
 
 export class ConnectorManager {
@@ -238,10 +237,6 @@ export class ConnectorManager {
   private createConnector(network: NetworkDefinition): Connector {
     if (network.id === 'telegram') {
       return new TelegramConnector(network, this.userDataPath, this.config.userConfig.telegram);
-    }
-
-    if (network.id === 'instagram') {
-      return new InstagramConnector(network, this.userDataPath);
     }
 
     throw new Error(`Unsupported network: ${network.id as string}`);

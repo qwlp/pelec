@@ -6,7 +6,7 @@ import { buildAppConfig } from './config';
 import { ConnectorManager } from './connectors/connectorManager';
 import { registerIpcHandlers } from './ipc';
 import { registerMediaProtocol } from './mediaProtocol';
-import { wireNetworkShortcutHandling } from './shortcuts';
+import { wireAppShortcutHandling } from './shortcuts';
 import { loadUserConfig } from './userConfig';
 import { installWebviewContextMenu } from './webviewContextMenu';
 import { createMainWindow } from './window';
@@ -19,6 +19,12 @@ export const bootstrapApp = (): void => {
 
   const activateNetwork = (network: AppConfig['networks'][number]['id']): void => {
     mainWindow?.webContents.send('app:activate-network', network);
+  };
+  const openCommandPalette = (): void => {
+    mainWindow?.webContents.send('app:open-command-palette');
+  };
+  const openKeyboardHelp = (): void => {
+    mainWindow?.webContents.send('app:open-keyboard-help');
   };
 
   const shutdownApp = async (): Promise<void> => {
@@ -66,14 +72,18 @@ export const bootstrapApp = (): void => {
       void connectorManager.initAll();
 
       mainWindow = createMainWindow();
-      wireNetworkShortcutHandling(mainWindow.webContents, activateNetwork);
 
       app.on('web-contents-created', (_event, contents) => {
         if (contents.getType() !== 'webview') {
           return;
         }
 
-        wireNetworkShortcutHandling(contents, activateNetwork);
+        wireAppShortcutHandling(contents, appConfig.shortcuts, {
+          allowNetworkTargets: ['telegram'],
+          onActivateNetwork: activateNetwork,
+          onOpenCommandPalette: openCommandPalette,
+          onOpenKeyboardHelp: openKeyboardHelp,
+        });
         installWebviewContextMenu(contents);
       });
 
@@ -92,7 +102,6 @@ export const bootstrapApp = (): void => {
         }
 
         mainWindow = createMainWindow();
-        wireNetworkShortcutHandling(mainWindow.webContents, activateNetwork);
       });
     })().catch((error) => {
       console.error('Application startup failed.', error);

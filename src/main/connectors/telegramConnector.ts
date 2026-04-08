@@ -12,13 +12,13 @@ import type {
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
-  ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
 } from '../../shared/connectors';
-import type { NetworkDefinition, TelegramUserConfig } from '../../shared/types';
+import type { NetworkDefinition, NetworkId, TelegramUserConfig } from '../../shared/types';
 import {
   extractTelegramCallInfo,
+  extractTelegramMessageEntities,
   extractTelegramMessageText,
   extractTelegramReactions,
 } from './telegram/messages';
@@ -74,6 +74,11 @@ const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
 const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 60000;
 const TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS = 250;
 const PELEC_MEDIA_SCHEME = 'pelec-media';
+
+type LegacyConnectorUpdateEvent =
+  | { network: NetworkId; kind: 'status' }
+  | { network: NetworkId; kind: 'chats'; chatId?: string }
+  | { network: NetworkId; kind: 'messages'; chatId?: string };
 
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
@@ -327,10 +332,7 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  async listMessages(
-    chatId: string,
-    _options?: ListMessagesOptions,
-  ): Promise<ChatMessage[]> {
+  async listMessages(chatId: string): Promise<ChatMessage[]> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return [];
     }
@@ -444,6 +446,7 @@ export class TelegramConnector implements Connector {
             text: extractTelegramMessageText(message.content, {
               outgoing: message.is_outgoing === true,
             }),
+            textEntities: extractTelegramMessageEntities(message.content),
             timestamp: (message.date ?? 0) * 1000,
             outgoing: Boolean(message.is_outgoing),
             readByPeer:
@@ -1968,9 +1971,37 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  private emitUpdate(event: ConnectorUpdateEvent): void {
+  private emitUpdate(event: ConnectorUpdateEvent | LegacyConnectorUpdateEvent): void {
+    const nextEvent =
+      event.kind === 'status'
+        ? {
+            network: this.network.id,
+            kind: 'status-changed' as const,
+            authState: this.status.authState,
+            mode: this.status.mode,
+            details: this.status.details,
+          }
+        : event.kind === 'chats'
+          ? {
+              network: this.network.id,
+              kind: 'chat-list-invalidated' as const,
+              changedChatIds: event.chatId ? [event.chatId] : undefined,
+            }
+          : event.kind === 'messages'
+            ? {
+                network: this.network.id,
+                kind: 'messages-invalidated' as const,
+                chatId: event.chatId ?? '',
+                reason: 'history' as const,
+              }
+            : event;
+
+    if (nextEvent.kind === 'messages-invalidated' && !nextEvent.chatId) {
+      return;
+    }
+
     for (const listener of this.updateListeners) {
-      listener(event);
+      listener(nextEvent);
     }
   }
 

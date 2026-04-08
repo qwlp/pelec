@@ -1,0 +1,384 @@
+import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import type { ShortcutConfig } from '../../shared/types';
+import { useKeyboardBindings } from '../keyboard/useKeyboardBindings';
+import type { LegacyAppBridgeApi } from '../legacyBridge';
+import { applyUserTheme } from '../lib/theme';
+import type { CommandPaletteItem } from '../features/commandPalette/CommandPalette';
+import { TelegramChatList } from '../features/telegram/TelegramChatList';
+import { TelegramComposer } from '../features/telegram/TelegramComposer';
+import { TelegramMessageList } from '../features/telegram/TelegramMessageList';
+import { loadRendererBootstrapData } from '../services/connectors';
+import { beginMeasure } from '../services/performance';
+import { configLoaded, legacyCommandsChanged, legacyReady, legacySnapshotChanged } from '../state/actions';
+import { useAppDispatch, useAppState } from '../state/appStore';
+import { selectCommandPaletteItems, selectLegacyTelegramSnapshot } from '../state/selectors';
+import { LegacyWorkspaceAdapter } from './LegacyWorkspaceAdapter';
+import { ModalLayer } from './ModalLayer';
+import { WebviewHost } from './WebviewHost';
+
+const FALLBACK_SHORTCUTS: ShortcutConfig = {
+  forceNormalMode: 'CommandOrControl+[',
+  openCommandPalette: 'CommandOrControl+K',
+  openKeyboardHelp: 'Shift+/',
+  focusSearch: '/',
+  nextPane: 'Tab',
+  previousPane: 'Shift+Tab',
+  telegramNetwork: 'Alt+1',
+};
+
+export const AppShell = () => {
+  const dispatch = useAppDispatch();
+  const state = useAppState();
+  const [legacyApi, setLegacyApi] = useState<LegacyAppBridgeApi | null>(null);
+  const [telegramMessageTarget, setTelegramMessageTarget] = useState<HTMLElement | null>(null);
+  const [telegramComposerTarget, setTelegramComposerTarget] = useState<HTMLElement | null>(null);
+  const telegramChatListRef = useRef<HTMLElement | null>(null);
+  const telegramSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const telegramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingTelegramPaneFocusRef = useRef<'telegram-chats' | 'telegram-messages' | null>(null);
+
+  useEffect(() => {
+    const end = beginMeasure('app.boot');
+    void loadRendererBootstrapData().then(({ appConfig, runtimeDiagnostics }) => {
+      applyUserTheme(appConfig.userConfig);
+      startTransition(() => {
+        dispatch(configLoaded(appConfig, runtimeDiagnostics));
+        dispatch({
+          type: 'keyboard/config',
+          showHints: appConfig.userConfig.keyboard.showHints,
+          captureInWebview: appConfig.userConfig.keyboard.captureInWebview,
+          enableCounts: appConfig.userConfig.keyboard.enableCounts,
+        });
+      });
+      requestAnimationFrame(() => {
+        end();
+      });
+    });
+  }, [dispatch]);
+
+  const shortcuts = state.config.appConfig?.shortcuts ?? FALLBACK_SHORTCUTS;
+  const customKeymap = state.config.userConfig?.keyboard.keymap ?? {};
+
+  const openCommandPalette = useEffectEvent(() => {
+    const end = beginMeasure('command-palette.open');
+    dispatch({ type: 'commandPalette/open' });
+    requestAnimationFrame(() => {
+      end();
+    });
+  });
+
+  const closeCommandPalette = useEffectEvent(() => {
+    dispatch({ type: 'commandPalette/close' });
+  });
+
+  const ignoreKeyboardHelp = (): null => null;
+
+  const bridge = useMemo(
+    () => ({
+      onActivityChange: (activity: typeof state.activity.current) => {
+        dispatch({ type: 'activity/set', activity });
+      },
+      onReady: (api: LegacyAppBridgeApi) => {
+        setLegacyApi(api);
+        dispatch(legacyReady());
+        dispatch(legacyCommandsChanged(api.getCommands()));
+        dispatch(legacySnapshotChanged(api.getSnapshot()));
+      },
+      onSnapshotChange: (snapshot: ReturnType<LegacyAppBridgeApi['getSnapshot']>) => {
+        dispatch(legacySnapshotChanged(snapshot));
+      },
+    }),
+    [dispatch],
+  );
+
+  const commandItems = useMemo(
+    () =>
+      selectCommandPaletteItems(state).map((item) => ({
+        id: item.id,
+        label: item.label,
+        group: item.group,
+      })),
+    [state],
+  );
+
+  const telegramSnapshot = selectLegacyTelegramSnapshot(state);
+  const showTelegramChatList =
+    state.appShell.activeNetwork === 'telegram' &&
+    telegramSnapshot !== null &&
+    !telegramSnapshot.chatListMinimized;
+
+  const focusSearch = useEffectEvent(() => {
+    if (state.appShell.activeNetwork === 'telegram') {
+      if (!showTelegramChatList) {
+        legacyApi?.focusSearch();
+        return;
+      }
+      telegramSearchInputRef.current?.focus();
+      telegramSearchInputRef.current?.select();
+      return;
+    }
+
+    legacyApi?.focusSearch();
+  });
+
+  const focusTelegramPaneSurface = useEffectEvent((pane: 'telegram-chats' | 'telegram-messages') => {
+    const fallbackSelector = pane === 'telegram-chats' ? '#telegram-chat-list' : '#telegram-message-list';
+    const target =
+      pane === 'telegram-chats'
+        ? telegramChatListRef.current ?? document.querySelector<HTMLElement>(fallbackSelector)
+        : (telegramMessageTarget?.closest('.telegram-message-list') as HTMLElement | null) ??
+          document.querySelector<HTMLElement>(fallbackSelector);
+    target?.focus({ preventScroll: true });
+  });
+
+  const scheduleTelegramPaneFocus = useEffectEvent((pane: 'telegram-chats' | 'telegram-messages') => {
+    pendingTelegramPaneFocusRef.current = pane;
+    focusTelegramPaneSurface(pane);
+    requestAnimationFrame(() => {
+      if (pendingTelegramPaneFocusRef.current === pane) {
+        focusTelegramPaneSurface(pane);
+      }
+    });
+  });
+
+  const handleMoveLeft = useEffectEvent(() => {
+    if (!legacyApi || state.appShell.activeNetwork !== 'telegram') {
+      legacyApi?.movePane(-1);
+      return;
+    }
+
+    if (state.appShell.activePane === 'telegram-messages') {
+      scheduleTelegramPaneFocus('telegram-chats');
+      legacyApi.movePane(-1);
+      return;
+    }
+
+    if (state.appShell.activePane === 'telegram-chats') {
+      scheduleTelegramPaneFocus('telegram-chats');
+      return;
+    }
+
+    legacyApi.movePane(-1);
+  });
+
+  const handleMoveRight = useEffectEvent(() => {
+    if (!legacyApi || state.appShell.activeNetwork !== 'telegram') {
+      legacyApi?.movePane(1);
+      return;
+    }
+
+    if (state.appShell.activePane === 'telegram-chats') {
+      const nextChatId = telegramSnapshot?.selectedChatId;
+      if (nextChatId && nextChatId !== telegramSnapshot?.activeChatId) {
+        legacyApi.activateTelegramChat(nextChatId);
+      }
+      scheduleTelegramPaneFocus('telegram-messages');
+      legacyApi.activateTelegramMessagesPane();
+      return;
+    }
+
+    if (state.appShell.activePane === 'telegram-messages') {
+      scheduleTelegramPaneFocus('telegram-messages');
+      return;
+    }
+
+    legacyApi.movePane(1);
+  });
+
+  useEffect(() => {
+    const offOpenPalette = window.pelec.onOpenCommandPalette(() => {
+      openCommandPalette();
+    });
+
+    return () => {
+      offOpenPalette();
+    };
+  }, [openCommandPalette]);
+
+  useEffect(() => {
+    if (!state.appShell.legacyReady) {
+      setTelegramMessageTarget(null);
+      setTelegramComposerTarget(null);
+      return;
+    }
+
+    setTelegramMessageTarget(document.querySelector<HTMLElement>('#telegram-message-react-root'));
+    setTelegramComposerTarget(document.querySelector<HTMLElement>('#telegram-compose-react-root'));
+  }, [state.appShell.legacyReady]);
+
+  useEffect(() => {
+    if (state.appShell.activeNetwork === 'telegram' && state.appShell.mode === 'insert') {
+      telegramComposerInputRef.current?.focus();
+    }
+  }, [state.appShell.activeNetwork, state.appShell.mode]);
+
+  useEffect(() => {
+    if (
+      state.appShell.activeNetwork !== 'telegram' ||
+      state.appShell.activePane !== 'telegram-messages' ||
+      !legacyApi ||
+      !telegramSnapshot ||
+      telegramSnapshot.selectedMessageId ||
+      telegramSnapshot.messages.length < 1
+    ) {
+      return;
+    }
+
+    const fallbackMessageId = telegramSnapshot.messages[telegramSnapshot.messages.length - 1]?.id;
+    if (fallbackMessageId) {
+      legacyApi.selectTelegramMessage(fallbackMessageId);
+    }
+  }, [
+    legacyApi,
+    state.appShell.activeNetwork,
+    state.appShell.activePane,
+    telegramSnapshot,
+  ]);
+
+  useEffect(() => {
+    const pendingPane = pendingTelegramPaneFocusRef.current;
+    if (!pendingPane || state.appShell.activeNetwork !== 'telegram') {
+      return;
+    }
+
+    if (pendingPane !== state.appShell.activePane) {
+      return;
+    }
+
+    focusTelegramPaneSurface(pendingPane);
+    pendingTelegramPaneFocusRef.current = null;
+  }, [focusTelegramPaneSurface, state.appShell.activeNetwork, state.appShell.activePane, telegramMessageTarget]);
+
+  useKeyboardBindings({
+    activePane: state.appShell.activePane,
+    captureInWebview: state.keyboard.captureInWebview,
+    closeCommandPalette: () => closeCommandPalette(),
+    closeKeyboardHelp: () => ignoreKeyboardHelp(),
+    commandPaletteOpen: state.commandPalette.isOpen,
+    customKeymap,
+    keyboardHelpOpen: false,
+    legacyApi,
+    mode: state.appShell.mode,
+    onFocusSearch: () => focusSearch(),
+    onMoveLeft: () => handleMoveLeft(),
+    onMoveRight: () => handleMoveRight(),
+    openCommandPalette: () => openCommandPalette(),
+    openKeyboardHelp: () => ignoreKeyboardHelp(),
+    setMode: (mode) => {
+      if (mode === 'command') {
+        openCommandPalette();
+      }
+    },
+    shortcuts,
+  });
+
+  const executeCommand = (item: CommandPaletteItem) => {
+    if (item.id === 'toggle-send-behavior') {
+      legacyApi?.toggleSendBehavior();
+      dispatch({ type: 'config/toggleSendBehavior' });
+      closeCommandPalette();
+      return;
+    }
+    if (item.id === 'focusSearch') {
+      focusSearch();
+      closeCommandPalette();
+      return;
+    }
+
+    legacyApi?.executeCommand(item.id);
+    closeCommandPalette();
+  };
+
+  return (
+    <div className="modern-app-shell">
+      <div
+        className={`modern-workspace${
+          showTelegramChatList ? ' react-telegram-chat-list' : ''
+        }${state.appShell.activeNetwork === 'telegram' && telegramSnapshot ? ' react-telegram-composer' : ''}`}
+      >
+        <WebviewHost>
+          <LegacyWorkspaceAdapter bridge={bridge} />
+        </WebviewHost>
+        {showTelegramChatList && telegramSnapshot ? (
+          <TelegramChatList
+            activeChatId={telegramSnapshot.activeChatId}
+            chats={telegramSnapshot.filteredChats}
+            listRef={telegramChatListRef}
+            loadError={telegramSnapshot.loadError}
+            loading={telegramSnapshot.loading}
+            onSearchQueryChange={(query) => legacyApi?.setTelegramSearchQuery(query)}
+            onSelectChat={(chatId) => legacyApi?.activateTelegramChat(chatId)}
+            searchInputRef={telegramSearchInputRef}
+            searchQuery={telegramSnapshot.searchQuery}
+            selectedChatId={
+              state.appShell.activePane === 'telegram-chats' ? telegramSnapshot.selectedChatId : null
+            }
+          />
+        ) : null}
+        {state.appShell.activeNetwork === 'telegram' && telegramSnapshot ? (
+          <TelegramMessageList
+            activeChatId={telegramSnapshot.activeChatId}
+            activeChatTitle={telegramSnapshot.activeChatTitle}
+            legacyApi={legacyApi}
+            loadError={telegramSnapshot.messageLoadError}
+            messages={telegramSnapshot.messages}
+            messagesLoading={telegramSnapshot.messagesLoading}
+            selectedMessageId={
+              state.appShell.activePane === 'telegram-messages'
+                ? telegramSnapshot.selectedMessageId
+                : null
+            }
+            target={telegramMessageTarget}
+          />
+        ) : null}
+        {state.appShell.activeNetwork === 'telegram' && telegramSnapshot ? (
+          <TelegramComposer
+            attachments={telegramSnapshot.pendingAttachments}
+            draftText={telegramSnapshot.draftText}
+            inputRef={telegramComposerInputRef}
+            legacyApi={legacyApi}
+            replyPreview={telegramSnapshot.replyPreview}
+            sendBehavior={state.config.userConfig?.keyboard.sendBehavior ?? 'enter'}
+            target={telegramComposerTarget}
+            voiceRecorderState={telegramSnapshot.voiceRecorderState}
+          />
+        ) : null}
+      </div>
+      <ModalLayer
+        authPrompt={state.legacy.snapshot?.authPrompt ?? null}
+        commandItems={commandItems}
+        commandPaletteOpen={state.commandPalette.isOpen}
+        commandQuery={state.commandPalette.query}
+        onCancelAuthPrompt={() => legacyApi?.cancelAuthPrompt()}
+        onCloseCommandPalette={() => closeCommandPalette()}
+        onCloseQrAuth={() => legacyApi?.closeQrAuth()}
+        onCloseTelegramContextMenu={() => legacyApi?.closeTelegramContextMenu()}
+        onCloseTelegramForward={() => legacyApi?.closeTelegramForwardMenu()}
+        onCloseTelegramImagePreview={() => legacyApi?.closeTelegramImagePreview()}
+        onCommandQueryChange={(query) => dispatch({ type: 'commandPalette/query', query })}
+        onCopyTelegramMessage={(messageId) => legacyApi?.copyTelegramMessage(messageId)}
+        onCopyTelegramImagePreview={() => legacyApi?.copyTelegramImagePreview()}
+        onDownloadTelegramImagePreview={() => legacyApi?.downloadTelegramImagePreview()}
+        onExecuteCommand={executeCommand}
+        onForwardTelegramMessage={(chatId) => legacyApi?.forwardTelegramMessageToChat(chatId)}
+        onOpenTelegramForwardMenu={(messageId) => legacyApi?.openTelegramForwardMenu(messageId)}
+        onRefreshQrAuth={() => legacyApi?.refreshQrAuth()}
+        onRevealQrPassword={() => legacyApi?.revealQrPassword()}
+        onReplyToTelegramMessage={(messageId) => {
+          legacyApi?.selectTelegramMessage(messageId);
+          legacyApi?.reply();
+        }}
+        onSelectedIndexChange={(index) => dispatch({ type: 'commandPalette/select', index })}
+        onSelectTelegramMessage={(messageId) => legacyApi?.selectTelegramMessage(messageId)}
+        onSubmitAuthPrompt={(value) => legacyApi?.submitAuthPrompt(value)}
+        onSubmitQrPassword={(value) => legacyApi?.submitQrPassword(value)}
+        onTelegramForwardQueryChange={(query) => legacyApi?.setTelegramForwardQuery(query)}
+        qrAuth={state.legacy.snapshot?.qrAuth ?? null}
+        selectedIndex={state.commandPalette.selectedIndex}
+        telegramContextMenu={telegramSnapshot?.contextMenu ?? null}
+        telegramForward={telegramSnapshot?.forward ?? null}
+        telegramImagePreviewUrl={telegramSnapshot?.imagePreviewUrl ?? null}
+      />
+    </div>
+  );
+};

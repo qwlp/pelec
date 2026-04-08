@@ -12,13 +12,98 @@ import type {
   InstagramThreadResponse,
 } from './types';
 
+type InstagramCookieJar = {
+  setCookie(
+    cookie: string,
+    url: string,
+    options?: { ignoreError?: boolean },
+  ): Promise<unknown> | unknown;
+};
+
+type InstagramState = {
+  checkpoint?: unknown;
+  cookieJar: InstagramCookieJar;
+  deserialize(value: Record<string, unknown>): Promise<void>;
+  generateDevice(seed: string): void;
+  serialize(): Promise<Record<string, unknown>>;
+};
+
+type InstagramChallengeState = {
+  step_name?: string;
+  step_data?: {
+    contact_point?: string;
+  };
+};
+
+type InstagramClient = {
+  account: {
+    currentUser(): Promise<InstagramCurrentUserResponse['user']>;
+    login(username: string, password: string): Promise<void>;
+    twoFactorLogin(input: {
+      username: string;
+      verificationCode: string;
+      twoFactorIdentifier: string;
+      verificationMethod: string;
+    }): Promise<void>;
+  };
+  challenge: {
+    auto(review: boolean): Promise<InstagramChallengeState | undefined>;
+    sendSecurityCode(code: string): Promise<void>;
+  };
+  entity: {
+    directThread(threadId: string): {
+      broadcastText(
+        text: string,
+        options?: {
+          item_id?: string;
+          client_context?: string;
+        },
+      ): Promise<void>;
+    };
+  };
+  feed: {
+    directInbox(): {
+      items(): Promise<InstagramThread[]>;
+    };
+    directThread(input: { thread_id: string }): {
+      items(): Promise<InstagramThread['items'] extends Array<infer Item> ? Item[] : never[]>;
+      request(): Promise<{ thread?: Record<string, unknown> }>;
+    };
+  };
+  request: {
+    end$: {
+      subscribe(listener: () => void): void;
+    };
+  };
+  simulate: {
+    postLoginFlow(): Promise<void>;
+    preLoginFlow(): Promise<void>;
+  };
+  state: InstagramState;
+};
+
+type InstagramPrivateApiModule = {
+  IgApiClient: new () => InstagramClient;
+};
+
+type InstagramLoginError = {
+  response?: {
+    body?: {
+      two_factor_info?: {
+        totp_two_factor_on?: unknown;
+        two_factor_identifier?: unknown;
+      };
+    };
+  };
+};
+
 const authLog = (...args: unknown[]): void => {
   console.info('[instagram-auth][client]', ...args);
 };
 
 const nodeRequire = createRequire(__filename);
 
-const activeClients = new Map<string, { ig: any; username: string }>();
+const activeClients = new Map<string, { ig: InstagramClient; username: string }>();
 
 const toPartitionKey = (partition: string): string =>
   partition.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -126,7 +211,7 @@ const getCookieDomain = (domain: string): string => {
 };
 
 const setCookieOnJar = async (
-  cookieJar: any,
+  cookieJar: InstagramCookieJar,
   cookie: {
     name: string;
     value: string;
@@ -153,7 +238,12 @@ const setCookieOnJar = async (
     const result = cookieJar.setCookie(cookieString, 'https://i.instagram.com', {
       ignoreError: true,
     });
-    if (result && typeof result.then === 'function') {
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'then' in result &&
+      typeof result.then === 'function'
+    ) {
       await result;
     }
   } catch (error) {
@@ -175,7 +265,10 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, errorMessa
       });
   });
 
-const resolveCurrentUser = async (ig: any, timeoutMs = 8000): Promise<any> =>
+const resolveCurrentUser = async (
+  ig: InstagramClient,
+  timeoutMs = 8000,
+): Promise<InstagramCurrentUserResponse['user']> =>
   withTimeout(ig.account.currentUser(), timeoutMs, 'Timed out fetching Instagram current user.');
 
 const getMetaState = async (
@@ -193,7 +286,7 @@ const saveMetaState = async (
   await writeJsonFile(getMetaPath(userDataPath, partition), meta);
 };
 
-const loadInstagramModule = async (): Promise<any> => {
+const loadInstagramModule = async (): Promise<InstagramPrivateApiModule> => {
   try {
     return nodeRequire('instagram-private-api');
   } catch {
@@ -207,7 +300,7 @@ const createIgClient = async (
   userDataPath: string,
   partition: string,
   username: string,
-): Promise<any> => {
+): Promise<InstagramClient> => {
   const igModule = await loadInstagramModule();
   const ig = new igModule.IgApiClient();
   ig.state.generateDevice(username);
@@ -221,7 +314,7 @@ const persistSessionState = async (
   userDataPath: string,
   partition: string,
   username: string,
-  ig: any,
+  ig: InstagramClient,
 ): Promise<void> => {
   const serialized = await ig.state.serialize();
   const { constants, ...stateToSave } = serialized as Record<string, unknown>;
@@ -232,7 +325,7 @@ const persistSessionState = async (
 const warmSessionClient = async (
   userDataPath: string,
   partition: string,
-): Promise<{ ig: any; username: string } | undefined> => {
+): Promise<{ ig: InstagramClient; username: string } | undefined> => {
   const cached = activeClients.get(partition);
   if (cached) {
     return cached;
@@ -267,7 +360,10 @@ const warmSessionClient = async (
   return clientState;
 };
 
-const requireAuthedClient = async (userDataPath: string, partition: string): Promise<any> => {
+const requireAuthedClient = async (
+  userDataPath: string,
+  partition: string,
+): Promise<InstagramClient> => {
   const hydrated = await warmSessionClient(userDataPath, partition);
   if (!hydrated) {
     throw new Error('Instagram session is not authenticated.');
@@ -283,7 +379,7 @@ export const resetInstagramAuthState = async (
   await rm(getStateRoot(userDataPath, partition), { recursive: true, force: true });
 };
 
-const safePreLoginFlow = async (ig: any): Promise<void> => {
+const safePreLoginFlow = async (ig: InstagramClient): Promise<void> => {
   try {
     await ig.simulate.preLoginFlow();
   } catch {
@@ -291,7 +387,7 @@ const safePreLoginFlow = async (ig: any): Promise<void> => {
   }
 };
 
-const safePostLoginFlow = async (ig: any): Promise<void> => {
+const safePostLoginFlow = async (ig: InstagramClient): Promise<void> => {
   try {
     await ig.simulate.postLoginFlow();
   } catch {
@@ -415,8 +511,9 @@ export const loginInstagram = async (
       username: resolvedUsername,
       details: `Instagram login successful for @${resolvedUsername}.`,
     };
-  } catch (error: any) {
-    const twoFactorInfo = error?.response?.body?.two_factor_info;
+  } catch (error: unknown) {
+    const loginError = error as InstagramLoginError;
+    const twoFactorInfo = loginError.response?.body?.two_factor_info;
     if (twoFactorInfo?.two_factor_identifier) {
       const serialized = await ig.state.serialize();
       const { constants, ...pendingState } = serialized as Record<string, unknown>;
@@ -449,7 +546,7 @@ export const loginInstagram = async (
             'Instagram checkpoint requires web/app review. Native challenge state was not available, so complete the challenge in Instagram web/app and retry auth.',
         };
       }
-      let challengeState: any;
+      let challengeState: InstagramChallengeState | undefined;
       try {
         challengeState = await ig.challenge.auto(true);
       } catch {

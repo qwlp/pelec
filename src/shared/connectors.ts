@@ -64,6 +64,26 @@ export interface ChatReaction {
   chosen?: boolean;
 }
 
+export type ChatTextEntityType =
+  | 'bold'
+  | 'italic'
+  | 'strikethrough'
+  | 'underline'
+  | 'spoiler'
+  | 'code'
+  | 'pre'
+  | 'preCode'
+  | 'textUrl'
+  | 'url';
+
+export interface ChatTextEntity {
+  offset: number;
+  length: number;
+  type: ChatTextEntityType;
+  url?: string;
+  language?: string;
+}
+
 export interface ChatDocument {
   fileName: string;
   mimeType?: string;
@@ -95,6 +115,7 @@ export interface ChatMessage {
   mediaAlbumId?: string;
   sender: string;
   text: string;
+  textEntities?: ChatTextEntity[];
   timestamp: number;
   outgoing?: boolean;
   readByPeer?: boolean;
@@ -120,11 +141,27 @@ export interface ChatMessage {
   call?: ChatCall;
 }
 
-export interface ConnectorUpdateEvent {
-  network: NetworkId;
-  kind: 'chats' | 'messages' | 'status';
-  chatId?: string;
-}
+export type ConnectorInvalidationReason = 'incoming' | 'outgoing' | 'history' | 'read-state';
+
+export type ConnectorUpdateEvent =
+  | {
+      network: NetworkId;
+      kind: 'status-changed';
+      authState: AuthState;
+      mode: ConnectorMode;
+      details: string;
+    }
+  | {
+      network: NetworkId;
+      kind: 'chat-list-invalidated';
+      changedChatIds?: string[];
+    }
+  | {
+      network: NetworkId;
+      kind: 'messages-invalidated';
+      chatId: string;
+      reason: ConnectorInvalidationReason;
+    };
 
 export interface Connector {
   init(): Promise<void>;

@@ -1,4 +1,5 @@
 import {
+  app,
   clipboard,
   ipcMain,
   nativeImage,
@@ -12,7 +13,7 @@ import type {
   ListMessagesOptions,
   OutgoingAttachmentDocument,
 } from '../shared/connectors';
-import type { AppActivity, AppConfig, NetworkId } from '../shared/types';
+import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from '../shared/types';
 import type { ConnectorManager } from './connectors/connectorManager';
 import {
   copyResolvedDocumentToClipboard,
@@ -39,6 +40,23 @@ export const registerIpcHandlers = ({
       throw new Error('App config not ready');
     }
     return appConfig;
+  });
+
+  ipcMain.handle('app:get-runtime-diagnostics', async (): Promise<RuntimeDiagnostics | null> => {
+    if (!app.isPackaged && process.env.NODE_ENV !== 'production') {
+      return {
+        appVersion: app.getVersion(),
+        chromeVersion: process.versions.chrome ?? '',
+        electronVersion: process.versions.electron ?? '',
+        nodeVersion: process.versions.node ?? '',
+        platform: process.platform,
+        arch: process.arch,
+        pid: process.pid,
+        memoryUsage: process.memoryUsage(),
+      };
+    }
+
+    return null;
   });
 
   ipcMain.handle('connector:get-statuses', async () => {
