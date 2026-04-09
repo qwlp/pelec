@@ -2,6 +2,11 @@ import { createPortal } from 'react-dom';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { PendingTelegramAttachment } from './media';
 import type { LegacyAppBridgeApi, LegacyTelegramReplyPreview } from '../../legacyBridge';
+import {
+  buildTelegramEmojiSuggestions,
+  getTelegramEmojiTokenMatch,
+  type TelegramEmojiSuggestion,
+} from '../../lib/emoji';
 import { formatTelegramAttachmentMeta } from './media';
 
 interface TelegramComposerProps {
@@ -15,6 +20,13 @@ interface TelegramComposerProps {
   target: HTMLElement | null;
   voiceRecorderState: 'idle' | 'preparing' | 'recording' | 'sending' | 'unsupported';
 }
+
+type TelegramEmojiCompletionState = {
+  activeIndex: number;
+  suggestions: TelegramEmojiSuggestion[];
+  tokenEnd: number;
+  tokenStart: number;
+};
 
 const formatRecordingDuration = (durationMs: number): string => {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
@@ -35,11 +47,90 @@ export const TelegramComposer = ({
   voiceRecorderState,
 }: TelegramComposerProps) => {
   const [value, setValue] = useState(draftText);
+  const [emojiCompletion, setEmojiCompletion] = useState<TelegramEmojiCompletionState | null>(null);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingSelectionRef = useRef<{ end: number; start: number } | null>(null);
+
+  const syncDraftValue = (nextValue: string) => {
+    setValue(nextValue);
+    legacyApi?.setTelegramDraftValue(nextValue);
+  };
+
+  const updateEmojiCompletion = (
+    nextValue = value,
+    selectionStart = textareaRef.current?.selectionStart ?? null,
+    selectionEnd = textareaRef.current?.selectionEnd ?? null,
+  ) => {
+    if (document.activeElement !== textareaRef.current) {
+      setEmojiCompletion(null);
+      return;
+    }
+
+    const tokenMatch = getTelegramEmojiTokenMatch(nextValue, selectionStart, selectionEnd);
+    if (!tokenMatch) {
+      setEmojiCompletion(null);
+      return;
+    }
+
+    const suggestions = buildTelegramEmojiSuggestions(tokenMatch.query);
+    if (suggestions.length < 1) {
+      setEmojiCompletion(null);
+      return;
+    }
+
+    setEmojiCompletion((current) => {
+      const currentSuggestion = current?.suggestions[current.activeIndex];
+      let activeIndex = 0;
+
+      if (currentSuggestion) {
+        const matchedIndex = suggestions.findIndex(
+          (suggestion) =>
+            suggestion.canonicalAlias === currentSuggestion.canonicalAlias &&
+            suggestion.matchedAlias === currentSuggestion.matchedAlias,
+        );
+        if (matchedIndex >= 0) {
+          activeIndex = matchedIndex;
+        }
+      }
+
+      return {
+        activeIndex,
+        suggestions,
+        tokenEnd: tokenMatch.tokenEnd,
+        tokenStart: tokenMatch.tokenStart,
+      };
+    });
+  };
+
+  const applyEmojiSuggestion = (suggestion?: TelegramEmojiSuggestion): boolean => {
+    if (!emojiCompletion) {
+      return false;
+    }
+
+    const activeSuggestion = suggestion ?? emojiCompletion.suggestions[emojiCompletion.activeIndex];
+    if (!activeSuggestion) {
+      setEmojiCompletion(null);
+      return false;
+    }
+
+    const before = value.slice(0, emojiCompletion.tokenStart);
+    const after = value.slice(emojiCompletion.tokenEnd);
+    const nextValue = `${before}${activeSuggestion.emoji}${after}`;
+    const nextSelection = before.length + activeSuggestion.emoji.length;
+
+    pendingSelectionRef.current = {
+      start: nextSelection,
+      end: nextSelection,
+    };
+    syncDraftValue(nextValue);
+    setEmojiCompletion(null);
+    textareaRef.current?.focus();
+    return true;
+  };
 
   const handleSend = () => {
     if (!legacyApi) {
@@ -60,7 +151,18 @@ export const TelegramComposer = ({
     }
     textarea.style.height = '0px';
     textarea.style.height = `${textarea.scrollHeight}px`;
+    if (pendingSelectionRef.current) {
+      textarea.setSelectionRange(
+        pendingSelectionRef.current.start,
+        pendingSelectionRef.current.end,
+      );
+      pendingSelectionRef.current = null;
+    }
   }, [value, attachments.length, replyPreview]);
+
+  useEffect(() => {
+    updateEmojiCompletion();
+  }, [value]);
 
   useEffect(() => {
     if (voiceRecorderState === 'recording') {
@@ -269,11 +371,96 @@ export const TelegramComposer = ({
           rows={1}
           disabled={composeLocked}
           value={value}
+          aria-autocomplete="list"
+          aria-controls={emojiCompletion ? 'telegram-emoji-completion' : undefined}
+          aria-expanded={emojiCompletion ? 'true' : 'false'}
+          aria-activedescendant={
+            emojiCompletion
+              ? `telegram-emoji-completion-item-${emojiCompletion.activeIndex}`
+              : undefined
+          }
           onChange={(event) => {
-            setValue(event.target.value);
-            legacyApi?.setTelegramDraftValue(event.target.value);
+            syncDraftValue(event.target.value);
+            updateEmojiCompletion(
+              event.target.value,
+              event.target.selectionStart,
+              event.target.selectionEnd,
+            );
+          }}
+          onFocus={(event) => {
+            updateEmojiCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+            );
+          }}
+          onBlur={() => {
+            setEmojiCompletion(null);
+          }}
+          onClick={(event) => {
+            updateEmojiCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+            );
+          }}
+          onSelect={(event) => {
+            updateEmojiCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+            );
           }}
           onKeyDown={(event) => {
+            if (emojiCompletion && event.key === 'ArrowDown') {
+              event.preventDefault();
+              setEmojiCompletion((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.min(
+                        current.suggestions.length - 1,
+                        current.activeIndex + 1,
+                      ),
+                    }
+                  : current,
+              );
+              return;
+            }
+
+            if (emojiCompletion && event.key === 'ArrowUp') {
+              event.preventDefault();
+              setEmojiCompletion((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.max(0, current.activeIndex - 1),
+                    }
+                  : current,
+              );
+              return;
+            }
+
+            if (
+              emojiCompletion &&
+              ((event.key === 'Enter' &&
+                !event.shiftKey &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey) ||
+                (event.key === 'Tab' && !event.shiftKey))
+            ) {
+              event.preventDefault();
+              applyEmojiSuggestion();
+              return;
+            }
+
+            if (emojiCompletion && event.key === 'Escape') {
+              event.preventDefault();
+              setEmojiCompletion(null);
+              return;
+            }
+
             const shouldSend =
               (sendBehavior === 'enter' && event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) ||
               (sendBehavior === 'mod-enter' && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) ||
@@ -314,6 +501,53 @@ export const TelegramComposer = ({
           ➤
         </button>
       </div>
+      {emojiCompletion ? (
+        <div
+          id="telegram-emoji-completion"
+          className="telegram-emoji-completion"
+          role="listbox"
+          aria-label="Emoji suggestions"
+        >
+          {emojiCompletion.suggestions.map((suggestion, index) => (
+            <button
+              key={`${suggestion.emoji}:${suggestion.canonicalAlias}:${suggestion.matchedAlias}`}
+              id={`telegram-emoji-completion-item-${index}`}
+              type="button"
+              className={`telegram-emoji-completion-item${
+                index === emojiCompletion.activeIndex ? ' active' : ''
+              }`}
+              role="option"
+              aria-selected={index === emojiCompletion.activeIndex ? 'true' : 'false'}
+              onMouseEnter={() => {
+                setEmojiCompletion((current) =>
+                  current
+                    ? {
+                        ...current,
+                        activeIndex: index,
+                      }
+                    : current,
+                );
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                applyEmojiSuggestion(suggestion);
+              }}
+            >
+              <span className="telegram-emoji-completion-value">{suggestion.emoji}</span>
+              <span className="telegram-emoji-completion-copy">
+                <span className="telegram-emoji-completion-alias">
+                  :{suggestion.canonicalAlias}:
+                </span>
+                {suggestion.matchedAlias !== suggestion.canonicalAlias ? (
+                  <span className="telegram-emoji-completion-match">
+                    via :{suggestion.matchedAlias}
+                  </span>
+                ) : null}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>,
     target,
   );

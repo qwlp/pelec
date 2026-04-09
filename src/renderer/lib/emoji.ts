@@ -21,6 +21,11 @@ type TelegramEmojiAliasEntry = {
   canonicalAlias: string;
 };
 
+type TelegramEmojiScoredSuggestion = TelegramEmojiSuggestion & {
+  aliasLength: number;
+  score: number;
+};
+
 const TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS = 7;
 const TELEGRAM_EMOJI_ALIAS_MAX_LENGTH = 32;
 const TELEGRAM_EMOJI_ALIAS_PATTERN = /^[a-z0-9_+-]+$/i;
@@ -114,6 +119,78 @@ TELEGRAM_EMOJI_INDEX.sort(
     left.canonicalAlias.localeCompare(right.canonicalAlias),
 );
 
+const splitTelegramEmojiAlias = (alias: string): string[] =>
+  alias
+    .toLowerCase()
+    .split(/[_+-]+/)
+    .filter(Boolean);
+
+const compactTelegramEmojiAlias = (alias: string): string =>
+  alias.toLowerCase().replace(/[_+-]+/g, '');
+
+const getTelegramEmojiAliasScore = (
+  alias: string,
+  canonicalAlias: string,
+  normalizedQuery: string,
+): number | null => {
+  const normalizedAlias = alias.toLowerCase();
+  const normalizedCanonicalAlias = canonicalAlias.toLowerCase();
+  const compactAlias = compactTelegramEmojiAlias(normalizedAlias);
+  const compactQuery = compactTelegramEmojiAlias(normalizedQuery);
+
+  if (normalizedAlias === normalizedQuery) {
+    return 0;
+  }
+
+  if (normalizedCanonicalAlias === normalizedQuery) {
+    return 1;
+  }
+
+  if (normalizedAlias.startsWith(normalizedQuery)) {
+    return 10;
+  }
+
+  if (normalizedCanonicalAlias.startsWith(normalizedQuery)) {
+    return 11;
+  }
+
+  if (compactQuery && compactAlias === compactQuery) {
+    return 20;
+  }
+
+  if (compactQuery && compactAlias.startsWith(compactQuery)) {
+    return 21;
+  }
+
+  const aliasWords = splitTelegramEmojiAlias(normalizedAlias);
+  const canonicalWords =
+    normalizedAlias === normalizedCanonicalAlias
+      ? aliasWords
+      : splitTelegramEmojiAlias(normalizedCanonicalAlias);
+
+  if (aliasWords.some((word) => word.startsWith(normalizedQuery))) {
+    return 30;
+  }
+
+  if (canonicalWords.some((word) => word.startsWith(normalizedQuery))) {
+    return 31;
+  }
+
+  if (normalizedAlias.includes(normalizedQuery)) {
+    return 40;
+  }
+
+  if (normalizedCanonicalAlias.includes(normalizedQuery)) {
+    return 41;
+  }
+
+  if (compactQuery && compactAlias.includes(compactQuery)) {
+    return 50;
+  }
+
+  return null;
+};
+
 export const getTelegramEmojiTokenMatch = (
   value: string,
   selectionStart: number | null,
@@ -142,12 +219,21 @@ export const getTelegramEmojiTokenMatch = (
     return null;
   }
 
+  const tokenBody = token.slice(1);
+  const firstTrailingColonIndex = tokenBody.indexOf(':');
+  if (firstTrailingColonIndex >= 0 && firstTrailingColonIndex !== tokenBody.length - 1) {
+    return null;
+  }
+
   const previousChar = tokenStart > 0 ? value[tokenStart - 1] : '';
   if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
     return null;
   }
 
-  const query = value.slice(tokenStart + 1, selectionStart).toLowerCase();
+  let query = value.slice(tokenStart + 1, selectionStart).toLowerCase();
+  if (query.endsWith(':')) {
+    query = query.slice(0, -1);
+  }
   const suffix = value.slice(selectionStart, tokenEnd);
   if (
     query.length < 1 ||
@@ -157,7 +243,7 @@ export const getTelegramEmojiTokenMatch = (
     return null;
   }
 
-  if (suffix && !TELEGRAM_EMOJI_ALIAS_PATTERN.test(suffix)) {
+  if (suffix && suffix !== ':' && !TELEGRAM_EMOJI_ALIAS_PATTERN.test(suffix)) {
     return null;
   }
 
@@ -174,40 +260,50 @@ export const buildTelegramEmojiSuggestions = (query: string): TelegramEmojiSugge
   }
 
   const normalizedQuery = query.toLowerCase();
-  const matches = TELEGRAM_EMOJI_INDEX.filter((entry) =>
-    entry.alias.startsWith(normalizedQuery),
-  );
-  matches.sort((left, right) => {
-    const leftPriority =
-      left.alias === normalizedQuery ? 0 : left.canonicalAlias === normalizedQuery ? 1 : 2;
-    const rightPriority =
-      right.alias === normalizedQuery ? 0 : right.canonicalAlias === normalizedQuery ? 1 : 2;
-    return (
-      leftPriority - rightPriority ||
-      left.alias.length - right.alias.length ||
-      left.canonicalAlias.length - right.canonicalAlias.length ||
-      left.canonicalAlias.localeCompare(right.canonicalAlias)
+  const suggestionsByKey = new Map<string, TelegramEmojiScoredSuggestion>();
+
+  for (const entry of TELEGRAM_EMOJI_INDEX) {
+    const score = getTelegramEmojiAliasScore(
+      entry.alias,
+      entry.canonicalAlias,
+      normalizedQuery,
     );
-  });
-
-  const suggestions: TelegramEmojiSuggestion[] = [];
-  const seen = new Set<string>();
-
-  for (const match of matches) {
-    const key = `${match.emoji}:${match.canonicalAlias}`;
-    if (seen.has(key)) {
+    if (score === null) {
       continue;
     }
-    seen.add(key);
-    suggestions.push({
-      emoji: match.emoji,
-      canonicalAlias: match.canonicalAlias,
-      matchedAlias: match.alias,
-    });
-    if (suggestions.length >= TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS) {
-      break;
+
+    const key = `${entry.emoji}:${entry.canonicalAlias}`;
+    const nextSuggestion: TelegramEmojiScoredSuggestion = {
+      emoji: entry.emoji,
+      canonicalAlias: entry.canonicalAlias,
+      matchedAlias: entry.alias,
+      aliasLength: entry.alias.length,
+      score,
+    };
+    const currentSuggestion = suggestionsByKey.get(key);
+
+    if (
+      !currentSuggestion ||
+      nextSuggestion.score < currentSuggestion.score ||
+      (nextSuggestion.score === currentSuggestion.score &&
+        (nextSuggestion.aliasLength < currentSuggestion.aliasLength ||
+          (nextSuggestion.aliasLength === currentSuggestion.aliasLength &&
+            (nextSuggestion.canonicalAlias.length < currentSuggestion.canonicalAlias.length ||
+              (nextSuggestion.canonicalAlias.length === currentSuggestion.canonicalAlias.length &&
+                nextSuggestion.canonicalAlias.localeCompare(currentSuggestion.canonicalAlias) < 0)))))
+    ) {
+      suggestionsByKey.set(key, nextSuggestion);
     }
   }
 
-  return suggestions;
+  return [...suggestionsByKey.values()]
+    .sort(
+      (left, right) =>
+        left.score - right.score ||
+        left.aliasLength - right.aliasLength ||
+        left.canonicalAlias.length - right.canonicalAlias.length ||
+        left.canonicalAlias.localeCompare(right.canonicalAlias),
+    )
+    .slice(0, TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS)
+    .map(({ aliasLength: _aliasLength, score: _score, ...suggestion }) => suggestion);
 };

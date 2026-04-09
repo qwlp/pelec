@@ -13,6 +13,14 @@ describe('getTelegramEmojiTokenMatch', () => {
     });
   });
 
+  it('detects a completed emoji alias token at the cursor', () => {
+    expect(getTelegramEmojiTokenMatch(':sob:', 5, 5)).toEqual({
+      query: 'sob',
+      tokenStart: 0,
+      tokenEnd: 5,
+    });
+  });
+
   it('ignores invalid inline tokens', () => {
     expect(getTelegramEmojiTokenMatch('hello:a', 7, 7)).toBeNull();
   });
@@ -33,5 +41,13 @@ describe('buildTelegramEmojiSuggestions', () => {
         }),
       ]),
     );
+  });
+
+  it('matches compact aliases without requiring separator characters', () => {
+    expect(buildTelegramEmojiSuggestions('smilingfacewithtear')[0]).toEqual({
+      emoji: '🥲',
+      canonicalAlias: 'smiling_face_with_tear',
+      matchedAlias: 'smiling_face_with_tear',
+    });
   });
 });

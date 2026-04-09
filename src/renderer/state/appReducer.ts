@@ -1,5 +1,52 @@
 import type { AppAction, AppState } from './types';
 
+const areSnapshotValuesEqual = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) {
+    return true;
+  }
+
+  if (left == null || right == null) {
+    return false;
+  }
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+
+    for (let index = 0; index < left.length; index += 1) {
+      if (!areSnapshotValuesEqual(left[index], right[index])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  if (typeof left !== 'object' || typeof right !== 'object') {
+    return false;
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]);
+
+  for (const key of keys) {
+    const leftValue = leftRecord[key];
+    const rightValue = rightRecord[key];
+
+    if (leftValue === undefined && rightValue === undefined) {
+      continue;
+    }
+
+    if (!areSnapshotValuesEqual(leftValue, rightValue)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 export const initialAppState: AppState = {
   activity: {
     current: null,
@@ -88,6 +135,10 @@ export const appReducer = (state: AppState, action: AppAction): AppState => {
         },
       };
     case 'legacy/snapshot':
+      if (areSnapshotValuesEqual(state.legacy.snapshot, action.snapshot)) {
+        return state;
+      }
+
       return {
         ...state,
         appShell: {

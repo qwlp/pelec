@@ -257,4 +257,59 @@ describe('TelegramComposer', () => {
     fireEvent.drop(shell, dragData);
     expect(legacyApi.appendTelegramFiles).toHaveBeenCalledWith([file]);
   });
+
+  it('completes the active emoji suggestion before sending on Enter', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    fireEvent.change(textarea as HTMLTextAreaElement, {
+      target: { value: ':sob:' },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(5, 5);
+    fireEvent.select(textarea as HTMLTextAreaElement);
+
+    await waitFor(() => {
+      expect(target.textContent).toContain(':sob:');
+    });
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('😭');
+    });
+    expect(legacyApi.sendTelegramMessage).not.toHaveBeenCalled();
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('😭');
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Enter' });
+
+    expect(legacyApi.sendTelegramMessage).toHaveBeenCalledTimes(1);
+  });
 });
