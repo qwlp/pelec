@@ -21,6 +21,7 @@ describe('appReducer', () => {
         telegram: {
           activeChatTitle: 'Telegram',
           activeChatId: null,
+          activeChatCanSend: true,
           chatListMinimized: false,
           contextMenu: {
             messageId: null,

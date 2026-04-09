@@ -64,10 +64,13 @@ export const createTelegramVoiceNoteNodes = ({
   const wave = document.createElement('div');
   wave.className = 'telegram-voice-wave';
   const barHeights = buildVoiceBarHeights(messageId);
+  const waveBars: HTMLSpanElement[] = [];
   for (const height of barHeights) {
     const bar = document.createElement('span');
+    bar.className = 'telegram-voice-wave-bar';
     bar.style.height = `${height}%`;
     wave.append(bar);
+    waveBars.push(bar);
   }
   const duration = document.createElement('div');
   duration.className = 'telegram-voice-duration';
@@ -76,11 +79,35 @@ export const createTelegramVoiceNoteNodes = ({
   audio.className = 'telegram-message-audio';
   audio.preload = 'none';
   let loading = false;
+  let durationSeconds = message.audioDurationSeconds ?? 0;
+
+  const updateWaveState = (): void => {
+    const totalDuration =
+      Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : durationSeconds;
+    const progress = totalDuration > 0 ? Math.min(1, audio.currentTime / totalDuration) : 0;
+    const activeBarCount =
+      totalDuration > 0
+        ? Math.min(
+            waveBars.length,
+            Math.max(
+              !audio.paused && !audio.ended || audio.currentTime > 0 ? 1 : 0,
+              Math.ceil(progress * waveBars.length),
+            ),
+          )
+        : 0;
+    const playheadBarIndex = activeBarCount > 0 ? Math.min(waveBars.length - 1, activeBarCount - 1) : -1;
+
+    waveBars.forEach((bar, index) => {
+      bar.classList.toggle('is-played', index < activeBarCount);
+      bar.classList.toggle('is-current', index === playheadBarIndex);
+    });
+  };
 
   const updatePlayState = (): void => {
     const isPlaying = !audio.paused && !audio.ended;
     playButton.classList.toggle('playing', isPlaying);
     voiceNote.classList.toggle('playing', isPlaying);
+    updateWaveState();
   };
 
   if (message.audioUrl) {
@@ -109,6 +136,7 @@ export const createTelegramVoiceNoteNodes = ({
       return false;
     }
     message.audioUrl = resolved;
+    duration.textContent = formatDuration(durationSeconds);
     const source = document.createElement('source');
     source.src = resolved;
     source.type = 'audio/ogg;codecs=opus';
@@ -129,6 +157,10 @@ export const createTelegramVoiceNoteNodes = ({
       audio.pause();
       return;
     }
+    if (audio.ended) {
+      audio.currentTime = 0;
+      updateWaveState();
+    }
     void audio.play().catch(() => {
       // Keep control state if autoplay policy blocks immediate playback.
     });
@@ -136,15 +168,22 @@ export const createTelegramVoiceNoteNodes = ({
 
   audio.addEventListener('play', updatePlayState);
   audio.addEventListener('pause', updatePlayState);
-  audio.addEventListener('ended', updatePlayState);
+  audio.addEventListener('ended', () => {
+    updatePlayState();
+    updateWaveState();
+  });
   audio.addEventListener('loadedmetadata', () => {
     if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
       return;
     }
+    durationSeconds = audio.duration;
     duration.textContent = formatDuration(audio.duration);
+    updateWaveState();
   });
+  audio.addEventListener('timeupdate', updateWaveState);
 
   voiceNote.replaceChildren(playButton, wave, duration);
+  updateWaveState();
   return [voiceNote, audio];
 };
 

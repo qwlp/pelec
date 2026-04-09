@@ -6,6 +6,7 @@ import { describeTelegramCall } from './calls';
 import { renderTelegramRichText } from './links';
 import {
   buildVoiceBarHeights,
+  extractLocalMediaPath,
   formatTelegramDocumentKind,
   formatTelegramDocumentSubtitle,
   getTelegramMeaningfulAlbumCaption,
@@ -27,6 +28,7 @@ import {
 interface TelegramMessageListProps {
   activeChatId: string | null;
   activeChatTitle: string;
+  canDropFiles?: boolean;
   legacyApi: LegacyAppBridgeApi | null;
   loadError: string | null;
   messages: LegacyRenderableTelegramMessage[];
@@ -138,44 +140,178 @@ const getLastTelegramMessageElement = (target: HTMLElement | null): HTMLElement 
 const TelegramResolvedVideo = ({
   activeChatId,
   message,
+  variant = 'single',
 }: {
   activeChatId: string | null;
   message: ChatMessage;
+  variant?: 'album' | 'single';
 }) => {
+  type TelegramVideoPlaybackState =
+    | 'idle'
+    | 'loading'
+    | 'ready'
+    | 'failed-download'
+    | 'failed-decode';
+
   const [videoUrl, setVideoUrl] = useState(message.videoUrl ?? '');
-  const [loading, setLoading] = useState(false);
+  const [playbackState, setPlaybackState] = useState<TelegramVideoPlaybackState>(
+    message.videoUrl ? 'ready' : 'idle',
+  );
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const pendingPlayRef = useRef(false);
+  const playbackStateRef = useRef<TelegramVideoPlaybackState>(message.videoUrl ? 'ready' : 'idle');
+
+  const shellClassName =
+    variant === 'album' ? 'telegram-message-album-video-shell' : 'telegram-message-video-shell';
+  const videoClassName = variant === 'album' ? 'telegram-message-album-video' : 'telegram-message-video';
+  const label = 'Telegram video';
+
+  const setNextPlaybackState = (nextState: TelegramVideoPlaybackState): void => {
+    playbackStateRef.current = nextState;
+    setPlaybackState(nextState);
+  };
 
   useEffect(() => {
     setVideoUrl(message.videoUrl ?? '');
+    playbackStateRef.current = message.videoUrl ? 'ready' : 'idle';
+    setPlaybackState(message.videoUrl ? 'ready' : 'idle');
   }, [message.videoUrl]);
 
-  if (videoUrl) {
+  useEffect(() => {
+    pendingPlayRef.current = false;
+    setVideoUrl(message.videoUrl ?? '');
+    playbackStateRef.current = message.videoUrl ? 'ready' : 'idle';
+    setPlaybackState(message.videoUrl ? 'ready' : 'idle');
+  }, [message.id]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!videoUrl || !video) {
+      return;
+    }
+
+    video.load();
+    if (!pendingPlayRef.current) {
+      return;
+    }
+
+    pendingPlayRef.current = false;
+    void video.play().catch(() => {
+      // Keep controls visible if autoplay is blocked after explicit click.
+    });
+  }, [videoUrl]);
+
+  const failDecode = (): void => {
+    pendingPlayRef.current = false;
+    setNextPlaybackState('failed-decode');
+  };
+
+  if (videoUrl && playbackState !== 'failed-decode') {
     return (
-      <video className="telegram-message-video" src={videoUrl} controls preload="metadata" playsInline />
+      <div className={`${shellClassName} loaded`}>
+        <video
+          ref={videoRef}
+          className={videoClassName}
+          controls
+          preload="metadata"
+          playsInline
+          aria-label={label}
+          onPlay={() => setNextPlaybackState('ready')}
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            if (video.videoWidth < 1 || video.videoHeight < 1) {
+              failDecode();
+              return;
+            }
+            setNextPlaybackState('ready');
+          }}
+          onCanPlay={(event) => {
+            const video = event.currentTarget;
+            const haveMetadata = window.HTMLMediaElement?.HAVE_METADATA ?? 1;
+            if (
+              video.readyState >= haveMetadata &&
+              (video.videoWidth < 1 || video.videoHeight < 1)
+            ) {
+              failDecode();
+            }
+          }}
+          onError={() => {
+            failDecode();
+          }}
+          onStalled={(event) => {
+            const noSource = window.HTMLMediaElement?.NETWORK_NO_SOURCE ?? 3;
+            if (event.currentTarget.networkState === noSource) {
+              failDecode();
+            }
+          }}
+          onAbort={() => {
+            if (playbackStateRef.current === 'ready') {
+              failDecode();
+            }
+          }}
+        >
+          <source
+            src={videoUrl}
+            type={message.videoMimeType && message.videoMimeType !== 'video/quicktime' ? message.videoMimeType : undefined}
+          />
+        </video>
+      </div>
     );
   }
 
+  const shellStateClassName =
+    playbackState === 'loading' ? ' loading' : playbackState.startsWith('failed') ? ' failed' : '';
+  const triggerLabel =
+    playbackState === 'loading'
+      ? 'Loading video…'
+      : playbackState === 'failed-decode'
+        ? 'Open video externally'
+        : playbackState === 'failed-download'
+          ? 'Retry video'
+          : 'Load video';
+
   return (
-    <button
-      type="button"
-      className="telegram-message-video-shell"
-      disabled={loading || !activeChatId}
-      onClick={async (event) => {
-        event.stopPropagation();
-        if (!activeChatId || loading) {
-          return;
-        }
-        setLoading(true);
-        const resolved = await window.pelec.resolveConnectorVideoUrl('telegram', activeChatId, message.id);
-        setLoading(false);
-        if (resolved) {
+    <div className={`${shellClassName}${shellStateClassName}`}>
+      <button
+        type="button"
+        className="telegram-message-video-trigger"
+        disabled={playbackState === 'loading' || !activeChatId}
+        onClick={async (event) => {
+          event.stopPropagation();
+          if (playbackState === 'failed-decode') {
+            const localPath = videoUrl ? extractLocalMediaPath(videoUrl) : undefined;
+            if (!localPath) {
+              setNextPlaybackState('failed-download');
+              return;
+            }
+            await window.pelec.openPath(localPath);
+            return;
+          }
+
+          if (!activeChatId || playbackState === 'loading') {
+            return;
+          }
+
+          pendingPlayRef.current = true;
+          setNextPlaybackState('loading');
+          const resolved = await window.pelec.resolveConnectorVideoUrl('telegram', activeChatId, message.id);
+          if (!resolved) {
+            pendingPlayRef.current = false;
+            setNextPlaybackState('failed-download');
+            return;
+          }
+
           message.videoUrl = resolved;
           setVideoUrl(resolved);
-        }
-      }}
-    >
-      {loading ? 'Loading video…' : 'Load video'}
-    </button>
+          setNextPlaybackState('ready');
+        }}
+      >
+        <span className="telegram-message-video-trigger-icon">
+          {playbackState === 'failed-decode' ? '!' : '▶'}
+        </span>
+        <span className="telegram-message-video-trigger-text">{triggerLabel}</span>
+      </button>
+    </div>
   );
 };
 
@@ -227,14 +363,52 @@ const TelegramVoiceNote = ({
   onPlayingChange(value: boolean): void;
   playing: boolean;
 }) => {
-  const [durationLabel, setDurationLabel] = useState(formatDuration(message.audioDurationSeconds ?? 0));
+  const [durationSeconds, setDurationSeconds] = useState(message.audioDurationSeconds ?? 0);
+  const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
+  const [durationLabelOverride, setDurationLabelOverride] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingPlayRef = useRef(false);
 
   useEffect(() => {
-    setDurationLabel(formatDuration(message.audioDurationSeconds ?? 0));
-  }, [message.audioDurationSeconds]);
+    setDurationSeconds(message.audioDurationSeconds ?? 0);
+    setCurrentTimeSeconds(0);
+    setDurationLabelOverride(null);
+  }, [message.audioDurationSeconds, message.id]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audioUrl || !audio) {
+      return;
+    }
+
+    audio.load();
+    if (!pendingPlayRef.current) {
+      return;
+    }
+
+    pendingPlayRef.current = false;
+    void audio.play().catch(() => {
+      onPlayingChange(false);
+    });
+  }, [audioUrl, onPlayingChange]);
+
+  useEffect(() => {
+    pendingPlayRef.current = false;
+  }, [activeChatId, message.id]);
 
   const waveBars = useMemo(() => buildVoiceBarHeights(message.id), [message.id]);
+  const effectiveDurationSeconds = durationSeconds > 0 ? durationSeconds : (message.audioDurationSeconds ?? 0);
+  const progress =
+    effectiveDurationSeconds > 0 ? Math.min(1, currentTimeSeconds / effectiveDurationSeconds) : 0;
+  const activeBarCount =
+    effectiveDurationSeconds > 0
+      ? Math.min(
+          waveBars.length,
+          Math.max(playing || currentTimeSeconds > 0 ? 1 : 0, Math.ceil(progress * waveBars.length)),
+        )
+      : 0;
+  const playheadBarIndex = activeBarCount > 0 ? Math.min(waveBars.length - 1, activeBarCount - 1) : -1;
+  const durationLabel = durationLabelOverride ?? formatDuration(effectiveDurationSeconds);
 
   return (
     <>
@@ -250,33 +424,37 @@ const TelegramVoiceNote = ({
               return;
             }
 
-            let resolvedAudioUrl = audioUrl;
-            if (!resolvedAudioUrl) {
-              if (!activeChatId || loading) {
-                return;
-              }
-              onLoadingChange(true);
-              const resolved = await window.pelec.resolveConnectorAudioUrl('telegram', activeChatId, message.id);
-              onLoadingChange(false);
-              if (!resolved) {
-                setDurationLabel('retry');
-                return;
-              }
-              message.audioUrl = resolved;
-              resolvedAudioUrl = resolved;
-              onAudioUrlChange(resolved);
-            }
-
             if (!audio.paused && !audio.ended) {
+              pendingPlayRef.current = false;
               audio.pause();
               return;
             }
 
-            if (audio.src !== resolvedAudioUrl) {
-              audio.src = resolvedAudioUrl;
-              audio.load();
+            if (!audioUrl) {
+              if (!activeChatId || loading) {
+                return;
+              }
+              pendingPlayRef.current = true;
+              onLoadingChange(true);
+              const resolved = await window.pelec.resolveConnectorAudioUrl('telegram', activeChatId, message.id);
+              onLoadingChange(false);
+              if (!resolved) {
+                pendingPlayRef.current = false;
+                setDurationLabelOverride('retry');
+                return;
+              }
+              setDurationLabelOverride(null);
+              message.audioUrl = resolved;
+              onAudioUrlChange(resolved);
+              return;
             }
 
+            if (audio.ended) {
+              audio.currentTime = 0;
+              setCurrentTimeSeconds(0);
+            }
+
+            pendingPlayRef.current = false;
             void audio.play().catch(() => {
               onPlayingChange(false);
             });
@@ -287,7 +465,13 @@ const TelegramVoiceNote = ({
         </button>
         <div className="telegram-voice-wave" aria-hidden="true">
           {waveBars.map((height, index) => (
-            <span key={`${message.id}:${index}`} style={{ height: `${height}%` }} />
+            <span
+              key={`${message.id}:${index}`}
+              className={`telegram-voice-wave-bar${index < activeBarCount ? ' is-played' : ''}${
+                index === playheadBarIndex ? ' is-current' : ''
+              }`}
+              style={{ height: `${height}%` }}
+            />
           ))}
         </div>
         <div className="telegram-voice-duration">{durationLabel}</div>
@@ -299,11 +483,21 @@ const TelegramVoiceNote = ({
         src={audioUrl || undefined}
         onPlay={() => onPlayingChange(true)}
         onPause={() => onPlayingChange(false)}
-        onEnded={() => onPlayingChange(false)}
+        onEnded={() => {
+          onPlayingChange(false);
+          setCurrentTimeSeconds(0);
+        }}
         onLoadedMetadata={(event) => {
           const nextDuration = event.currentTarget.duration;
           if (Number.isFinite(nextDuration) && nextDuration > 0) {
-            setDurationLabel(formatDuration(nextDuration));
+            setDurationSeconds(nextDuration);
+            setDurationLabelOverride(null);
+          }
+        }}
+        onTimeUpdate={(event) => {
+          const nextCurrentTime = event.currentTarget.currentTime;
+          if (Number.isFinite(nextCurrentTime) && nextCurrentTime >= 0) {
+            setCurrentTimeSeconds(nextCurrentTime);
           }
         }}
       />
@@ -331,6 +525,24 @@ const TelegramCallCard = ({
       </div>
     </section>
   );
+};
+
+const TelegramMessageAvatar = ({
+  label,
+  imageUrl,
+}: {
+  label: string;
+  imageUrl?: string;
+}) => {
+  if (imageUrl) {
+    return (
+      <div className="telegram-avatar small">
+        <img src={imageUrl} alt={`${label} avatar`} loading="lazy" />
+      </div>
+    );
+  }
+
+  return <div className="telegram-avatar small fallback">{label.slice(0, 2).toUpperCase()}</div>;
 };
 
 const TelegramDocumentCard = ({
@@ -476,7 +688,7 @@ const TelegramMessageRow = memo(
           {!isContinuation ? (
             <div className="telegram-message-header">
               {primaryMessage.outgoing ? null : (
-                <div className="telegram-avatar small fallback">{senderLabel.slice(0, 2).toUpperCase()}</div>
+                <TelegramMessageAvatar label={senderLabel} imageUrl={primaryMessage.senderAvatarUrl} />
               )}
               <div className="telegram-message-meta">{primaryMessage.outgoing ? 'You' : senderLabel}</div>
             </div>
@@ -502,7 +714,7 @@ const TelegramMessageRow = memo(
               {renderMessages.map((albumMessage) =>
                 albumMessage.videoUrl || albumMessage.hasVideo ? (
                   <div key={albumMessage.id} className="telegram-message-album-item is-video">
-                    <TelegramResolvedVideo activeChatId={activeChatId} message={albumMessage} />
+                    <TelegramResolvedVideo activeChatId={activeChatId} message={albumMessage} variant="album" />
                   </div>
                 ) : (
                   <button
@@ -633,6 +845,7 @@ const TelegramMessageRow = memo(
 export const TelegramMessageList = ({
   activeChatId,
   activeChatTitle,
+  canDropFiles = false,
   legacyApi,
   loadError,
   messages,
@@ -640,6 +853,7 @@ export const TelegramMessageList = ({
   selectedMessageId,
   target,
 }: TelegramMessageListProps) => {
+  const [dragDepth, setDragDepth] = useState(0);
   const bundles = useMemo(() => buildMessageBundles(messages), [messages]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const pendingAutoScrollRef = useRef<string | null>(null);
@@ -802,23 +1016,104 @@ export const TelegramMessageList = ({
       return;
     }
 
+    const scrollContainer = getTelegramMessageScrollContainer(target);
     const activateMessagesPane = () => {
+      if (scrollContainer && scrollContainer.tabIndex < 0) {
+        scrollContainer.focus({ preventScroll: true });
+      }
       legacyApi.activateTelegramMessagesPane();
     };
 
     target.addEventListener('mousedown', activateMessagesPane);
     target.addEventListener('focusin', activateMessagesPane);
+    if (scrollContainer && scrollContainer !== target) {
+      scrollContainer.addEventListener('mousedown', activateMessagesPane);
+      scrollContainer.addEventListener('focusin', activateMessagesPane);
+    }
     return () => {
       target.removeEventListener('mousedown', activateMessagesPane);
       target.removeEventListener('focusin', activateMessagesPane);
+      if (scrollContainer && scrollContainer !== target) {
+        scrollContainer.removeEventListener('mousedown', activateMessagesPane);
+        scrollContainer.removeEventListener('focusin', activateMessagesPane);
+      }
     };
   }, [legacyApi, target]);
+
+  useEffect(() => {
+    const scrollContainer = getTelegramMessageScrollContainer(target);
+    if (!scrollContainer || !legacyApi || !canDropFiles) {
+      setDragDepth(0);
+      return;
+    }
+
+    const hasDraggedFiles = (dataTransfer: DataTransfer | null): boolean => {
+      if (!dataTransfer) {
+        return false;
+      }
+
+      if (Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file')) {
+        return true;
+      }
+
+      return Array.from(dataTransfer.files ?? []).length > 0;
+    };
+
+    const handleDragEnter = (event: DragEvent) => {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      setDragDepth((depth) => depth + 1);
+    };
+
+    const handleDragOver = (event: DragEvent) => {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    };
+
+    const handleDragLeave = (event: DragEvent) => {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      setDragDepth((depth) => Math.max(0, depth - 1));
+    };
+
+    const handleDrop = (event: DragEvent) => {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+      event.preventDefault();
+      setDragDepth(0);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length > 0) {
+        legacyApi.appendTelegramFiles(files);
+      }
+    };
+
+    scrollContainer.addEventListener('dragenter', handleDragEnter);
+    scrollContainer.addEventListener('dragover', handleDragOver);
+    scrollContainer.addEventListener('dragleave', handleDragLeave);
+    scrollContainer.addEventListener('drop', handleDrop);
+
+    return () => {
+      scrollContainer.removeEventListener('dragenter', handleDragEnter);
+      scrollContainer.removeEventListener('dragover', handleDragOver);
+      scrollContainer.removeEventListener('dragleave', handleDragLeave);
+      scrollContainer.removeEventListener('drop', handleDrop);
+    };
+  }, [canDropFiles, legacyApi, target]);
 
   if (!target) {
     return null;
   }
 
   const scrollContainer = getTelegramMessageScrollContainer(target);
+  const dragActive = dragDepth > 0 && canDropFiles;
 
   return (
     <>
@@ -855,6 +1150,12 @@ export const TelegramMessageList = ({
             >
               Jump to latest
             </button>,
+            scrollContainer,
+          )
+        : null}
+      {scrollContainer && dragActive
+        ? createPortal(
+            <div className="telegram-message-drop-target">Drop files to attach</div>,
             scrollContainer,
           )
         : null}

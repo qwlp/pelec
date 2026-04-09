@@ -44,10 +44,29 @@ export type TdMessage = {
   content?: unknown;
 };
 
+export type TdChatPermissions = {
+  can_send_basic_messages?: boolean;
+};
+
+export type TdChatMemberStatus = {
+  _: string;
+  is_member?: boolean;
+  permissions?: TdChatPermissions;
+  rights?: {
+    can_post_messages?: boolean;
+  };
+};
+
 export type TdChat = {
   id?: number;
   title?: string;
-  type?: { _: string };
+  type?: {
+    _: string;
+    basic_group_id?: number;
+    supergroup_id?: number;
+    is_channel?: boolean;
+  };
+  permissions?: TdChatPermissions;
   unread_count?: number;
   last_message?: {
     content?: unknown;
@@ -59,6 +78,19 @@ export type TdChat = {
     use_default_mute_for?: boolean;
     mute_for?: number;
   };
+};
+
+export type TdBasicGroup = {
+  id?: number;
+  status?: TdChatMemberStatus;
+};
+
+export type TdSupergroup = {
+  id?: number;
+  status?: TdChatMemberStatus;
+  is_channel?: boolean;
+  is_broadcast_group?: boolean;
+  is_direct_messages_group?: boolean;
 };
 
 export type TdScopeNotificationSettings = {

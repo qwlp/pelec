@@ -246,12 +246,20 @@ export const bootLegacyApp = async (
   const useReactTelegramMessageList = !!bridge;
 
   const mapVimPaneToAppPane = (): LegacyAppSnapshot['activePane'] => {
-    if (state.mode === 'insert' && state.activeNetwork === 'telegram') {
+    if (
+      state.mode === 'insert' &&
+      state.activeNetwork === 'telegram' &&
+      activeTelegramChatCanSend()
+    ) {
       return 'telegram-composer';
     }
 
     return state.vimPane;
   };
+
+  const activeTelegramChatCanSend = (): boolean =>
+    !!state.activeTelegramChatId &&
+    (state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId)?.canSend ?? true);
 
   const getSnapshot = (): LegacyAppSnapshot => ({
     authPrompt: authPromptState
@@ -283,6 +291,7 @@ export const bootLegacyApp = async (
         'Telegram',
       ),
       activeChatId: state.activeTelegramChatId,
+      activeChatCanSend: activeTelegramChatCanSend(),
       chatListMinimized: state.telegramChatListMinimized,
       contextMenu: { ...telegramContextMenuState },
       draftText: telegramComposeInput.value,
@@ -306,8 +315,10 @@ export const bootLegacyApp = async (
       selectedMessageId: state.selectedTelegramMessageId,
       voiceRecorderState: telegramVoiceRecorder
         ? 'recording'
-        : telegramVoiceRecorderBusy
-          ? 'busy'
+        : telegramVoiceRecorderBusyReason === 'preparing'
+          ? 'preparing'
+          : telegramVoiceRecorderBusyReason === 'sending'
+            ? 'sending'
           : getSupportedTelegramVoiceRecordingMimeType()
             ? 'idle'
             : 'unsupported',
@@ -1286,6 +1297,7 @@ export const bootLegacyApp = async (
   const telegramComposeReplyCloseEl = nativeTelegram.querySelector<HTMLButtonElement>(
     '#telegram-compose-reply-close',
   );
+  const telegramComposerEl = nativeTelegram.querySelector<HTMLElement>('.telegram-composer');
   const telegramComposeAttachment = nativeTelegram.querySelector<HTMLElement>('#telegram-compose-attachment');
   const telegramEmojiCompletionEl = nativeTelegram.querySelector<HTMLElement>(
     '#telegram-emoji-completion',
@@ -1308,6 +1320,7 @@ export const bootLegacyApp = async (
     !telegramComposeReplySenderEl ||
     !telegramComposeReplyTextEl ||
     !telegramComposeReplyCloseEl ||
+    !telegramComposerEl ||
     !telegramComposeAttachment ||
     !telegramEmojiCompletionEl ||
     !telegramAttachButton ||
@@ -2116,6 +2129,11 @@ export const bootLegacyApp = async (
       statusBar.textContent = 'Wait for the message to finish sending.';
       return;
     }
+    if (!activeTelegramChatCanSend()) {
+      statusBar.textContent = 'You cannot post in this channel.';
+      render();
+      return;
+    }
     state.replyingToMessageId = message.id;
     state.replyingToSender = message.sender;
     setMode('insert');
@@ -2688,7 +2706,8 @@ export const bootLegacyApp = async (
         a[i].lastMessageTimestamp !== b[i].lastMessageTimestamp ||
         a[i].unreadCount !== b[i].unreadCount ||
         a[i].avatarUrl !== b[i].avatarUrl ||
-        a[i].isMuted !== b[i].isMuted
+        a[i].isMuted !== b[i].isMuted ||
+        a[i].canSend !== b[i].canSend
       ) {
         return false;
       }
@@ -3005,6 +3024,9 @@ export const bootLegacyApp = async (
       const hasVisibleMessages = getVisibleTelegramMessages(chatId).length > 0;
       const shouldShowLoadingIndicator = showLoadingState || !hasVisibleMessages;
       state.activeTelegramChatId = chatId;
+      if (state.mode === 'insert' && !activeTelegramChatCanSend()) {
+        state.mode = 'normal';
+      }
       state.telegramMessagesLoading = shouldShowLoadingIndicator;
       state.telegramLoadError = null;
       if (showLoadingState) {
@@ -3170,6 +3192,10 @@ export const bootLegacyApp = async (
           state.telegramMessages = [];
           telegramMessagesVersion += 1;
           state.selectedTelegramMessageId = null;
+        }
+
+        if (state.mode === 'insert' && !activeTelegramChatCanSend()) {
+          state.mode = 'normal';
         }
 
         if (chatsChanged) {
@@ -3447,7 +3473,13 @@ export const bootLegacyApp = async (
   };
 
   const setMode = (mode: AppMode): void => {
-    const normalizedMode = mode === 'command' ? 'normal' : mode;
+    const requestedMode = mode === 'command' ? 'normal' : mode;
+    const normalizedMode =
+      requestedMode === 'insert' &&
+      state.activeNetwork === 'telegram' &&
+      !activeTelegramChatCanSend()
+        ? 'normal'
+        : requestedMode;
     state.mode = normalizedMode;
     if (normalizedMode === 'normal') {
       telegramComposeInput.blur();
@@ -3620,24 +3652,38 @@ export const bootLegacyApp = async (
   let telegramVoiceRecorderStream: MediaStream | null = null;
   let telegramVoiceRecorderChunks: Blob[] = [];
   let telegramVoiceRecorderMimeType: string | null = null;
-  let telegramVoiceRecorderPointerId: number | null = null;
   let telegramVoiceRecorderStartAt = 0;
   let telegramVoiceRecorderStartToken = 0;
   let telegramVoiceRecorderBusy = false;
+  let telegramVoiceRecorderBusyReason: 'preparing' | 'sending' | null = null;
+  let telegramVoiceRecorderCancelled = false;
   let telegramVoiceRecorderStopping = false;
 
   const updateTelegramVoiceRecorderUi = (): void => {
     const isRecording = telegramVoiceRecorder !== null;
+    const isPreparing = telegramVoiceRecorderBusyReason === 'preparing';
+    const isSending = telegramVoiceRecorderBusyReason === 'sending';
     telegramVoiceRecordButton.classList.toggle('recording', isRecording);
-    telegramVoiceRecordButton.disabled = telegramVoiceRecorderBusy && !isRecording;
+    telegramVoiceRecordButton.disabled = isPreparing || isSending;
     telegramVoiceRecordButton.textContent = isRecording ? '■' : '●';
     telegramVoiceRecordButton.setAttribute(
       'aria-label',
-      isRecording ? 'Release to send voice note' : 'Hold to record a voice note',
+      isRecording
+        ? 'Stop and send voice note'
+        : isPreparing
+          ? 'Preparing microphone'
+          : isSending
+            ? 'Sending voice note'
+            : 'Record a voice note',
     );
     telegramVoiceRecordButton.title = isRecording
-      ? 'Release to send voice note'
-      : 'Hold to record a voice note';
+      ? 'Stop and send voice note'
+      : isPreparing
+        ? 'Preparing microphone'
+        : isSending
+          ? 'Sending voice note'
+          : 'Record a voice note';
+    emitSnapshotChange();
   };
 
   const cleanupTelegramVoiceRecorderStream = (): void => {
@@ -3651,33 +3697,38 @@ export const bootLegacyApp = async (
     telegramVoiceRecorder = null;
     telegramVoiceRecorderChunks = [];
     telegramVoiceRecorderMimeType = null;
-    telegramVoiceRecorderPointerId = null;
     telegramVoiceRecorderStartAt = 0;
     telegramVoiceRecorderBusy = false;
+    telegramVoiceRecorderBusyReason = null;
+    telegramVoiceRecorderCancelled = false;
     telegramVoiceRecorderStopping = false;
     cleanupTelegramVoiceRecorderStream();
     updateTelegramVoiceRecorderUi();
   };
 
   const markTelegramVoiceRecorderStopped = (): {
+    cancelled: boolean;
     chunks: Blob[];
     mimeType: string | null;
     durationMs: number;
   } => {
     const chunks = [...telegramVoiceRecorderChunks];
     const mimeType = telegramVoiceRecorderMimeType;
+    const cancelled = telegramVoiceRecorderCancelled;
     const durationMs = Date.now() - telegramVoiceRecorderStartAt;
 
     telegramVoiceRecorder = null;
     telegramVoiceRecorderChunks = [];
     telegramVoiceRecorderMimeType = null;
-    telegramVoiceRecorderPointerId = null;
     telegramVoiceRecorderStartAt = 0;
+    telegramVoiceRecorderBusyReason = null;
+    telegramVoiceRecorderCancelled = false;
     telegramVoiceRecorderStopping = false;
     cleanupTelegramVoiceRecorderStream();
     updateTelegramVoiceRecorderUi();
 
     return {
+      cancelled,
       chunks,
       mimeType,
       durationMs,
@@ -3709,6 +3760,7 @@ export const bootLegacyApp = async (
     }
 
     telegramVoiceRecorderBusy = true;
+    telegramVoiceRecorderBusyReason = 'sending';
     updateTelegramVoiceRecorderUi();
     statusBar.textContent = 'Processing voice note...';
 
@@ -3750,7 +3802,6 @@ export const bootLegacyApp = async (
   const stopTelegramVoiceRecording = (): void => {
     const recorder = telegramVoiceRecorder;
     if (!recorder) {
-      telegramVoiceRecorderPointerId = null;
       return;
     }
 
@@ -3759,7 +3810,6 @@ export const bootLegacyApp = async (
     }
 
     telegramVoiceRecorderStopping = true;
-    telegramVoiceRecorderPointerId = null;
 
     try {
       recorder.requestData();
@@ -3770,17 +3820,24 @@ export const bootLegacyApp = async (
     recorder.stop();
   };
 
-  const handleTelegramVoiceRecordingRelease = (pointerId?: number): void => {
-    if (
-      telegramVoiceRecorderPointerId === null ||
-      (pointerId !== undefined && telegramVoiceRecorderPointerId !== pointerId)
-    ) {
+  const cancelTelegramVoiceRecording = (): void => {
+    telegramVoiceRecorderStartToken += 1;
+    if (telegramVoiceRecorder) {
+      telegramVoiceRecorderCancelled = true;
+      stopTelegramVoiceRecording();
+      statusBar.textContent = 'Voice note canceled.';
+      render();
       return;
     }
-    stopTelegramVoiceRecording();
+
+    if (telegramVoiceRecorderBusyReason === 'preparing' || telegramVoiceRecorderBusy) {
+      resetTelegramVoiceRecorder();
+      statusBar.textContent = 'Voice note canceled.';
+      render();
+    }
   };
 
-  const startTelegramVoiceRecording = async (pointerId: number): Promise<void> => {
+  const startTelegramVoiceRecording = async (): Promise<void> => {
     if (telegramVoiceRecorderBusy || telegramVoiceRecorder) {
       return;
     }
@@ -3796,7 +3853,8 @@ export const bootLegacyApp = async (
     }
 
     telegramVoiceRecorderBusy = true;
-    telegramVoiceRecorderPointerId = pointerId;
+    telegramVoiceRecorderBusyReason = 'preparing';
+    telegramVoiceRecorderCancelled = false;
     telegramVoiceRecorderStartToken += 1;
     const startToken = telegramVoiceRecorderStartToken;
     updateTelegramVoiceRecorderUi();
@@ -3804,15 +3862,10 @@ export const bootLegacyApp = async (
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (
-        telegramVoiceRecorderPointerId !== pointerId ||
-        telegramVoiceRecorderStartToken !== startToken
-      ) {
+      if (telegramVoiceRecorderStartToken !== startToken) {
         stream.getTracks().forEach((track) => {
           track.stop();
         });
-        telegramVoiceRecorderBusy = false;
-        updateTelegramVoiceRecorderUi();
         return;
       }
 
@@ -3831,6 +3884,9 @@ export const bootLegacyApp = async (
 
       recorder.addEventListener('stop', () => {
         const stopped = markTelegramVoiceRecorderStopped();
+        if (stopped.cancelled) {
+          return;
+        }
         const recordedMimeType = stopped.mimeType ?? mimeType;
         const blob = new Blob(stopped.chunks, {
           type: recordedMimeType,
@@ -3846,11 +3902,12 @@ export const bootLegacyApp = async (
 
       recorder.start();
       telegramVoiceRecorderBusy = false;
+      telegramVoiceRecorderBusyReason = null;
       updateTelegramVoiceRecorderUi();
-      statusBar.textContent = 'Recording voice note... release to send.';
+      statusBar.textContent = 'Recording voice note. Press stop to send or cancel to discard.';
     } catch (error) {
       telegramVoiceRecorderBusy = false;
-      telegramVoiceRecorderPointerId = null;
+      telegramVoiceRecorderBusyReason = null;
       updateTelegramVoiceRecorderUi();
       statusBar.textContent =
         error instanceof Error ? `Microphone failed: ${error.message}` : 'Microphone access failed.';
@@ -3859,6 +3916,11 @@ export const bootLegacyApp = async (
 
   const sendTelegramMessage = async (): Promise<void> => {
     if (state.activeNetwork !== 'telegram' || !state.activeTelegramChatId) {
+      return;
+    }
+    if (!activeTelegramChatCanSend()) {
+      statusBar.textContent = 'You cannot post in this channel.';
+      render();
       return;
     }
 
@@ -4670,6 +4732,9 @@ export const bootLegacyApp = async (
   };
 
   const focusTelegramComposer = (): void => {
+    if (!activeTelegramChatCanSend()) {
+      return;
+    }
     telegramComposeInput.focus();
   };
 
@@ -5211,13 +5276,17 @@ export const bootLegacyApp = async (
     );
 
     const telegramStatus = getStatusByNetwork('telegram');
+    const canSendToActiveChat = activeTelegramChatCanSend();
 
     if (telegramStatus.authState !== 'authenticated') {
+      telegramComposerEl.style.display = 'none';
       renderTelegramChatEmptyState('<div class="telegram-empty">Telegram is not authenticated yet. Click Start Auth.</div>');
       renderTelegramMessageEmptyState(`<div class="telegram-empty">${telegramStatus.details}</div>`);
       telegramChatTitleEl.textContent = 'Telegram';
       return;
     }
+
+    telegramComposerEl.style.display = canSendToActiveChat ? 'grid' : 'none';
 
     if (useReactTelegramMessageList) {
       const activeChatChanged = lastRenderedTelegramChatId !== state.activeTelegramChatId;
@@ -5903,56 +5972,21 @@ export const bootLegacyApp = async (
     void appendTelegramFiles(files, 'selected');
   });
 
-  telegramVoiceRecordButton.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) {
+  telegramVoiceRecordButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (telegramVoiceRecorder) {
+      stopTelegramVoiceRecording();
       return;
     }
-    event.preventDefault();
-    telegramVoiceRecordButton.setPointerCapture(event.pointerId);
-    void startTelegramVoiceRecording(event.pointerId);
-  });
-
-  telegramVoiceRecordButton.addEventListener('pointerup', (event) => {
-    event.preventDefault();
-    if (telegramVoiceRecordButton.hasPointerCapture(event.pointerId)) {
-      telegramVoiceRecordButton.releasePointerCapture(event.pointerId);
-    }
-    handleTelegramVoiceRecordingRelease(event.pointerId);
-  });
-
-  telegramVoiceRecordButton.addEventListener('pointercancel', (event) => {
-    if (telegramVoiceRecordButton.hasPointerCapture(event.pointerId)) {
-      telegramVoiceRecordButton.releasePointerCapture(event.pointerId);
-    }
-    handleTelegramVoiceRecordingRelease(event.pointerId);
-  });
-
-  telegramVoiceRecordButton.addEventListener('lostpointercapture', () => {
-    handleTelegramVoiceRecordingRelease();
+    void startTelegramVoiceRecording();
   });
 
   telegramVoiceRecordButton.addEventListener('contextmenu', (event) => {
     event.preventDefault();
   });
 
-  document.addEventListener(
-    'pointerup',
-    (event) => {
-      handleTelegramVoiceRecordingRelease(event.pointerId);
-    },
-    true,
-  );
-
-  document.addEventListener(
-    'pointercancel',
-    (event) => {
-      handleTelegramVoiceRecordingRelease(event.pointerId);
-    },
-    true,
-  );
-
   window.addEventListener('blur', () => {
-    handleTelegramVoiceRecordingRelease();
+    cancelTelegramVoiceRecording();
   });
 
   document.addEventListener('selectionchange', () => {
@@ -6471,11 +6505,14 @@ export const bootLegacyApp = async (
     },
     setTelegramDraftValue,
     setTelegramSearchQuery,
-    startTelegramVoiceRecording: (pointerId) => {
-      void startTelegramVoiceRecording(pointerId);
+    startTelegramVoiceRecording: () => {
+      void startTelegramVoiceRecording();
     },
-    stopTelegramVoiceRecording: (pointerId) => {
-      handleTelegramVoiceRecordingRelease(pointerId);
+    stopTelegramVoiceRecording: () => {
+      stopTelegramVoiceRecording();
+    },
+    cancelTelegramVoiceRecording: () => {
+      cancelTelegramVoiceRecording();
     },
     toggleSendBehavior: toggleRuntimeSendBehavior,
     setMode,

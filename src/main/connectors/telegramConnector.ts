@@ -60,12 +60,15 @@ import {
 } from './telegram/uploads';
 import type {
   AuthorizationState,
+  TdBasicGroup,
   PreparedUploadFile,
   PreparedVoiceNoteUpload,
   TdChat,
   TdClient,
+  TdChatMemberStatus,
   TdMessage,
   TdScopeNotificationSettings,
+  TdSupergroup,
   TdUpdateWithChatContext,
 } from './telegram/types';
 
@@ -319,6 +322,7 @@ export class TelegramConnector implements Connector {
             lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
             isMuted,
+            canSend: await this.canSendToChat(client, chat),
           } as ChatSummary;
         }),
       );
@@ -2055,5 +2059,107 @@ export class TelegramConnector implements Connector {
       return 'notificationSettingsScopeGroupChats';
     }
     return null;
+  }
+
+  private async canSendToChat(client: TdClient, chat: TdChat): Promise<boolean> {
+    const chatType = chat.type?._;
+    if (chatType === 'chatTypePrivate' || chatType === 'chatTypeSecret') {
+      return true;
+    }
+
+    const nonAdminCanSend = chat.permissions?.can_send_basic_messages === true;
+
+    if (chatType === 'chatTypeBasicGroup') {
+      if (chat.permissions && typeof chat.permissions.can_send_basic_messages === 'boolean') {
+        return nonAdminCanSend;
+      }
+
+      const basicGroupId = chat.type?.basic_group_id;
+      if (!basicGroupId) {
+        return true;
+      }
+
+      try {
+        const group = await this.invokeWithTimeout<TdBasicGroup>(
+          client,
+          {
+            _: 'getBasicGroup',
+            basic_group_id: basicGroupId,
+          },
+          'getBasicGroup',
+        );
+        return this.canSendForMemberStatus(group.status, false);
+      } catch {
+        return true;
+      }
+    }
+
+    if (chatType === 'chatTypeSupergroup') {
+      const isChannel = chat.type?.is_channel === true;
+      if (!isChannel && chat.permissions && typeof chat.permissions.can_send_basic_messages === 'boolean') {
+        return nonAdminCanSend;
+      }
+      if (isChannel && nonAdminCanSend) {
+        return true;
+      }
+
+      const supergroupId = chat.type?.supergroup_id;
+      if (!supergroupId) {
+        return !isChannel;
+      }
+
+      try {
+        const supergroup = await this.invokeWithTimeout<TdSupergroup>(
+          client,
+          {
+            _: 'getSupergroup',
+            supergroup_id: supergroupId,
+          },
+          'getSupergroup',
+        );
+        return this.canSendForMemberStatus(
+          supergroup.status,
+          isChannel || supergroup.is_channel === true || supergroup.is_broadcast_group === true,
+          supergroup.is_direct_messages_group === true,
+        );
+      } catch {
+        return !isChannel;
+      }
+    }
+
+    return true;
+  }
+
+  private canSendForMemberStatus(
+    status: TdChatMemberStatus | undefined,
+    isChannel: boolean,
+    isDirectMessagesGroup = false,
+  ): boolean {
+    const kind = status?._;
+    if (!kind) {
+      return true;
+    }
+
+    if (kind === 'chatMemberStatusCreator') {
+      return status.is_member !== false;
+    }
+
+    if (kind === 'chatMemberStatusAdministrator') {
+      return !isChannel || isDirectMessagesGroup || status.rights?.can_post_messages === true;
+    }
+
+    if (kind === 'chatMemberStatusMember') {
+      return !isChannel || isDirectMessagesGroup;
+    }
+
+    if (kind === 'chatMemberStatusRestricted') {
+      return (
+        status.is_member === true &&
+        (!isChannel || isDirectMessagesGroup) &&
+        status.permissions?.can_send_basic_messages === true
+      );
+    }
+
+    return false;
   }
 }

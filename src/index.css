@@ -885,10 +885,49 @@ textarea {
   outline: none;
 }
 
+.telegram-message-drop-target {
+  position: absolute;
+  inset: 16px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(255, 124, 193, 0.62);
+  background: rgba(30, 20, 44, 0.92);
+  color: #ffe6f1;
+  font-size: calc(12px * var(--font-scale));
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
 .telegram-compose-react-root,
 .telegram-composer-react-shell {
   display: grid;
   gap: 10px;
+}
+
+.telegram-composer-react-shell {
+  position: relative;
+}
+
+.telegram-composer-react-shell.drag-active {
+  outline: 1px dashed rgba(255, 124, 193, 0.62);
+  outline-offset: 4px;
+}
+
+.telegram-drop-target {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(255, 124, 193, 0.62);
+  background: rgba(30, 20, 44, 0.92);
+  color: #ffe6f1;
+  font-size: calc(12px * var(--font-scale));
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
 }
 
 .telegram-message-day-divider {
@@ -1457,12 +1496,12 @@ textarea {
   padding: 10px 12px;
   margin-bottom: 8px;
   border: 1px solid rgba(255, 124, 193, 0.2);
-  background: linear-gradient(180deg, rgba(18, 14, 28, 0.95), rgba(13, 10, 22, 0.95));
+  background: transparent;
 }
 
 .telegram-call-card.is-connected {
   border-color: rgba(109, 222, 179, 0.24);
-  background: linear-gradient(180deg, rgba(15, 28, 26, 0.9), rgba(12, 20, 22, 0.92));
+  background: transparent;
 }
 
 .telegram-call-card.is-missed {
@@ -1470,11 +1509,11 @@ textarea {
 }
 
 .telegram-message-item.outgoing .telegram-call-card.is-connected {
-  background: linear-gradient(180deg, rgba(46, 90, 76, 0.24), rgba(26, 55, 48, 0.2));
+  background: transparent;
 }
 
 .telegram-message-item.outgoing .telegram-call-card.is-missed {
-  background: linear-gradient(180deg, rgba(255, 79, 167, 0.18), rgba(255, 79, 167, 0.08));
+  background: transparent;
   border-color: rgba(255, 124, 193, 0.36);
 }
 
@@ -1521,25 +1560,28 @@ textarea {
 
 .telegram-voice-note {
   display: grid;
-  grid-template-columns: 42px 1fr auto;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 42px;
-  background: linear-gradient(180deg, rgba(21, 17, 31, 0.92), rgba(16, 13, 24, 0.92));
-  border: 1px solid rgba(255, 124, 193, 0.2);
-  padding: 7px 9px;
-  margin-bottom: 8px;
-  max-width: min(340px, 100%);
+  width: 100%;
+  max-width: min(440px, 100%);
+  padding: 2px 0 0;
+  margin-bottom: 4px;
+  border: 0;
+  background: transparent;
+  border-radius: 0 !important;
+  box-shadow: none;
+  justify-self: stretch;
 }
 
 .telegram-message-item.outgoing .telegram-voice-note {
-  background: linear-gradient(180deg, rgba(255, 79, 167, 0.18), rgba(255, 79, 167, 0.1));
-  border-color: rgba(255, 124, 193, 0.34);
+  background: transparent;
 }
 
 .telegram-voice-play {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border: 0;
   border-radius: 999px !important;
   background: linear-gradient(180deg, #ff7bbd, #db6288);
@@ -1600,22 +1642,41 @@ textarea {
   height: 18px;
   display: flex;
   align-items: end;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
+  padding: 0 2px;
 }
 
-.telegram-voice-wave span {
-  width: 2px;
-  background: #ff8ab5;
-  opacity: 0.72;
-}
-
-.telegram-voice-note.playing .telegram-voice-wave span {
-  animation: voice-pulse 1100ms ease-in-out infinite;
+.telegram-voice-wave-bar {
+  width: 3px;
+  min-height: 3px;
+  border-radius: 999px !important;
+  background: rgba(210, 194, 226, 0.28);
   opacity: 1;
+  transition:
+    background 140ms ease,
+    box-shadow 140ms ease,
+    opacity 140ms ease,
+    transform 140ms ease;
 }
 
-.telegram-voice-note.loading .telegram-voice-wave span {
+.telegram-voice-wave-bar.is-played {
+  background: linear-gradient(180deg, #ff9fcb, #ff5faf);
+  box-shadow: 0 0 10px rgba(255, 95, 175, 0.22);
+}
+
+.telegram-voice-wave-bar.is-current {
+  background: linear-gradient(180deg, #ffe3f1, #ffb7d7);
+  box-shadow:
+    0 0 0 1px rgba(255, 242, 249, 0.14),
+    0 0 14px rgba(255, 158, 209, 0.38);
+}
+
+.telegram-voice-note.playing .telegram-voice-wave-bar.is-current {
+  animation: voice-playhead 900ms ease-in-out infinite;
+}
+
+.telegram-voice-note.loading .telegram-voice-wave-bar {
   opacity: 0.35;
 }
 
@@ -1627,6 +1688,10 @@ textarea {
   letter-spacing: 0.02em;
   min-width: 36px;
   text-align: right;
+}
+
+.telegram-voice-note.playing .telegram-voice-duration {
+  color: #f8eefc;
 }
 
 .telegram-message-audio-meta {
@@ -1753,13 +1818,13 @@ textarea {
   transform: translateY(1px);
 }
 
-@keyframes voice-pulse {
+@keyframes voice-playhead {
   0%,
   100% {
-    transform: scaleY(0.55);
+    transform: scaleY(0.82);
   }
   50% {
-    transform: scaleY(1);
+    transform: scaleY(1.08);
   }
 }
 
@@ -1987,9 +2052,44 @@ textarea {
   word-break: break-word;
 }
 
+.telegram-voice-recorder-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 130, 156, 0.2);
+  background: rgba(67, 31, 45, 0.54);
+  color: #ffe6ee;
+}
+
+.telegram-voice-recorder-banner.state-preparing,
+.telegram-voice-recorder-banner.state-sending {
+  border-color: rgba(255, 190, 224, 0.14);
+  background: rgba(36, 28, 51, 0.64);
+  color: var(--ink-main);
+}
+
+.telegram-voice-recorder-label {
+  font-size: calc(12px * var(--font-scale));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.telegram-voice-recorder-cancel {
+  border: 1px solid rgba(255, 148, 168, 0.34);
+  background: rgba(255, 116, 148, 0.12);
+  color: #ffe6ee;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: calc(11px * var(--font-scale));
+}
+
 .telegram-compose-input {
-  border: 1px solid rgba(255, 124, 193, 0.28);
-  background: #1b162a;
+  border: 1px solid rgba(255, 190, 224, 0.12);
+  background: rgba(27, 22, 42, 0.72);
   color: #ebdef6;
   padding: 12px 14px;
   font-size: calc(14px * var(--font-scale));
@@ -1997,6 +2097,14 @@ textarea {
   resize: none;
   overflow-y: hidden;
   line-height: 1.4;
+  box-shadow: none;
+}
+
+.telegram-compose-input:focus,
+.telegram-compose-input:focus-visible {
+  outline: none;
+  border-color: rgba(255, 190, 224, 0.12);
+  box-shadow: none;
 }
 
 .telegram-compose-input::placeholder {
@@ -2033,6 +2141,8 @@ textarea {
   box-shadow: 0 0 0 1px rgba(255, 118, 141, 0.2);
 }
 
+.telegram-attach-button:disabled,
+.telegram-send-button:disabled,
 .telegram-voice-record-button:disabled {
   opacity: 0.7;
   cursor: wait;

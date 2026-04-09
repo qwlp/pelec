@@ -308,7 +308,19 @@ export const inferTelegramLocalMimeType = (
     return 'audio/wav';
   }
   if (lowerPath.endsWith('.webm')) {
-    return 'audio/webm';
+    return 'video/webm';
+  }
+  if (lowerPath.endsWith('.mp4')) {
+    return 'video/mp4';
+  }
+  if (lowerPath.endsWith('.mov')) {
+    return 'video/quicktime';
+  }
+  if (lowerPath.endsWith('.m4v')) {
+    return 'video/x-m4v';
+  }
+  if (lowerPath.endsWith('.ogv')) {
+    return 'video/ogg';
   }
   return 'image/jpeg';
 };

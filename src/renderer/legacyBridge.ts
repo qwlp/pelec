@@ -50,6 +50,7 @@ export type LegacyRenderableTelegramMessage = ChatMessage & { pendingState?: 'se
 export interface LegacyTelegramSnapshot {
   activeChatTitle: string;
   activeChatId: string | null;
+  activeChatCanSend: boolean;
   chatListMinimized: boolean;
   contextMenu: LegacyTelegramContextMenuState;
   filteredChats: ChatSummary[];
@@ -66,7 +67,7 @@ export interface LegacyTelegramSnapshot {
   searchQuery: string;
   selectedChatId: string | null;
   selectedMessageId: string | null;
-  voiceRecorderState: 'idle' | 'recording' | 'busy' | 'unsupported';
+  voiceRecorderState: 'idle' | 'preparing' | 'recording' | 'sending' | 'unsupported';
 }
 
 export interface LegacyAppSnapshot {
@@ -121,8 +122,9 @@ export interface LegacyAppBridgeApi {
   setTelegramSearchQuery(query: string): void;
   setTelegramDraftValue(value: string): void;
   sendTelegramMessage(): void;
-  startTelegramVoiceRecording(pointerId: number): void;
-  stopTelegramVoiceRecording(pointerId?: number): void;
+  startTelegramVoiceRecording(pointerId?: number): void;
+  stopTelegramVoiceRecording(): void;
+  cancelTelegramVoiceRecording(): void;
   toggleSendBehavior(): 'enter' | 'mod-enter';
   setMode(mode: AppMode): void;
   startAuth(): void;

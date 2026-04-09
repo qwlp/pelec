@@ -11,6 +11,7 @@ const buildContext = () => {
     activateSelection: vi.fn(),
     appendTelegramFiles: vi.fn(),
     cancelAuthPrompt: vi.fn(),
+    cancelTelegramVoiceRecording: vi.fn(),
     clearTelegramReply: vi.fn(),
     closeTelegramContextMenu: vi.fn(),
     closeTelegramForwardMenu: vi.fn(),
@@ -34,6 +35,7 @@ const buildContext = () => {
       telegram: {
         activeChatTitle: 'Telegram',
         activeChatId: 'chat-1',
+        activeChatCanSend: true,
         chatListMinimized: false,
         contextMenu: {
           messageId: null,
@@ -164,6 +166,22 @@ describe('dispatchKeyboardEvent', () => {
     const handled = dispatchKeyboardEvent(event, context, state);
 
     expect(handled).toBe(true);
+    expect(legacyApi.moveSelection).toHaveBeenCalledWith(1);
+  });
+
+  it('re-activates the telegram message pane before moving message selection', () => {
+    const { context, legacyApi, state } = buildContext();
+    context.activePane = 'telegram-messages';
+    const event = new window.KeyboardEvent('keydown', {
+      key: 'j',
+      bubbles: true,
+      cancelable: true,
+    });
+
+    const handled = dispatchKeyboardEvent(event, context, state);
+
+    expect(handled).toBe(true);
+    expect(legacyApi.activateTelegramMessagesPane).toHaveBeenCalledTimes(1);
     expect(legacyApi.moveSelection).toHaveBeenCalledWith(1);
   });
 

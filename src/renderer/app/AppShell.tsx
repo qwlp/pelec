@@ -102,6 +102,10 @@ export const AppShell = () => {
   );
 
   const telegramSnapshot = selectLegacyTelegramSnapshot(state);
+  const showTelegramComposer =
+    state.appShell.activeNetwork === 'telegram' &&
+    telegramSnapshot !== null &&
+    telegramSnapshot.activeChatCanSend;
   const showTelegramChatList =
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
@@ -207,10 +211,10 @@ export const AppShell = () => {
   }, [state.appShell.legacyReady]);
 
   useEffect(() => {
-    if (state.appShell.activeNetwork === 'telegram' && state.appShell.mode === 'insert') {
+    if (showTelegramComposer && state.appShell.mode === 'insert') {
       telegramComposerInputRef.current?.focus();
     }
-  }, [state.appShell.activeNetwork, state.appShell.mode]);
+  }, [showTelegramComposer, state.appShell.mode]);
 
   useEffect(() => {
     if (
@@ -294,7 +298,7 @@ export const AppShell = () => {
       <div
         className={`modern-workspace${
           showTelegramChatList ? ' react-telegram-chat-list' : ''
-        }${state.appShell.activeNetwork === 'telegram' && telegramSnapshot ? ' react-telegram-composer' : ''}`}
+        }${showTelegramComposer ? ' react-telegram-composer' : ''}`}
       >
         <WebviewHost>
           <LegacyWorkspaceAdapter bridge={bridge} />
@@ -319,6 +323,7 @@ export const AppShell = () => {
           <TelegramMessageList
             activeChatId={telegramSnapshot.activeChatId}
             activeChatTitle={telegramSnapshot.activeChatTitle}
+            canDropFiles={telegramSnapshot.activeChatCanSend}
             legacyApi={legacyApi}
             loadError={telegramSnapshot.messageLoadError}
             messages={telegramSnapshot.messages}
@@ -331,9 +336,10 @@ export const AppShell = () => {
             target={telegramMessageTarget}
           />
         ) : null}
-        {state.appShell.activeNetwork === 'telegram' && telegramSnapshot ? (
+        {showTelegramComposer ? (
           <TelegramComposer
             attachments={telegramSnapshot.pendingAttachments}
+            canSend={telegramSnapshot.activeChatCanSend}
             draftText={telegramSnapshot.draftText}
             inputRef={telegramComposerInputRef}
             legacyApi={legacyApi}

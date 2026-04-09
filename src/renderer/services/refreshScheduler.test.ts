@@ -28,6 +28,19 @@ describe('refreshScheduler', () => {
     ).toBe(30000);
   });
 
+  it('does not schedule a timed refresh for a visible unfocused window', () => {
+    expect(
+      resolveRefreshDelay({
+        activeNetwork: 'telegram',
+        authState: 'authenticated',
+        focused: false,
+        mode: 'native',
+        network: 'telegram',
+        visible: true,
+      }),
+    ).toBeNull();
+  });
+
   it('refreshes active messages only when active and foregrounded', () => {
     expect(
       shouldRefreshActiveMessages({

@@ -6,20 +6,37 @@ import { TelegramMessageList } from './TelegramMessageList';
 
 describe('TelegramMessageList', () => {
   let cleanupDom: (() => void) | undefined;
+  let originalAudioPlay: (() => Promise<void>) | undefined;
+  let originalAudioLoad: (() => void) | undefined;
 
   beforeEach(() => {
     cleanupDom = installDom();
+    originalAudioPlay = window.HTMLMediaElement?.prototype.play;
+    originalAudioLoad = window.HTMLMediaElement?.prototype.load;
     window.pelec = {
       resolveConnectorAudioUrl: vi.fn(),
       resolveConnectorVideoUrl: vi.fn(),
       copyConnectorDocument: vi.fn(),
       downloadConnectorDocument: vi.fn(),
+      openPath: vi.fn(),
     } as unknown as typeof window.pelec;
   });
 
   afterEach(async () => {
     cleanup();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    if (window.HTMLMediaElement && originalAudioPlay) {
+      Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+        configurable: true,
+        value: originalAudioPlay,
+      });
+    }
+    if (window.HTMLMediaElement && originalAudioLoad) {
+      Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
+        configurable: true,
+        value: originalAudioLoad,
+      });
+    }
     cleanupDom?.();
     cleanupDom = undefined;
   });
@@ -61,8 +78,12 @@ describe('TelegramMessageList', () => {
   });
 
   it('activates the telegram messages pane when the chat area is clicked', () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    scrollContainer.tabIndex = -1;
     const target = document.createElement('div');
-    document.body.append(target);
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
     const legacyApi = {
       activateTelegramMessagesPane: vi.fn(),
     } as unknown as LegacyAppBridgeApi;
@@ -90,6 +111,92 @@ describe('TelegramMessageList', () => {
     fireEvent.mouseDown(target);
 
     expect(legacyApi.activateTelegramMessagesPane).toHaveBeenCalled();
+    expect(document.activeElement).toBe(scrollContainer);
+  });
+
+  it('activates the telegram messages pane when the message list surface is clicked', () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    scrollContainer.tabIndex = -1;
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+    const legacyApi = {
+      activateTelegramMessagesPane: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: '1',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 1,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    fireEvent.mouseDown(scrollContainer);
+
+    expect(legacyApi.activateTelegramMessagesPane).toHaveBeenCalled();
+    expect(document.activeElement).toBe(scrollContainer);
+  });
+
+  it('accepts dropped files anywhere in the message pane', () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+    const legacyApi = {
+      activateTelegramMessagesPane: vi.fn(),
+      appendTelegramFiles: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        canDropFiles
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: '1',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 1,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+    const dragData = {
+      dataTransfer: {
+        files: [file],
+        items: [{ kind: 'file' }],
+        dropEffect: 'none',
+      },
+    };
+
+    fireEvent.dragEnter(scrollContainer, dragData);
+    expect(scrollContainer.querySelector('.telegram-message-drop-target')).toBeTruthy();
+
+    fireEvent.drop(scrollContainer, dragData);
+    expect(legacyApi.appendTelegramFiles).toHaveBeenCalledWith([file]);
   });
 
   it('renders voice notes and calls with the migrated legacy class structure', () => {
@@ -131,6 +238,149 @@ describe('TelegramMessageList', () => {
     expect(target.querySelector('.telegram-call-card')).toBeTruthy();
     expect(target.textContent).toContain('Voice call');
     expect(target.textContent).toContain('Duration 0:05');
+  });
+
+  it('renders sender avatars in message headers when available', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: '1',
+            sender: 'Chestnuts',
+            senderAvatarUrl: 'https://example.com/chestnuts.png',
+            text: 'Hello',
+            timestamp: 1,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const avatarImage = target.querySelector<HTMLImageElement>('.telegram-message-header .telegram-avatar img');
+    expect(avatarImage?.getAttribute('src')).toBe('https://example.com/chestnuts.png');
+    expect(target.querySelector('.telegram-message-header .telegram-avatar.fallback')).toBeNull();
+  });
+
+  it('starts voice-note playback on the first click after resolving the audio url', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const play = vi.fn(() => Promise.resolve());
+    const load = vi.fn();
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+      configurable: true,
+      value: play,
+    });
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
+      configurable: true,
+      value: load,
+    });
+    const resolveConnectorAudioUrl = vi
+      .fn<typeof window.pelec.resolveConnectorAudioUrl>()
+      .mockResolvedValue('https://example.com/voice-note.ogg');
+    window.pelec.resolveConnectorAudioUrl = resolveConnectorAudioUrl;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'voice-1',
+            sender: 'Ada',
+            text: 'Voice message',
+            timestamp: 1,
+            hasAudio: true,
+            audioDurationSeconds: 1,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const playButton = target.querySelector<HTMLButtonElement>('.telegram-voice-play');
+    expect(playButton).toBeTruthy();
+
+    fireEvent.click(playButton as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(resolveConnectorAudioUrl).toHaveBeenCalledWith('telegram', 'chat-1', 'voice-1');
+      expect(load).toHaveBeenCalled();
+      expect(play).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('renders album videos with the album player after resolving the video url', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const play = vi.fn(() => Promise.resolve());
+    const load = vi.fn();
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+      configurable: true,
+      value: play,
+    });
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
+      configurable: true,
+      value: load,
+    });
+    const resolveConnectorVideoUrl = vi
+      .fn<typeof window.pelec.resolveConnectorVideoUrl>()
+      .mockResolvedValue('pelec-media://local/?path=%2Ftmp%2Fclip.mp4');
+    window.pelec.resolveConnectorVideoUrl = resolveConnectorVideoUrl;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'video-1',
+            sender: 'Ada',
+            text: 'Video',
+            timestamp: 1,
+            hasVideo: true,
+            mediaAlbumId: 'album-1',
+          },
+          {
+            id: 'image-1',
+            sender: 'Ada',
+            text: '',
+            timestamp: 2,
+            imageUrl: 'https://example.com/image.png',
+            mediaAlbumId: 'album-1',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const playButton = target.querySelector<HTMLButtonElement>('.telegram-message-album-video-shell .telegram-message-video-trigger');
+    expect(playButton).toBeTruthy();
+
+    fireEvent.click(playButton as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(resolveConnectorVideoUrl).toHaveBeenCalledWith('telegram', 'chat-1', 'video-1');
+      expect(target.querySelector('.telegram-message-album-video')).toBeTruthy();
+      expect(load).toHaveBeenCalled();
+      expect(play).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('jumps to the latest rendered message when the jump button is pressed', () => {

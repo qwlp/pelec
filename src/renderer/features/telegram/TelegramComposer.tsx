@@ -6,17 +6,26 @@ import { formatTelegramAttachmentMeta } from './media';
 
 interface TelegramComposerProps {
   attachments: PendingTelegramAttachment[];
+  canSend: boolean;
   draftText: string;
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   legacyApi: LegacyAppBridgeApi | null;
   replyPreview: LegacyTelegramReplyPreview | null;
   sendBehavior: 'enter' | 'mod-enter';
   target: HTMLElement | null;
-  voiceRecorderState: 'idle' | 'recording' | 'busy' | 'unsupported';
+  voiceRecorderState: 'idle' | 'preparing' | 'recording' | 'sending' | 'unsupported';
 }
+
+const formatRecordingDuration = (durationMs: number): string => {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
 
 export const TelegramComposer = ({
   attachments,
+  canSend,
   draftText,
   inputRef,
   legacyApi,
@@ -26,9 +35,11 @@ export const TelegramComposer = ({
   voiceRecorderState,
 }: TelegramComposerProps) => {
   const [value, setValue] = useState(draftText);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
+  const [dragDepth, setDragDepth] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const pointerIdRef = useRef<number | null>(null);
 
   const handleSend = () => {
     if (!legacyApi) {
@@ -52,31 +63,29 @@ export const TelegramComposer = ({
   }, [value, attachments.length, replyPreview]);
 
   useEffect(() => {
-    const handlePointerUp = (event: PointerEvent) => {
-      if (pointerIdRef.current === null) {
-        return;
-      }
-      legacyApi?.stopTelegramVoiceRecording(event.pointerId);
-      pointerIdRef.current = null;
-    };
+    if (voiceRecorderState === 'recording') {
+      setRecordingStartedAt((current) => current ?? Date.now());
+      return;
+    }
 
-    const handleBlur = () => {
-      if (pointerIdRef.current === null) {
-        return;
-      }
-      legacyApi?.stopTelegramVoiceRecording();
-      pointerIdRef.current = null;
-    };
+    setRecordingStartedAt(null);
+    setRecordingElapsedMs(0);
+  }, [voiceRecorderState]);
 
-    window.addEventListener('pointerup', handlePointerUp, true);
-    window.addEventListener('pointercancel', handlePointerUp, true);
-    window.addEventListener('blur', handleBlur);
+  useEffect(() => {
+    if (recordingStartedAt === null) {
+      return;
+    }
+
+    setRecordingElapsedMs(Date.now() - recordingStartedAt);
+    const timer = window.setInterval(() => {
+      setRecordingElapsedMs(Date.now() - recordingStartedAt);
+    }, 250);
+
     return () => {
-      window.removeEventListener('pointerup', handlePointerUp, true);
-      window.removeEventListener('pointercancel', handlePointerUp, true);
-      window.removeEventListener('blur', handleBlur);
+      window.clearInterval(timer);
     };
-  }, [legacyApi]);
+  }, [recordingStartedAt]);
 
   const placeholder = useMemo(() => {
     if (replyPreview) {
@@ -88,12 +97,95 @@ export const TelegramComposer = ({
     return 'Type your message here...';
   }, [attachments.length, replyPreview]);
 
-  if (!target) {
+  const isRecording = voiceRecorderState === 'recording';
+  const isPreparing = voiceRecorderState === 'preparing';
+  const isSending = voiceRecorderState === 'sending';
+  const composeLocked = isRecording || isPreparing || isSending;
+  const dragActive = dragDepth > 0 && !composeLocked;
+  const hasDraggedFiles = (dataTransfer: DataTransfer | null): boolean => {
+    if (!dataTransfer) {
+      return false;
+    }
+
+    if (Array.from(dataTransfer.items ?? []).some((item) => item.kind === 'file')) {
+      return true;
+    }
+
+    return Array.from(dataTransfer.files ?? []).length > 0;
+  };
+  const voiceStatus = useMemo(() => {
+    if (isRecording) {
+      return `Recording ${formatRecordingDuration(recordingElapsedMs)}`;
+    }
+    if (isPreparing) {
+      return 'Preparing microphone...';
+    }
+    if (isSending) {
+      return 'Sending voice note...';
+    }
+    if (voiceRecorderState === 'unsupported') {
+      return 'Voice notes are unavailable in this build.';
+    }
+    return null;
+  }, [isPreparing, isRecording, isSending, recordingElapsedMs, voiceRecorderState]);
+
+  if (!target || !canSend) {
     return null;
   }
 
   return createPortal(
-    <div className="telegram-composer-react-shell">
+    <div
+      className={`telegram-composer-react-shell${dragActive ? ' drag-active' : ''}`}
+      onDragEnter={(event) => {
+        if (composeLocked || !hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+        event.preventDefault();
+        setDragDepth((depth) => depth + 1);
+      }}
+      onDragOver={(event) => {
+        if (composeLocked || !hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(event) => {
+        if (composeLocked || !hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+        event.preventDefault();
+        setDragDepth((depth) => Math.max(0, depth - 1));
+      }}
+      onDrop={(event) => {
+        if (composeLocked || !hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+        event.preventDefault();
+        setDragDepth(0);
+        const files = Array.from(event.dataTransfer.files ?? []);
+        if (files.length > 0) {
+          legacyApi?.appendTelegramFiles(files);
+        }
+      }}
+    >
+      {dragActive ? (
+        <div className="telegram-drop-target">Drop files to attach</div>
+      ) : null}
+      {voiceStatus ? (
+        <div className={`telegram-voice-recorder-banner state-${voiceRecorderState}`}>
+          <div className="telegram-voice-recorder-label">{voiceStatus}</div>
+          {isRecording ? (
+            <button
+              type="button"
+              className="telegram-voice-recorder-cancel"
+              onClick={() => legacyApi?.cancelTelegramVoiceRecording()}
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {replyPreview ? (
         <div className="telegram-compose-reply">
           <div className="telegram-compose-reply-body">
@@ -143,6 +235,7 @@ export const TelegramComposer = ({
         <button
           type="button"
           className="telegram-attach-button"
+          disabled={composeLocked}
           onClick={() => fileInputRef.current?.click()}
           aria-label="Attach file"
         >
@@ -174,6 +267,7 @@ export const TelegramComposer = ({
           className="telegram-compose-input"
           placeholder={placeholder}
           rows={1}
+          disabled={composeLocked}
           value={value}
           onChange={(event) => {
             setValue(event.target.value);
@@ -193,27 +287,28 @@ export const TelegramComposer = ({
         />
         <button
           type="button"
-          className={`telegram-voice-record-button${voiceRecorderState === 'recording' ? ' recording' : ''}`}
-          disabled={voiceRecorderState === 'busy' || voiceRecorderState === 'unsupported'}
+          className={`telegram-voice-record-button${isRecording ? ' recording' : ''}`}
+          disabled={isPreparing || isSending || voiceRecorderState === 'unsupported'}
           aria-label={
-            voiceRecorderState === 'recording' ? 'Release to send voice note' : 'Hold to record a voice note'
+            isRecording ? 'Stop and send voice note' : 'Record a voice note'
           }
           title={
-            voiceRecorderState === 'recording' ? 'Release to send voice note' : 'Hold to record a voice note'
+            isRecording ? 'Stop and send voice note' : 'Record a voice note'
           }
-          onPointerDown={(event) => {
-            if (event.button !== 0) {
+          onClick={() => {
+            if (isRecording) {
+              legacyApi?.stopTelegramVoiceRecording();
               return;
             }
-            pointerIdRef.current = event.pointerId;
-            legacyApi?.startTelegramVoiceRecording(event.pointerId);
+            legacyApi?.startTelegramVoiceRecording();
           }}
         >
-          {voiceRecorderState === 'recording' ? '■' : '●'}
+          {isRecording ? '■' : '●'}
         </button>
         <button
           type="button"
           className="telegram-send-button"
+          disabled={composeLocked}
           onClick={handleSend}
         >
           ➤

@@ -1,7 +1,8 @@
-import type { AppMode, KeyboardActionId } from '../../shared/types';
+import type { AppMode, AppPane, KeyboardActionId } from '../../shared/types';
 import type { LegacyAppBridgeApi } from '../legacyBridge';
 
 export interface KeyboardActionContext {
+  activePane: AppPane;
   closeCommandPalette(): void;
   closeKeyboardHelp?(): void;
   legacyApi: LegacyAppBridgeApi | null;
@@ -12,6 +13,15 @@ export interface KeyboardActionContext {
   openKeyboardHelp(): void;
   setMode(mode: AppMode): void;
 }
+
+const ensureTelegramMessagePaneActive = (
+  api: LegacyAppBridgeApi,
+  activePane: AppPane,
+): void => {
+  if (activePane === 'telegram-messages') {
+    api.activateTelegramMessagesPane();
+  }
+};
 
 export const performKeyboardAction = (
   actionId: KeyboardActionId,
@@ -46,6 +56,7 @@ export const performKeyboardAction = (
       }
       return true;
     case 'moveDown':
+      ensureTelegramMessagePaneActive(api, context.activePane);
       api.moveSelection(1);
       return true;
     case 'moveLeft':
@@ -56,9 +67,11 @@ export const performKeyboardAction = (
       }
       return true;
     case 'movePageDown':
+      ensureTelegramMessagePaneActive(api, context.activePane);
       api.moveSelectionByPage(1);
       return true;
     case 'movePageUp':
+      ensureTelegramMessagePaneActive(api, context.activePane);
       api.moveSelectionByPage(-1);
       return true;
     case 'moveRight':
@@ -69,12 +82,15 @@ export const performKeyboardAction = (
       }
       return true;
     case 'moveToBottom':
+      ensureTelegramMessagePaneActive(api, context.activePane);
       api.moveSelectionToEdge('last');
       return true;
     case 'moveToTop':
+      ensureTelegramMessagePaneActive(api, context.activePane);
       api.moveSelectionToEdge('first');
       return true;
     case 'moveUp':
+      ensureTelegramMessagePaneActive(api, context.activePane);
       api.moveSelection(-1);
       return true;
     case 'nextPane':

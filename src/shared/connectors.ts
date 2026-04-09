@@ -56,6 +56,7 @@ export interface ChatSummary {
   unreadCount: number;
   avatarUrl?: string;
   isMuted?: boolean;
+  canSend?: boolean;
 }
 
 export interface ChatReaction {

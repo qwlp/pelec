@@ -51,6 +51,7 @@ export const dispatchKeyboardEvent = (
 
   const runAction = (actionId: KeyboardActionId): boolean => {
     const handled = performKeyboardAction(actionId, {
+      activePane: context.activePane,
       closeCommandPalette: context.closeCommandPalette,
       closeKeyboardHelp: context.closeKeyboardHelp,
       legacyApi: context.legacyApi,

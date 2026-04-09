@@ -147,6 +147,9 @@ describe('telegram media helpers', () => {
     );
     expect(inferTelegramLocalMimeType('/tmp/photo.webp')).toBe('image/webp');
     expect(inferTelegramLocalMimeType('/tmp/audio.ogg')).toBe('audio/ogg;codecs=opus');
+    expect(inferTelegramLocalMimeType('/tmp/video.mp4')).toBe('video/mp4');
+    expect(inferTelegramLocalMimeType('/tmp/video.webm')).toBe('video/webm');
+    expect(inferTelegramLocalMimeType('/tmp/video.mov')).toBe('video/quicktime');
     expect(inferTelegramLocalMimeType('/tmp/file.bin', 'application/pdf')).toBe('application/pdf');
   });
 });

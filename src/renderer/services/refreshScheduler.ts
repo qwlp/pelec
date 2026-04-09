@@ -21,8 +21,12 @@ export const resolveRefreshDelay = ({
     return null;
   }
 
-  if (!visible || !focused) {
+  if (!visible) {
     return 30000;
+  }
+
+  if (!focused) {
+    return null;
   }
 
   const isActive = activeNetwork === network;
