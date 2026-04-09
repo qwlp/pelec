@@ -24,6 +24,7 @@ import {
   safeLabel,
   safeText,
 } from '../../lib/format';
+import { getTelegramMessageRenderSignature } from './messageRender';
 
 interface TelegramMessageListProps {
   activeChatId: string | null;
@@ -43,9 +44,23 @@ interface MessageBundle {
   previousMessage: ChatMessage | null;
   primaryMessage: LegacyRenderableTelegramMessage;
   renderMessages: LegacyRenderableTelegramMessage[];
+  renderSignature: string;
   shouldCollapseAlbum: boolean;
   showDayDivider: boolean;
 }
+
+interface TelegramVoicePlaybackCoordinator {
+  activate(audio: HTMLAudioElement): void;
+  beginRequest(): number;
+  isCurrentRequest(requestId: number): boolean;
+  release(audio: HTMLAudioElement): void;
+  stopActive(): void;
+}
+
+const TELEGRAM_VOICE_PLAYBACK_RATES = [1, 1.5, 2] as const;
+
+const formatTelegramVoicePlaybackRate = (rate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): string =>
+  `${Number.isInteger(rate) ? rate.toFixed(0) : rate}x`;
 
 const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): MessageBundle[] => {
   const bundles: MessageBundle[] = [];
@@ -95,6 +110,13 @@ const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): Messa
       previousMessage,
       primaryMessage,
       renderMessages,
+      renderSignature: getTelegramMessageRenderSignature({
+        albumCaption,
+        previousMessage,
+        primaryMessage,
+        renderMessages,
+        shouldCollapseAlbum,
+      }),
       shouldCollapseAlbum,
       showDayDivider,
     });
@@ -105,12 +127,48 @@ const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): Messa
   return bundles;
 };
 
+const useStableMessageBundles = (
+  messages: LegacyRenderableTelegramMessage[],
+): MessageBundle[] => {
+  const bundleCacheRef = useRef<Map<string, MessageBundle>>(new Map());
+
+  return useMemo(() => {
+    const nextBundles = buildMessageBundles(messages);
+    const nextBundleCache = new Map<string, MessageBundle>();
+    const stableBundles = nextBundles.map((bundle) => {
+      const cached = bundleCacheRef.current.get(bundle.key);
+      const nextBundle =
+        cached && cached.renderSignature === bundle.renderSignature ? cached : bundle;
+      nextBundleCache.set(bundle.key, nextBundle);
+      return nextBundle;
+    });
+
+    bundleCacheRef.current = nextBundleCache;
+    return stableBundles;
+  }, [messages]);
+};
+
 const runAfterPaint = (callback: () => void): void => {
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => callback());
     return;
   }
   window.setTimeout(callback, 0);
+};
+
+const scheduleTelegramAnimationFrame = (callback: FrameRequestCallback): number => {
+  if (typeof requestAnimationFrame === 'function') {
+    return requestAnimationFrame(callback);
+  }
+  return window.setTimeout(() => callback(performance.now()), 16);
+};
+
+const cancelTelegramAnimationFrame = (frameId: number): void => {
+  if (typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(frameId);
+    return;
+  }
+  window.clearTimeout(frameId);
 };
 
 const TELEGRAM_AUTO_SCROLL_GRACE_MS = 900;
@@ -318,9 +376,15 @@ const TelegramResolvedVideo = ({
 const TelegramResolvedAudio = ({
   activeChatId,
   message,
+  playbackCoordinator,
+  playbackRate,
+  onPlaybackRateChange,
 }: {
   activeChatId: string | null;
   message: ChatMessage;
+  playbackCoordinator: TelegramVoicePlaybackCoordinator;
+  playbackRate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number];
+  onPlaybackRateChange(value: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): void;
 }) => {
   const [audioUrl, setAudioUrl] = useState(message.audioUrl ?? '');
   const [loading, setLoading] = useState(false);
@@ -340,6 +404,9 @@ const TelegramResolvedAudio = ({
       onLoadingChange={setLoading}
       onPlayingChange={setPlaying}
       playing={playing}
+      playbackCoordinator={playbackCoordinator}
+      playbackRate={playbackRate}
+      onPlaybackRateChange={onPlaybackRateChange}
     />
   );
 };
@@ -353,6 +420,9 @@ const TelegramVoiceNote = ({
   onLoadingChange,
   onPlayingChange,
   playing,
+  playbackCoordinator,
+  playbackRate,
+  onPlaybackRateChange,
 }: {
   activeChatId: string | null;
   audioUrl: string;
@@ -362,17 +432,82 @@ const TelegramVoiceNote = ({
   onLoadingChange(value: boolean): void;
   onPlayingChange(value: boolean): void;
   playing: boolean;
+  playbackCoordinator: TelegramVoicePlaybackCoordinator;
+  playbackRate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number];
+  onPlaybackRateChange(value: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): void;
 }) => {
   const [durationSeconds, setDurationSeconds] = useState(message.audioDurationSeconds ?? 0);
   const [currentTimeSeconds, setCurrentTimeSeconds] = useState(0);
   const [durationLabelOverride, setDurationLabelOverride] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const pendingPlayRef = useRef(false);
+  const pendingPlayRequestRef = useRef<number | null>(null);
+  const pendingSeekFractionRef = useRef<number | null>(null);
+  const progressFrameRef = useRef<number | null>(null);
+
+  const effectiveDurationSeconds = durationSeconds > 0 ? durationSeconds : (message.audioDurationSeconds ?? 0);
+
+  const applyPendingSeek = (): void => {
+    const audio = audioRef.current;
+    const pendingSeekFraction = pendingSeekFractionRef.current;
+    if (!audio || pendingSeekFraction === null) {
+      return;
+    }
+
+    const seekDuration =
+      Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : effectiveDurationSeconds;
+    if (!(seekDuration > 0)) {
+      return;
+    }
+
+    const nextCurrentTime = Math.min(seekDuration, Math.max(0, pendingSeekFraction * seekDuration));
+    pendingSeekFractionRef.current = null;
+    audio.currentTime = nextCurrentTime;
+    setCurrentTimeSeconds(nextCurrentTime);
+  };
+
+  const syncCurrentTimeFromAudio = (): void => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    const nextCurrentTime = audio.currentTime;
+    if (Number.isFinite(nextCurrentTime) && nextCurrentTime >= 0) {
+      setCurrentTimeSeconds((currentTime) =>
+        Math.abs(currentTime - nextCurrentTime) < 0.01 ? currentTime : nextCurrentTime,
+      );
+    }
+  };
+
+  const stopProgressLoop = (): void => {
+    if (progressFrameRef.current !== null) {
+      cancelTelegramAnimationFrame(progressFrameRef.current);
+      progressFrameRef.current = null;
+    }
+  };
+
+  const startProgressLoop = (): void => {
+    stopProgressLoop();
+
+    const tick = (): void => {
+      syncCurrentTimeFromAudio();
+      const audio = audioRef.current;
+      if (!audio || audio.paused || audio.ended) {
+        progressFrameRef.current = null;
+        return;
+      }
+      progressFrameRef.current = scheduleTelegramAnimationFrame(() => tick());
+    };
+
+    tick();
+  };
 
   useEffect(() => {
     setDurationSeconds(message.audioDurationSeconds ?? 0);
     setCurrentTimeSeconds(0);
     setDurationLabelOverride(null);
+    pendingSeekFractionRef.current = null;
+    stopProgressLoop();
   }, [message.audioDurationSeconds, message.id]);
 
   useEffect(() => {
@@ -382,22 +517,49 @@ const TelegramVoiceNote = ({
     }
 
     audio.load();
-    if (!pendingPlayRef.current) {
+    const pendingPlayRequest = pendingPlayRequestRef.current;
+    if (
+      pendingPlayRequest === null ||
+      !playbackCoordinator.isCurrentRequest(pendingPlayRequest)
+    ) {
+      pendingPlayRequestRef.current = null;
       return;
     }
 
-    pendingPlayRef.current = false;
+    pendingPlayRequestRef.current = null;
+    playbackCoordinator.activate(audio);
     void audio.play().catch(() => {
       onPlayingChange(false);
     });
-  }, [audioUrl, onPlayingChange]);
+  }, [audioUrl, onPlayingChange, playbackCoordinator]);
 
   useEffect(() => {
-    pendingPlayRef.current = false;
+    pendingPlayRequestRef.current = null;
+    pendingSeekFractionRef.current = null;
+    stopProgressLoop();
   }, [activeChatId, message.id]);
 
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    audio.playbackRate = playbackRate;
+  }, [playbackRate, audioUrl, message.id]);
+
+  useEffect(() => {
+    return () => {
+      pendingPlayRequestRef.current = null;
+      pendingSeekFractionRef.current = null;
+      stopProgressLoop();
+      const audio = audioRef.current;
+      if (audio) {
+        playbackCoordinator.release(audio);
+      }
+    };
+  }, [playbackCoordinator]);
+
   const waveBars = useMemo(() => buildVoiceBarHeights(message.id), [message.id]);
-  const effectiveDurationSeconds = durationSeconds > 0 ? durationSeconds : (message.audioDurationSeconds ?? 0);
   const progress =
     effectiveDurationSeconds > 0 ? Math.min(1, currentTimeSeconds / effectiveDurationSeconds) : 0;
   const activeBarCount =
@@ -408,7 +570,44 @@ const TelegramVoiceNote = ({
         )
       : 0;
   const playheadBarIndex = activeBarCount > 0 ? Math.min(waveBars.length - 1, activeBarCount - 1) : -1;
-  const durationLabel = durationLabelOverride ?? formatDuration(effectiveDurationSeconds);
+  const durationLabel =
+    durationLabelOverride ??
+    `${formatDuration(currentTimeSeconds)} / ${formatDuration(effectiveDurationSeconds)}`;
+
+  const seekToFraction = async (fraction: number): Promise<void> => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    const nextFraction = Math.min(1, Math.max(0, fraction));
+    pendingSeekFractionRef.current = nextFraction;
+
+    if (!audioUrl) {
+      if (!activeChatId || loading) {
+        pendingSeekFractionRef.current = null;
+        return;
+      }
+
+      pendingPlayRequestRef.current = null;
+      onLoadingChange(true);
+      const resolved = await window.pelec.resolveConnectorAudioUrl('telegram', activeChatId, message.id);
+      onLoadingChange(false);
+      if (!resolved) {
+        pendingSeekFractionRef.current = null;
+        setDurationLabelOverride('retry');
+        return;
+      }
+
+      setDurationLabelOverride(null);
+      message.audioUrl = resolved;
+      onAudioUrlChange(resolved);
+      return;
+    }
+
+    applyPendingSeek();
+    syncCurrentTimeFromAudio();
+  };
 
   return (
     <>
@@ -425,7 +624,7 @@ const TelegramVoiceNote = ({
             }
 
             if (!audio.paused && !audio.ended) {
-              pendingPlayRef.current = false;
+              pendingPlayRequestRef.current = null;
               audio.pause();
               return;
             }
@@ -434,12 +633,12 @@ const TelegramVoiceNote = ({
               if (!activeChatId || loading) {
                 return;
               }
-              pendingPlayRef.current = true;
+              pendingPlayRequestRef.current = playbackCoordinator.beginRequest();
               onLoadingChange(true);
               const resolved = await window.pelec.resolveConnectorAudioUrl('telegram', activeChatId, message.id);
               onLoadingChange(false);
               if (!resolved) {
-                pendingPlayRef.current = false;
+                pendingPlayRequestRef.current = null;
                 setDurationLabelOverride('retry');
                 return;
               }
@@ -454,7 +653,9 @@ const TelegramVoiceNote = ({
               setCurrentTimeSeconds(0);
             }
 
-            pendingPlayRef.current = false;
+            pendingPlayRequestRef.current = null;
+            playbackCoordinator.beginRequest();
+            playbackCoordinator.activate(audio);
             void audio.play().catch(() => {
               onPlayingChange(false);
             });
@@ -463,27 +664,77 @@ const TelegramVoiceNote = ({
           <span className="telegram-voice-play-icon telegram-voice-play-icon-play">▶</span>
           <span className="telegram-voice-play-icon telegram-voice-play-icon-pause" aria-hidden="true" />
         </button>
-        <div className="telegram-voice-wave" aria-hidden="true">
-          {waveBars.map((height, index) => (
-            <span
-              key={`${message.id}:${index}`}
-              className={`telegram-voice-wave-bar${index < activeBarCount ? ' is-played' : ''}${
-                index === playheadBarIndex ? ' is-current' : ''
-              }`}
-              style={{ height: `${height}%` }}
-            />
-          ))}
+        <div className="telegram-voice-main">
+          <button
+            type="button"
+            className="telegram-voice-wave"
+            disabled={loading || (!audioUrl && !activeChatId)}
+            aria-label={`Seek voice note. ${durationLabel}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              const bounds = event.currentTarget.getBoundingClientRect();
+              if (bounds.width <= 0) {
+                return;
+              }
+              const ratio = (event.clientX - bounds.left) / bounds.width;
+              void seekToFraction(ratio);
+            }}
+          >
+            {waveBars.map((height, index) => (
+              <span
+                key={`${message.id}:${index}`}
+                className={`telegram-voice-wave-bar${index < activeBarCount ? ' is-played' : ''}${
+                  index === playheadBarIndex ? ' is-current' : ''
+                }`}
+                style={{ height: `${height}%` }}
+              />
+            ))}
+          </button>
+          <div className="telegram-voice-meta">
+            <div className="telegram-voice-duration">{durationLabel}</div>
+            <div className="telegram-voice-rate-group" role="group" aria-label="Voice note speed">
+              {TELEGRAM_VOICE_PLAYBACK_RATES.map((rate) => {
+                const label = formatTelegramVoicePlaybackRate(rate);
+                return (
+                  <button
+                    key={rate}
+                    type="button"
+                    className="telegram-voice-rate"
+                    aria-label={`Playback speed ${label}`}
+                    aria-pressed={playbackRate === rate}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onPlaybackRateChange(rate);
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
-        <div className="telegram-voice-duration">{durationLabel}</div>
       </div>
       <audio
         ref={audioRef}
         className="telegram-message-audio"
         preload="none"
         src={audioUrl || undefined}
-        onPlay={() => onPlayingChange(true)}
-        onPause={() => onPlayingChange(false)}
-        onEnded={() => {
+        onPlay={(event) => {
+          playbackCoordinator.activate(event.currentTarget);
+          syncCurrentTimeFromAudio();
+          startProgressLoop();
+          onPlayingChange(true);
+        }}
+        onPause={(event) => {
+          stopProgressLoop();
+          syncCurrentTimeFromAudio();
+          playbackCoordinator.release(event.currentTarget);
+          onPlayingChange(false);
+        }}
+        onEnded={(event) => {
+          stopProgressLoop();
+          playbackCoordinator.release(event.currentTarget);
           onPlayingChange(false);
           setCurrentTimeSeconds(0);
         }}
@@ -493,6 +744,9 @@ const TelegramVoiceNote = ({
             setDurationSeconds(nextDuration);
             setDurationLabelOverride(null);
           }
+          event.currentTarget.playbackRate = playbackRate;
+          applyPendingSeek();
+          syncCurrentTimeFromAudio();
         }}
         onTimeUpdate={(event) => {
           const nextCurrentTime = event.currentTarget.currentTime;
@@ -617,11 +871,17 @@ const TelegramMessageRow = memo(
     bundle,
     isSelected,
     legacyApi,
+    playbackCoordinator,
+    playbackRate,
+    onPlaybackRateChange,
   }: {
     activeChatId: string | null;
     bundle: MessageBundle;
     isSelected: boolean;
     legacyApi: LegacyAppBridgeApi | null;
+    playbackCoordinator: TelegramVoicePlaybackCoordinator;
+    playbackRate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number];
+    onPlaybackRateChange(value: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): void;
   }) => {
     const { albumCaption, previousMessage, primaryMessage, renderMessages, shouldCollapseAlbum, showDayDivider } =
       bundle;
@@ -756,7 +1016,13 @@ const TelegramMessageRow = memo(
             <TelegramResolvedVideo activeChatId={activeChatId} message={primaryMessage} />
           ) : null}
           {!shouldCollapseAlbum && (primaryMessage.audioUrl || primaryMessage.hasAudio) ? (
-            <TelegramResolvedAudio activeChatId={activeChatId} message={primaryMessage} />
+            <TelegramResolvedAudio
+              activeChatId={activeChatId}
+              message={primaryMessage}
+              playbackCoordinator={playbackCoordinator}
+              playbackRate={playbackRate}
+              onPlaybackRateChange={onPlaybackRateChange}
+            />
           ) : null}
           {primaryMessage.stickerUrl ? (
             <img
@@ -839,7 +1105,10 @@ const TelegramMessageRow = memo(
     previous.bundle === next.bundle &&
     previous.isSelected === next.isSelected &&
     previous.activeChatId === next.activeChatId &&
-    previous.legacyApi === next.legacyApi,
+    previous.legacyApi === next.legacyApi &&
+    previous.playbackCoordinator === next.playbackCoordinator &&
+    previous.playbackRate === next.playbackRate &&
+    previous.onPlaybackRateChange === next.onPlaybackRateChange,
 );
 
 export const TelegramMessageList = ({
@@ -854,8 +1123,10 @@ export const TelegramMessageList = ({
   target,
 }: TelegramMessageListProps) => {
   const [dragDepth, setDragDepth] = useState(0);
-  const bundles = useMemo(() => buildMessageBundles(messages), [messages]);
+  const bundles = useStableMessageBundles(messages);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [voicePlaybackRate, setVoicePlaybackRate] =
+    useState<(typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]>(1);
   const pendingAutoScrollRef = useRef<string | null>(null);
   const latestScrollFollowupTimerRef = useRef<number | null>(null);
   const previousMessagesLoadingRef = useRef(messagesLoading);
@@ -865,14 +1136,51 @@ export const TelegramMessageList = ({
     expiresAt: 0,
   });
   const programmaticScrollRef = useRef(false);
+  const playbackCoordinator = useMemo<TelegramVoicePlaybackCoordinator>(() => {
+    const activeAudioRef: { current: HTMLAudioElement | null } = { current: null };
+    let latestRequestId = 0;
+
+    return {
+      activate(audio) {
+        if (activeAudioRef.current && activeAudioRef.current !== audio) {
+          activeAudioRef.current.pause();
+        }
+        activeAudioRef.current = audio;
+      },
+      beginRequest() {
+        latestRequestId += 1;
+        return latestRequestId;
+      },
+      isCurrentRequest(requestId) {
+        return latestRequestId === requestId;
+      },
+      release(audio) {
+        if (activeAudioRef.current === audio) {
+          activeAudioRef.current = null;
+        }
+      },
+      stopActive() {
+        latestRequestId += 1;
+        if (activeAudioRef.current) {
+          activeAudioRef.current.pause();
+          activeAudioRef.current = null;
+        }
+      },
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
       if (latestScrollFollowupTimerRef.current !== null) {
         window.clearTimeout(latestScrollFollowupTimerRef.current);
       }
+      playbackCoordinator.stopActive();
     };
-  }, []);
+  }, [playbackCoordinator]);
+
+  useEffect(() => {
+    playbackCoordinator.stopActive();
+  }, [activeChatId, playbackCoordinator]);
 
   const scrollToLatestMessage = (behavior: ScrollBehavior): void => {
     const scrollContainer = getTelegramMessageScrollContainer(target);
@@ -1132,6 +1440,9 @@ export const TelegramMessageList = ({
                   bundle={bundle}
                   isSelected={selectedMessageId === bundle.primaryMessage.id}
                   legacyApi={legacyApi}
+                  playbackCoordinator={playbackCoordinator}
+                  playbackRate={voicePlaybackRate}
+                  onPlaybackRateChange={setVoicePlaybackRate}
                 />
               ))
             : null}

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LegacyAppBridgeApi } from '../../legacyBridge';
 import { installDom } from '../../test/dom';
@@ -8,11 +8,17 @@ describe('TelegramMessageList', () => {
   let cleanupDom: (() => void) | undefined;
   let originalAudioPlay: (() => Promise<void>) | undefined;
   let originalAudioLoad: (() => void) | undefined;
+  let originalAudioPause: (() => void) | undefined;
+  let originalRequestAnimationFrame: typeof window.requestAnimationFrame | undefined;
+  let originalCancelAnimationFrame: typeof window.cancelAnimationFrame | undefined;
 
   beforeEach(() => {
     cleanupDom = installDom();
     originalAudioPlay = window.HTMLMediaElement?.prototype.play;
     originalAudioLoad = window.HTMLMediaElement?.prototype.load;
+    originalAudioPause = window.HTMLMediaElement?.prototype.pause;
+    originalRequestAnimationFrame = window.requestAnimationFrame;
+    originalCancelAnimationFrame = window.cancelAnimationFrame;
     window.pelec = {
       resolveConnectorAudioUrl: vi.fn(),
       resolveConnectorVideoUrl: vi.fn(),
@@ -36,6 +42,38 @@ describe('TelegramMessageList', () => {
         configurable: true,
         value: originalAudioLoad,
       });
+    }
+    if (window.HTMLMediaElement && originalAudioPause) {
+      Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
+        configurable: true,
+        value: originalAudioPause,
+      });
+    }
+    if (originalRequestAnimationFrame) {
+      Object.defineProperty(window, 'requestAnimationFrame', {
+        configurable: true,
+        value: originalRequestAnimationFrame,
+      });
+      Object.defineProperty(globalThis, 'requestAnimationFrame', {
+        configurable: true,
+        value: originalRequestAnimationFrame,
+      });
+    } else {
+      delete (window as Partial<typeof window>).requestAnimationFrame;
+      delete (globalThis as Partial<typeof globalThis>).requestAnimationFrame;
+    }
+    if (originalCancelAnimationFrame) {
+      Object.defineProperty(window, 'cancelAnimationFrame', {
+        configurable: true,
+        value: originalCancelAnimationFrame,
+      });
+      Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+        configurable: true,
+        value: originalCancelAnimationFrame,
+      });
+    } else {
+      delete (window as Partial<typeof window>).cancelAnimationFrame;
+      delete (globalThis as Partial<typeof globalThis>).cancelAnimationFrame;
     }
     cleanupDom?.();
     cleanupDom = undefined;
@@ -319,6 +357,349 @@ describe('TelegramMessageList', () => {
       expect(resolveConnectorAudioUrl).toHaveBeenCalledWith('telegram', 'chat-1', 'voice-1');
       expect(load).toHaveBeenCalled();
       expect(play).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('pauses the current voice note before starting another one', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const play = vi.fn(() => Promise.resolve());
+    const pause = vi.fn();
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+      configurable: true,
+      value: play,
+    });
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
+      configurable: true,
+      value: pause,
+    });
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'voice-1',
+            sender: 'Ada',
+            text: 'Voice message',
+            timestamp: 1,
+            hasAudio: true,
+            audioUrl: 'https://example.com/voice-1.ogg',
+          },
+          {
+            id: 'voice-2',
+            sender: 'Linus',
+            text: 'Voice message',
+            timestamp: 2,
+            hasAudio: true,
+            audioUrl: 'https://example.com/voice-2.ogg',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const playButtons = target.querySelectorAll<HTMLButtonElement>('.telegram-voice-play');
+    expect(playButtons).toHaveLength(2);
+
+    fireEvent.click(playButtons[0] as HTMLButtonElement);
+    fireEvent.click(playButtons[1] as HTMLButtonElement);
+
+    expect(play).toHaveBeenCalledTimes(2);
+    expect(pause).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not autoplay an older pending voice note after a newer one starts', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const play = vi.fn(() => Promise.resolve());
+    const pause = vi.fn();
+    const load = vi.fn();
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+      configurable: true,
+      value: play,
+    });
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
+      configurable: true,
+      value: pause,
+    });
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
+      configurable: true,
+      value: load,
+    });
+
+    let resolveFirstAudioUrl: ((value: string | null) => void) | null = null;
+    window.pelec.resolveConnectorAudioUrl = vi
+      .fn<typeof window.pelec.resolveConnectorAudioUrl>()
+      .mockImplementation(
+        (_network: string, _chatId: string, messageId: string): Promise<string | null> =>
+          new Promise((resolve) => {
+            if (messageId === 'voice-1') {
+              resolveFirstAudioUrl = resolve;
+              return;
+            }
+            resolve(`https://example.com/${messageId}.ogg`);
+          }),
+      );
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'voice-1',
+            sender: 'Ada',
+            text: 'Voice message',
+            timestamp: 1,
+            hasAudio: true,
+          },
+          {
+            id: 'voice-2',
+            sender: 'Linus',
+            text: 'Voice message',
+            timestamp: 2,
+            hasAudio: true,
+            audioUrl: 'https://example.com/voice-2.ogg',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const playButtons = target.querySelectorAll<HTMLButtonElement>('.telegram-voice-play');
+    expect(playButtons).toHaveLength(2);
+
+    fireEvent.click(playButtons[0] as HTMLButtonElement);
+    await waitFor(() => {
+      expect(window.pelec.resolveConnectorAudioUrl).toHaveBeenCalledWith('telegram', 'chat-1', 'voice-1');
+    });
+
+    fireEvent.click(playButtons[1] as HTMLButtonElement);
+    expect(play).toHaveBeenCalledTimes(1);
+
+    resolveFirstAudioUrl?.('https://example.com/voice-1.ogg');
+
+    await waitFor(() => {
+      expect(load).toHaveBeenCalledTimes(1);
+    });
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(pause).not.toHaveBeenCalled();
+  });
+
+  it('updates voice-note progress from animation frames between media events', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const load = vi.fn();
+    const pause = vi.fn();
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'load', {
+      configurable: true,
+      value: load,
+    });
+    Object.defineProperty(window.HTMLMediaElement.prototype, 'pause', {
+      configurable: true,
+      value: pause,
+    });
+    const rafCallbacks = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 1;
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => {
+        const frameId = nextFrameId;
+        nextFrameId += 1;
+        rafCallbacks.set(frameId, callback);
+        return frameId;
+      },
+    });
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      configurable: true,
+      value: window.requestAnimationFrame,
+    });
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      value: (frameId: number) => {
+        rafCallbacks.delete(frameId);
+      },
+    });
+    Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+      configurable: true,
+      value: window.cancelAnimationFrame,
+    });
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'voice-1',
+            sender: 'Ada',
+            text: 'Voice message',
+            timestamp: 1,
+            hasAudio: true,
+            audioUrl: 'https://example.com/voice-1.ogg',
+            audioDurationSeconds: 10,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const audio = target.querySelector<HTMLAudioElement>('.telegram-message-audio');
+    expect(audio).toBeTruthy();
+
+    let currentTime = 0;
+    let paused = true;
+    Object.defineProperty(audio as HTMLAudioElement, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (value: number) => {
+        currentTime = value;
+      },
+    });
+    Object.defineProperty(audio as HTMLAudioElement, 'paused', {
+      configurable: true,
+      get: () => paused,
+    });
+    Object.defineProperty(audio as HTMLAudioElement, 'ended', {
+      configurable: true,
+      get: () => false,
+    });
+
+    rafCallbacks.clear();
+    paused = false;
+    fireEvent.play(audio as HTMLAudioElement);
+
+    currentTime = 5;
+    const firstFrame = Array.from(rafCallbacks.values()).at(-1);
+    expect(firstFrame).toBeTruthy();
+    act(() => {
+      firstFrame?.(16);
+    });
+
+    await waitFor(() => {
+      expect(target.querySelectorAll('.telegram-voice-wave-bar.is-played').length).toBeGreaterThan(10);
+    });
+  });
+
+  it('seeks within the voice waveform and updates the time readout', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'voice-1',
+            sender: 'Ada',
+            text: 'Voice message',
+            timestamp: 1,
+            hasAudio: true,
+            audioUrl: 'https://example.com/voice-1.ogg',
+            audioDurationSeconds: 12,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const audio = target.querySelector<HTMLAudioElement>('.telegram-message-audio');
+    expect(audio).toBeTruthy();
+
+    let currentTime = 0;
+    Object.defineProperty(audio as HTMLAudioElement, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (value: number) => {
+        currentTime = value;
+      },
+    });
+
+    const waveform = target.querySelector<HTMLButtonElement>('.telegram-voice-wave');
+    expect(waveform).toBeTruthy();
+    Object.defineProperty(waveform as HTMLButtonElement, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          left: 0,
+          width: 120,
+        }) as DOMRect,
+    });
+
+    fireEvent.click(waveform as HTMLButtonElement, { clientX: 60 });
+
+    await waitFor(() => {
+      expect(currentTime).toBe(6);
+      expect(target.textContent).toContain('0:06 / 0:12');
+    });
+  });
+
+  it('changes the shared voice-note playback speed from the rate control', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'voice-1',
+            sender: 'Ada',
+            text: 'Voice message',
+            timestamp: 1,
+            hasAudio: true,
+            audioUrl: 'https://example.com/voice-1.ogg',
+            audioDurationSeconds: 12,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const audio = target.querySelector<HTMLAudioElement>('.telegram-message-audio');
+    expect(audio).toBeTruthy();
+
+    let playbackRate = 1;
+    Object.defineProperty(audio as HTMLAudioElement, 'playbackRate', {
+      configurable: true,
+      get: () => playbackRate,
+      set: (value: number) => {
+        playbackRate = value;
+      },
+    });
+
+    const speedButton = target.querySelector<HTMLButtonElement>('.telegram-voice-rate[aria-label="Playback speed 1.5x"]');
+    expect(speedButton).toBeTruthy();
+
+    fireEvent.click(speedButton as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(playbackRate).toBe(1.5);
+      expect(speedButton?.getAttribute('aria-pressed')).toBe('true');
     });
   });
 
