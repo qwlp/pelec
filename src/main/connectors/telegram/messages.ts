@@ -272,6 +272,52 @@ export const extractTelegramMessageText = (
   return `[${container._ ?? 'message'}]`;
 };
 
+export const normalizeTelegramChatPreviewSender = (label: string | undefined): string => {
+  const trimmed = label?.trim() ?? '';
+  if (!trimmed) {
+    return '';
+  }
+
+  return trimmed.replace(/\s+\(@[^)]+\)$/u, '').trim();
+};
+
+export const buildTelegramChatPreview = ({
+  chatTitle,
+  includeSender,
+  isOutgoing,
+  previewText,
+  senderLabel,
+}: {
+  chatTitle?: string;
+  includeSender: boolean;
+  isOutgoing?: boolean;
+  previewText: string;
+  senderLabel?: string;
+}): { previewText: string; senderLabel?: string } => {
+  const normalizedPreviewText = previewText.trim();
+  if (!includeSender || !normalizedPreviewText) {
+    return { previewText: normalizedPreviewText };
+  }
+
+  const normalizedChatTitle = chatTitle?.trim().toLocaleLowerCase() ?? '';
+  const normalizedSenderLabel = isOutgoing
+    ? 'You'
+    : normalizeTelegramChatPreviewSender(senderLabel);
+
+  if (!normalizedSenderLabel) {
+    return { previewText: normalizedPreviewText };
+  }
+
+  if (normalizedSenderLabel.toLocaleLowerCase() === normalizedChatTitle) {
+    return { previewText: normalizedPreviewText };
+  }
+
+  return {
+    previewText: normalizedPreviewText,
+    senderLabel: normalizedSenderLabel,
+  };
+};
+
 export const extractTelegramReactions = (
   interactionInfo: unknown,
 ): ChatReaction[] | undefined => {

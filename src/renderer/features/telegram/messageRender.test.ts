@@ -55,4 +55,37 @@ describe('telegram message render signature', () => {
 
     expect(next).not.toBe(base);
   });
+
+  it('does not change when the previous message only changes hidden metadata', () => {
+    const previousMessage: ChatMessage = {
+      id: '0',
+      outgoing: true,
+      sender: 'Ada',
+      text: 'Earlier',
+      timestamp: 99,
+    };
+
+    const base = getTelegramMessageRenderSignature({
+      albumCaption: '',
+      previousMessage,
+      primaryMessage: message,
+      renderMessages: [message],
+      shouldCollapseAlbum: false,
+    });
+
+    const next = getTelegramMessageRenderSignature({
+      albumCaption: '',
+      previousMessage: {
+        ...previousMessage,
+        text: 'Edited earlier',
+        readByPeer: true,
+        reactions: [{ value: '👍', count: 1 }],
+      },
+      primaryMessage: message,
+      renderMessages: [message],
+      shouldCollapseAlbum: false,
+    });
+
+    expect(next).toBe(base);
+  });
 });

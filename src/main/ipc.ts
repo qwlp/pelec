@@ -10,6 +10,7 @@ import {
 import path from 'node:path';
 import type {
   AuthSubmission,
+  ConnectorProfileUpdate,
   ListMessagesOptions,
   OutgoingAttachmentDocument,
 } from '../shared/connectors';
@@ -59,9 +60,44 @@ export const registerIpcHandlers = ({
     return null;
   });
 
+  ipcMain.handle('app:clear-cache', async (): Promise<boolean> => {
+    const mainWindow = getMainWindow();
+    const session = mainWindow?.webContents.session;
+    if (!session) {
+      return false;
+    }
+
+    await Promise.all([
+      session.clearCache(),
+      session.clearStorageData(),
+    ]);
+    return true;
+  });
+
+  ipcMain.handle('app:get-cache-size', async (): Promise<number> => {
+    const mainWindow = getMainWindow();
+    const session = mainWindow?.webContents.session;
+    if (!session) {
+      return 0;
+    }
+
+    return session.getCacheSize();
+  });
+
   ipcMain.handle('connector:get-statuses', async () => {
     return getConnectorManager()?.getAllStatuses() ?? [];
   });
+
+  ipcMain.handle('connector:get-profile', async (_event, network: NetworkId) => {
+    return (await getConnectorManager()?.getProfile(network)) ?? null;
+  });
+
+  ipcMain.handle(
+    'connector:update-profile',
+    async (_event, network: NetworkId, profile: ConnectorProfileUpdate) => {
+      return (await getConnectorManager()?.updateProfile(network, profile)) ?? null;
+    },
+  );
 
   ipcMain.handle('connector:start-auth', async (_event, network: NetworkId) => {
     const connectorManager = getConnectorManager();

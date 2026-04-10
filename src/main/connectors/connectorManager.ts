@@ -2,6 +2,8 @@ import type {
   AuthStartResult,
   AuthSubmission,
   ChatMessage,
+  ConnectorProfile,
+  ConnectorProfileUpdate,
   ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
@@ -50,6 +52,25 @@ export class ConnectorManager {
 
   getAllStatuses(): ConnectorStatus[] {
     return this.config.networks.map((network) => this.getConnector(network.id).getStatus());
+  }
+
+  async getProfile(network: NetworkId): Promise<ConnectorProfile | null> {
+    const connector = this.getConnector(network);
+    if (!connector.getProfile) {
+      return null;
+    }
+    return connector.getProfile();
+  }
+
+  async updateProfile(
+    network: NetworkId,
+    profile: ConnectorProfileUpdate,
+  ): Promise<ConnectorProfile | null> {
+    const connector = this.getConnector(network);
+    if (!connector.updateProfile) {
+      return null;
+    }
+    return connector.updateProfile(profile);
   }
 
   async startAuth(network: NetworkId): Promise<AuthStartResult> {

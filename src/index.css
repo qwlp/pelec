@@ -54,10 +54,11 @@
   --accent: #ff4fa7;
   --accent-soft: rgba(255, 79, 167, 0.16);
   --accent-2: #f969b5;
+  --accent-glow-shadow: 0 0 10px rgba(255, 113, 188, 0.16);
   --ok: #73ffc2;
-  --tg-bubble-radius: 20px;
-  --tg-bubble-radius-outgoing: 20px 20px 8px 20px;
-  --tg-bubble-radius-incoming: 20px 20px 20px 8px;
+  --tg-bubble-radius: 0px;
+  --tg-bubble-radius-outgoing: 0px;
+  --tg-bubble-radius-incoming: 0px;
   --tg-file-tile-radius: 16px;
   --tg-file-icon-radius: 13px;
   --tg-action-chip-radius: 999px;
@@ -439,7 +440,7 @@ textarea {
 
 .network-item.selected {
   border-color: var(--line-strong);
-  box-shadow: inset 2px 0 0 var(--accent-2);
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .network-item.active {
@@ -656,11 +657,12 @@ textarea {
 
 .telegram-left-header {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line-soft);
+  position: relative;
 }
 
 .telegram-search {
@@ -668,6 +670,281 @@ textarea {
   background: var(--bg-input);
   color: var(--ink-panel);
   padding: 8px;
+  min-width: 0;
+}
+
+.telegram-settings-shell {
+  position: relative;
+}
+
+.telegram-settings-toggle {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line-soft);
+  background: rgb(var(--bg-panel-rgb) / 0.98);
+  color: var(--ink-panel);
+  font: inherit;
+  font-size: calc(16px * var(--font-scale));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.telegram-settings-toggle:hover,
+.telegram-settings-toggle:focus-visible {
+  background: rgb(var(--bg-elev-rgb) / 0.98);
+}
+
+.telegram-settings-shell.open .telegram-settings-toggle {
+  background: var(--accent-soft);
+  border-color: var(--line-strong);
+  box-shadow: var(--accent-glow-shadow);
+}
+
+.telegram-settings-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  width: min(260px, 72vw);
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  background: rgb(var(--bg-pane-rgb) / 0.995);
+  box-shadow:
+    0 16px 30px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 6px;
+}
+
+.telegram-settings-title {
+  padding: 2px 2px 8px;
+  color: var(--ink-title);
+  font-size: calc(12px * var(--font-scale));
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.telegram-settings-meta {
+  margin: -2px 2px 6px;
+  color: var(--ink-muted);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.35;
+}
+
+.telegram-settings-item {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  background: rgb(var(--bg-panel-rgb) / 0.98);
+  color: var(--ink-panel);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.telegram-settings-item:hover,
+.telegram-settings-item:focus-visible {
+  background: rgb(var(--bg-elev-rgb) / 0.98);
+}
+
+.telegram-settings-item:active {
+  background: var(--accent-soft);
+  border-color: var(--line-strong);
+}
+
+.telegram-settings-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.telegram-settings-path {
+  margin-top: 4px;
+  padding: 8px 2px 0;
+  border-top: 1px solid var(--line-soft);
+  color: var(--ink-soft);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.telegram-profile-shell {
+  position: relative;
+}
+
+.telegram-profile-toggle {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  background: rgb(var(--bg-panel-rgb) / 0.98);
+  cursor: pointer;
+}
+
+.telegram-profile-toggle:hover,
+.telegram-profile-toggle:focus-visible {
+  background: rgb(var(--bg-elev-rgb) / 0.98);
+}
+
+.telegram-profile-shell.open .telegram-profile-toggle {
+  background: var(--accent-soft);
+  border-color: var(--line-strong);
+  box-shadow: var(--accent-glow-shadow);
+}
+
+.telegram-profile-toggle-avatar,
+.telegram-profile-avatar {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: rgb(var(--bg-elev-rgb) / 0.98);
+  color: var(--ink-panel);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  overflow: hidden;
+}
+
+.telegram-profile-avatar {
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--line-soft);
+}
+
+.telegram-profile-toggle-avatar img,
+.telegram-profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.telegram-profile-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(320px, 84vw);
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  background: rgb(var(--bg-pane-rgb) / 0.995);
+  box-shadow:
+    0 16px 30px rgba(0, 0, 0, 0.38),
+    0 0 0 1px rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 10px;
+}
+
+.telegram-profile-panel-header {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.telegram-profile-summary {
+  min-width: 0;
+}
+
+.telegram-profile-title {
+  color: var(--ink-title);
+  font-size: calc(14px * var(--font-scale));
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.telegram-profile-handle {
+  margin-top: 3px;
+  color: var(--ink-muted);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.telegram-profile-file-input {
+  display: none;
+}
+
+.telegram-profile-photo-button,
+.telegram-profile-action {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  background: rgb(var(--bg-panel-rgb) / 0.98);
+  color: var(--ink-panel);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.telegram-profile-photo-button:hover,
+.telegram-profile-photo-button:focus-visible,
+.telegram-profile-action:hover,
+.telegram-profile-action:focus-visible {
+  background: rgb(var(--bg-elev-rgb) / 0.98);
+}
+
+.telegram-profile-photo-button:active,
+.telegram-profile-action:active {
+  background: var(--accent-soft);
+  border-color: var(--line-strong);
+}
+
+.telegram-profile-photo-button:disabled,
+.telegram-profile-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.telegram-profile-save {
+  background: var(--accent-soft);
+  border-color: var(--line-strong);
+}
+
+.telegram-profile-field {
+  display: grid;
+  gap: 4px;
+}
+
+.telegram-profile-field-label {
+  color: var(--ink-title);
+  font-size: calc(11px * var(--font-scale));
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.telegram-profile-field input {
+  width: 100%;
+  border: 1px solid var(--line-soft);
+  background: rgb(var(--bg-input-rgb) / 0.99);
+  color: var(--ink-panel);
+  padding: 8px;
+  font: inherit;
+}
+
+.telegram-profile-field input::placeholder {
+  color: var(--ink-muted);
+}
+
+.telegram-profile-empty,
+.telegram-profile-status {
+  color: var(--ink-soft);
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.4;
+}
+
+.telegram-profile-status.error {
+  color: var(--accent-2);
+}
+
+.telegram-profile-actions {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .telegram-chat-list {
@@ -723,7 +1000,7 @@ textarea {
 
 .telegram-chat-item.selected {
   border-color: rgba(255, 124, 193, 0.75);
-  box-shadow: inset 2px 0 0 #ff71bc;
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .telegram-chat-item:hover {
@@ -783,6 +1060,15 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.telegram-chat-preview-sender {
+  color: #f2d9e8;
+  font-weight: 700;
+}
+
+.telegram-chat-preview-text {
+  color: inherit;
 }
 
 .telegram-chat-status {
@@ -1001,7 +1287,7 @@ textarea {
 
 .telegram-message-item.selected {
   border-color: rgba(255, 124, 193, 0.78);
-  box-shadow: inset 2px 0 0 #ff71bc;
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .telegram-message-item.incoming {
@@ -1016,7 +1302,7 @@ textarea {
 }
 
 .telegram-message-item.outgoing.selected {
-  box-shadow: inset -2px 0 0 #ff71bc;
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .telegram-message-item.continuation {
@@ -2357,7 +2643,7 @@ textarea {
 
 .instagram-chat-item.selected {
   border-color: rgba(255, 124, 193, 0.75);
-  box-shadow: inset 2px 0 0 #ff71bc;
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .instagram-chat-item:hover {
@@ -2428,7 +2714,7 @@ textarea {
 
 .instagram-message-item.selected {
   border-color: rgba(255, 124, 193, 0.78);
-  box-shadow: inset 2px 0 0 #ff71bc;
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .instagram-message-item.incoming {
@@ -2442,7 +2728,7 @@ textarea {
 }
 
 .instagram-message-item.outgoing.selected {
-  box-shadow: inset -2px 0 0 #ff71bc;
+  box-shadow: var(--accent-glow-shadow);
 }
 
 .instagram-message-item.continuation {

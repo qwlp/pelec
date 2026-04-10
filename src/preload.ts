@@ -3,6 +3,8 @@ import type {
   AuthStartResult,
   AuthSubmission,
   ChatMessage,
+  ConnectorProfile,
+  ConnectorProfileUpdate,
   ChatSummary,
   ConnectorUpdateEvent,
   ConnectorStatus,
@@ -19,10 +21,16 @@ const api = {
     ipcRenderer.invoke('app:notify', { title, body, silent }) as Promise<boolean>,
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<boolean>,
   openPath: (filePath: string) => ipcRenderer.invoke('app:open-path', filePath) as Promise<boolean>,
+  clearAppCache: () => ipcRenderer.invoke('app:clear-cache') as Promise<boolean>,
+  getAppCacheSize: () => ipcRenderer.invoke('app:get-cache-size') as Promise<number>,
   copyImageToClipboard: (dataUrl: string) =>
     ipcRenderer.invoke('app:copy-image', dataUrl) as Promise<boolean>,
   getConnectorStatuses: () =>
     ipcRenderer.invoke('connector:get-statuses') as Promise<ConnectorStatus[]>,
+  getConnectorProfile: (network: NetworkId) =>
+    ipcRenderer.invoke('connector:get-profile', network) as Promise<ConnectorProfile | null>,
+  updateConnectorProfile: (network: NetworkId, profile: ConnectorProfileUpdate) =>
+    ipcRenderer.invoke('connector:update-profile', network, profile) as Promise<ConnectorProfile | null>,
   startConnectorAuth: (network: NetworkId) =>
     ipcRenderer.invoke('connector:start-auth', network) as Promise<AuthStartResult>,
   submitConnectorAuth: (network: NetworkId, payload: AuthSubmission) =>

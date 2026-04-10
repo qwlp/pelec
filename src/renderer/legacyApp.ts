@@ -180,6 +180,7 @@ type QrAuthState = {
 };
 
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
+const TELEGRAM_MESSAGES_PAGE_SIZE = 80;
 const NETWORK_RAIL_VISIBLE = false;
 export const bootLegacyApp = async (
   mountRoot?: HTMLDivElement,
@@ -261,6 +262,22 @@ export const bootLegacyApp = async (
     !!state.activeTelegramChatId &&
     (state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId)?.canSend ?? true);
 
+  const areTelegramMessagesVisible = (): boolean =>
+    !useReactTelegramMessageList || reactTelegramMessagesVisible;
+
+  const getExposedTelegramChatId = (): string | null =>
+    state.activeNetwork === 'telegram' && areTelegramMessagesVisible() ? state.activeTelegramChatId : null;
+
+  const syncTelegramActiveChatExposure = (): void => {
+    const nextExposedTelegramChatId = getExposedTelegramChatId();
+    if (lastExposedTelegramChatId === nextExposedTelegramChatId) {
+      return;
+    }
+
+    lastExposedTelegramChatId = nextExposedTelegramChatId;
+    void window.pelec.setConnectorActiveChat('telegram', nextExposedTelegramChatId);
+  };
+
   const getSnapshot = (): LegacyAppSnapshot => ({
     authPrompt: authPromptState
       ? {
@@ -302,8 +319,10 @@ export const bootLegacyApp = async (
         sending: telegramForwardState.sending,
         visible: telegramForwardState.visible,
       },
+      hasOlderMessages: telegramHasOlderMessages,
       imagePreviewUrl: activeTelegramImageUrl,
       loadError: state.telegramLoadError,
+      loadingOlderMessages: telegramLoadingOlderMessages,
       loading: state.telegramLoading,
       messageLoadError: state.telegramLoadError,
       messages: getVisibleTelegramMessages(),
@@ -411,6 +430,10 @@ export const bootLegacyApp = async (
   let telegramScrollFollowupTimer: number | null = null;
   let telegramReadAcknowledgeTimer: number | null = null;
   let lastTelegramReadAcknowledgeKey: string | null = null;
+  let telegramHasOlderMessages = false;
+  let telegramLoadingOlderMessages = false;
+  let reactTelegramMessagesVisible = !useReactTelegramMessageList;
+  let lastExposedTelegramChatId: string | null | undefined;
   let instagramChatsRefreshTimer: number | null = null;
   let instagramMessagesRefreshTimer: number | null = null;
   let telegramBackgroundRefreshTimer: number | null = null;
@@ -1775,6 +1798,7 @@ export const bootLegacyApp = async (
   const acknowledgeActiveTelegramChatRead = async (): Promise<void> => {
     if (
       state.activeNetwork !== 'telegram' ||
+      !areTelegramMessagesVisible() ||
       !document.hasFocus() ||
       state.telegramMessagesLoading ||
       !state.activeTelegramChatId ||
@@ -1828,6 +1852,49 @@ export const bootLegacyApp = async (
       return state.telegramMessages;
     }
     return [...state.telegramMessages, ...pending];
+  };
+
+  const mergeTelegramMessages = (
+    current: ChatMessage[],
+    incoming: ChatMessage[],
+    mode: 'prepend-history' | 'refresh-latest',
+  ): ChatMessage[] => {
+    if (current.length < 1) {
+      return incoming;
+    }
+    if (incoming.length < 1) {
+      return current;
+    }
+
+    const nextById = new Map<string, ChatMessage>();
+    for (const message of current) {
+      nextById.set(message.id, message);
+    }
+    for (const message of incoming) {
+      nextById.set(message.id, message);
+    }
+
+    const incomingIds = new Set(incoming.map((message) => message.id));
+    const currentOldestIncoming = incoming[0];
+    const merged = [...nextById.values()].filter((message) => {
+      if (mode !== 'refresh-latest' || !currentOldestIncoming) {
+        return true;
+      }
+      if (incomingIds.has(message.id)) {
+        return true;
+      }
+      if (message.timestamp !== currentOldestIncoming.timestamp) {
+        return message.timestamp < currentOldestIncoming.timestamp;
+      }
+      return compareNotificationMessageIds(message.id, currentOldestIncoming.id) < 0;
+    });
+
+    return merged.sort((a, b) => {
+      if (a.timestamp !== b.timestamp) {
+        return a.timestamp - b.timestamp;
+      }
+      return compareNotificationMessageIds(a.id, b.id);
+    });
   };
 
   const addPendingTelegramMessages = (...messages: PendingTelegramMessage[]): void => {
@@ -3031,6 +3098,8 @@ export const bootLegacyApp = async (
       state.telegramLoadError = null;
       if (showLoadingState) {
         state.telegramMessages = [];
+        telegramHasOlderMessages = false;
+        telegramLoadingOlderMessages = false;
         telegramMessagesVersion += 1;
         state.selectedTelegramMessageId = null;
         render();
@@ -3038,12 +3107,18 @@ export const bootLegacyApp = async (
 
       try {
         const messages = await window.pelec.listConnectorMessages('telegram', chatId, {
+          limit: TELEGRAM_MESSAGES_PAGE_SIZE,
           passive: true,
         });
         if (!telegramController.isCurrentMessagesRequest(requestSeq) || chatId !== state.activeTelegramChatId) {
           return;
         }
-        const changed = !areMessageListsEqual(state.telegramMessages, messages);
+        const shouldPreserveLoadedHistory =
+          previousActiveTelegramChatId === chatId && !showLoadingState && state.telegramMessages.length > 0;
+        const nextMessages = shouldPreserveLoadedHistory
+          ? mergeTelegramMessages(state.telegramMessages, messages, 'refresh-latest')
+          : messages;
+        const changed = !areMessageListsEqual(state.telegramMessages, nextMessages);
         const pendingChanged = reconcilePendingTelegramMessages(chatId, messages);
         const chatTitle = safeLabel(
           state.telegramChats.find((chat) => chat.id === chatId)?.title,
@@ -3051,9 +3126,13 @@ export const bootLegacyApp = async (
         );
         maybeNotifyNewMessages('telegram', chatId, chatTitle, messages, suppressNotification);
         if (changed) {
-          state.telegramMessages = messages;
+          state.telegramMessages = nextMessages;
           telegramMessagesVersion += 1;
         }
+        if (!shouldPreserveLoadedHistory) {
+          telegramHasOlderMessages = messages.length > 0;
+        }
+        telegramLoadingOlderMessages = false;
         const currentSelectedMessageId = state.selectedTelegramMessageId;
         const visibleMessages = getVisibleTelegramMessages(chatId);
         const shouldPreserveSelectedMessage =
@@ -3064,7 +3143,7 @@ export const bootLegacyApp = async (
           visibleMessages.some((message) => message.id === currentSelectedMessageId)
             ? currentSelectedMessageId
             : messages[messages.length - 1]?.id ?? null;
-        await window.pelec.setConnectorActiveChat('telegram', chatId);
+        syncTelegramActiveChatExposure();
         state.telegramMessagesLoading = false;
         if (changed || pendingChanged || forceScroll || showLoadingState) {
           telegramForceScrollBottom = true;
@@ -3090,6 +3169,8 @@ export const bootLegacyApp = async (
         }
         endMeasure();
         state.telegramMessagesLoading = false;
+        telegramLoadingOlderMessages = false;
+        telegramHasOlderMessages = false;
         state.telegramMessages = [];
         telegramMessagesVersion += 1;
         state.selectedTelegramMessageId = null;
@@ -3098,6 +3179,58 @@ export const bootLegacyApp = async (
         render();
       }
     });
+  };
+
+  const loadOlderTelegramMessages = async (): Promise<void> => {
+    const chatId = state.activeTelegramChatId;
+    const oldestLoadedMessageId = state.telegramMessages[0]?.id;
+    if (
+      !chatId ||
+      !oldestLoadedMessageId ||
+      state.telegramMessagesLoading ||
+      telegramLoadingOlderMessages ||
+      !telegramHasOlderMessages
+    ) {
+      return;
+    }
+
+    telegramLoadingOlderMessages = true;
+    render();
+
+    try {
+      const olderMessages = await window.pelec.listConnectorMessages('telegram', chatId, {
+        beforeMessageId: oldestLoadedMessageId,
+        limit: TELEGRAM_MESSAGES_PAGE_SIZE,
+        passive: true,
+      });
+
+      if (chatId !== state.activeTelegramChatId) {
+        return;
+      }
+
+      telegramHasOlderMessages = olderMessages.length > 0;
+      telegramLoadingOlderMessages = false;
+
+      if (olderMessages.length < 1) {
+        render();
+        return;
+      }
+
+      const nextMessages = mergeTelegramMessages(state.telegramMessages, olderMessages, 'prepend-history');
+      if (areMessageListsEqual(state.telegramMessages, nextMessages)) {
+        render();
+        return;
+      }
+
+      state.telegramMessages = nextMessages;
+      telegramMessagesVersion += 1;
+      render();
+    } catch {
+      if (chatId === state.activeTelegramChatId) {
+        telegramLoadingOlderMessages = false;
+        render();
+      }
+    }
   };
 
   const selectTelegramChat = (
@@ -3130,10 +3263,11 @@ export const bootLegacyApp = async (
       const requestSeq = telegramController.beginChatsRequest();
       const telegramStatus = getStatusByNetwork('telegram');
       if (!(telegramStatus.mode === 'native' && telegramStatus.authState === 'authenticated')) {
-        void window.pelec.setConnectorActiveChat('telegram', null);
         resetNotificationTracking('telegram');
         state.telegramChats = [];
         state.telegramMessages = [];
+        telegramHasOlderMessages = false;
+        telegramLoadingOlderMessages = false;
         pendingTelegramMessagesByChat.clear();
         telegramAudioUrlCache.clear();
         telegramVideoUrlCache.clear();
@@ -3146,6 +3280,7 @@ export const bootLegacyApp = async (
         clearTelegramReplyState({ clearAttachments: true });
         state.telegramMessagesLoading = false;
         state.telegramLoadError = null;
+        syncTelegramActiveChatExposure();
         render();
         endMeasure();
         return;
@@ -3190,6 +3325,8 @@ export const bootLegacyApp = async (
           telegramController.clearMessageRefresh(state.activeTelegramChatId);
           state.activeTelegramChatId = chats[0]?.id ?? null;
           state.telegramMessages = [];
+          telegramHasOlderMessages = false;
+          telegramLoadingOlderMessages = false;
           telegramMessagesVersion += 1;
           state.selectedTelegramMessageId = null;
         }
@@ -3533,6 +3670,7 @@ export const bootLegacyApp = async (
       state.vimPane = 'networks';
     }
 
+    syncTelegramActiveChatExposure();
     render();
 
     if (id === 'telegram') {
@@ -6426,6 +6564,7 @@ export const bootLegacyApp = async (
     },
     activateTelegramMessagesPane: () => {
       activateTelegramMessagesPane();
+      syncTelegramActiveChatExposure();
       render();
       if (state.activeNetwork === 'telegram' && state.mode !== 'insert') {
         scheduleTelegramKeyboardSurfaceFocus();
@@ -6448,6 +6587,7 @@ export const bootLegacyApp = async (
       })),
     getSnapshot,
     handleEscape: handleGlobalEscape,
+    loadOlderTelegramMessages,
     movePane: moveVimPane,
     moveSelection: moveVimSelection,
     moveSelectionByPage,
@@ -6500,6 +6640,17 @@ export const bootLegacyApp = async (
     submitAuthPrompt,
     submitQrPassword,
     setTelegramForwardQuery,
+    setTelegramMessagesVisible: (visible) => {
+      reactTelegramMessagesVisible = visible;
+      if (!visible && telegramReadAcknowledgeTimer !== null) {
+        window.clearTimeout(telegramReadAcknowledgeTimer);
+        telegramReadAcknowledgeTimer = null;
+      }
+      syncTelegramActiveChatExposure();
+      if (visible) {
+        scheduleTelegramReadAcknowledgement();
+      }
+    },
     sendTelegramMessage: () => {
       void sendTelegramMessage();
     },

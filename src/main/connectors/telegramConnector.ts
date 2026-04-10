@@ -10,13 +10,17 @@ import type {
   ChatMessage,
   ChatSummary,
   Connector,
+  ConnectorProfile,
+  ConnectorProfileUpdate,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
 } from '../../shared/connectors';
 import type { NetworkDefinition, NetworkId, TelegramUserConfig } from '../../shared/types';
 import {
+  buildTelegramChatPreview,
   extractTelegramCallInfo,
   extractTelegramMessageEntities,
   extractTelegramMessageText,
@@ -262,6 +266,134 @@ export class TelegramConnector implements Connector {
     return this.status;
   }
 
+  async resetAuth(): Promise<ConnectorStatus> {
+    if (!this.tdClient) {
+      this.status.authState = 'unauthenticated';
+      this.status.details = 'Telegram auth was reset. Start auth again to log in.';
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return this.status;
+    }
+
+    try {
+      await this.tdClient.invoke({ _: 'logOut' });
+      this.activeChatId = null;
+      this.latestQrLink = null;
+      this.status.authState = 'unauthenticated';
+      this.status.details = 'Telegram auth was reset. Start auth again to log in.';
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return this.status;
+    } catch (error) {
+      this.status.authState = 'degraded';
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Telegram logout error';
+      this.status.details = `Telegram logout failed: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return this.status;
+    }
+  }
+
+  async getProfile(): Promise<ConnectorProfile | null> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return null;
+    }
+
+    try {
+      return await this.fetchOwnProfile(this.tdClient);
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Telegram profile error';
+      this.status.details = `Failed loading Telegram profile: ${this.status.lastError}`;
+      return null;
+    }
+  }
+
+  async updateProfile(profile: ConnectorProfileUpdate): Promise<ConnectorProfile | null> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return null;
+    }
+
+    const client = this.tdClient;
+    let tempDir: string | null = null;
+
+    try {
+      if (profile.avatarDataUrl) {
+        const upload = await this.prepareUploadFile(
+          'pelec-telegram-profile-',
+          profile.avatarDataUrl,
+          profile.avatarFileName,
+          (_fullMimeType, essenceMimeType) => essenceMimeType === 'image/jpeg',
+          'profile-photo',
+        );
+        if (!upload) {
+          throw new Error(this.status.lastError || 'Failed preparing Telegram profile photo.');
+        }
+
+        tempDir = upload.tempDir;
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'setProfilePhoto',
+            photo: {
+              _: 'inputChatPhotoStatic',
+              photo: {
+                _: 'inputFileLocal',
+                path: upload.filePath,
+              },
+            },
+          },
+          'setProfilePhoto',
+        );
+      }
+
+      const nextFirstName = profile.firstName?.trim();
+      const nextLastName = profile.lastName?.trim() ?? '';
+      if (nextFirstName !== undefined) {
+        if (!nextFirstName) {
+          throw new Error('Telegram profile first name cannot be empty.');
+        }
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'setName',
+            first_name: nextFirstName,
+            last_name: nextLastName,
+          },
+          'setName',
+        );
+      }
+
+      if (profile.username !== undefined) {
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'setUsername',
+            username: profile.username.trim().replace(/^@+/u, ''),
+          },
+          'setUsername',
+        );
+      }
+
+      this.userLabelCache.clear();
+      this.userAvatarCache.clear();
+      if (tempDir) {
+        this.scheduleUploadTempCleanup(tempDir);
+      }
+      this.emitUpdate({ network: this.network.id, kind: 'chats' });
+      return await this.fetchOwnProfile(client);
+    } catch (error) {
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {
+          // Best-effort temp cleanup after failed profile update.
+        });
+      }
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram profile update error';
+      this.status.details = `Failed updating Telegram profile: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return null;
+    }
+  }
+
   async listChats(): Promise<ChatSummary[]> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return [];
@@ -311,14 +443,26 @@ export class TelegramConnector implements Connector {
             'getChat',
           );
           const isMuted = await this.isChatMuted(client, chat, scopeMuteForByType);
+          const previewText = extractTelegramMessageText(chat.last_message?.content, {
+            outgoing: chat.last_message?.is_outgoing === true,
+          });
+          const preview = buildTelegramChatPreview({
+            chatTitle: chat.title,
+            includeSender: this.shouldIncludeSenderInChatPreview(chat),
+            isOutgoing: chat.last_message?.is_outgoing === true,
+            previewText,
+            senderLabel:
+              chat.last_message?.sender_id
+                ? await this.resolveSenderLabel(client, chat.last_message.sender_id)
+                : undefined,
+          });
 
           return {
             id: String(chat.id ?? chatId),
             title: chat.title ?? 'Untitled chat',
             unreadCount: chat.unread_count ?? 0,
-            lastMessagePreview: extractTelegramMessageText(chat.last_message?.content, {
-              outgoing: chat.last_message?.is_outgoing === true,
-            }),
+            lastMessagePreview: preview.previewText,
+            lastMessageSender: preview.senderLabel,
             lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
             isMuted,
@@ -336,7 +480,7 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  async listMessages(chatId: string): Promise<ChatMessage[]> {
+  async listMessages(chatId: string, options?: ListMessagesOptions): Promise<ChatMessage[]> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return [];
     }
@@ -354,41 +498,23 @@ export class TelegramConnector implements Connector {
       );
       const lastReadOutboxMessageId = chat.last_read_outbox_message_id;
 
-      const pageLimit = 50;
-      const maxPages = 4;
-      let cursor: number | string | bigint = 0;
-      const collected: TdMessage[] = [];
-
-      for (let page = 0; page < maxPages; page += 1) {
-        const history: { messages?: TdMessage[] } = await this.invokeWithTimeout<{
-          messages?: TdMessage[];
-        }>(
-          client,
-          {
-            _: 'getChatHistory',
-            chat_id: Number(chatId),
-            from_message_id: cursor,
-            offset: cursor === 0 ? 0 : -1,
-            limit: pageLimit,
-            only_local: false,
-          },
-          'getChatHistory',
-        );
-
-        const messages: TdMessage[] = history.messages ?? [];
-        if (messages.length < 1) {
-          break;
-        }
-
-        collected.push(...messages);
-        const oldestId: number | string | bigint | undefined = messages[messages.length - 1]?.id;
-
-        if (!oldestId || String(oldestId) === String(cursor) || messages.length < pageLimit) {
-          break;
-        }
-
-        cursor = oldestId;
-      }
+      const pageLimit = Math.max(1, Math.min(100, Math.floor(options?.limit ?? 80)));
+      const beforeMessageId = this.toTdMessageId(options?.beforeMessageId);
+      const history: { messages?: TdMessage[] } = await this.invokeWithTimeout<{
+        messages?: TdMessage[];
+      }>(
+        client,
+        {
+          _: 'getChatHistory',
+          chat_id: Number(chatId),
+          from_message_id: beforeMessageId ?? 0,
+          offset: beforeMessageId ? -1 : 0,
+          limit: pageLimit,
+          only_local: false,
+        },
+        'getChatHistory',
+      );
+      const collected: TdMessage[] = history.messages ?? [];
 
       const uniqueById = new Map<string, TdMessage>();
       for (const message of collected) {
@@ -518,7 +644,11 @@ export class TelegramConnector implements Connector {
 
     const readableMessageIds = (messageIds ?? [])
       .map((messageId) => this.toTdMessageId(messageId))
-      .filter((messageId): messageId is number => typeof messageId === 'number');
+      .filter(
+        (
+          messageId,
+        ): messageId is number | bigint => typeof messageId === 'number' || typeof messageId === 'bigint',
+      );
 
     await this.acknowledgeViewedMessageIds(this.tdClient, chatId, readableMessageIds);
   }
@@ -890,15 +1020,32 @@ export class TelegramConnector implements Connector {
     this.qrWaiters = [];
   }
 
-  private toTdMessageId(value: string | undefined): number | undefined {
+  private toTdMessageId(value: string | undefined): number | bigint | undefined {
     if (!value) {
       return undefined;
     }
-    const asNumber = Number(value);
-    if (!Number.isFinite(asNumber) || asNumber <= 0) {
+
+    const trimmed = value.trim();
+    if (!trimmed) {
       return undefined;
     }
-    return asNumber;
+
+    try {
+      const asBigInt = BigInt(trimmed);
+      if (asBigInt <= 0n) {
+        return undefined;
+      }
+      if (asBigInt <= BigInt(Number.MAX_SAFE_INTEGER)) {
+        return Number(asBigInt);
+      }
+      return asBigInt;
+    } catch {
+      const asNumber = Number(trimmed);
+      if (!Number.isFinite(asNumber) || asNumber <= 0) {
+        return undefined;
+      }
+      return asNumber;
+    }
   }
 
   private waitForQrLink(timeoutMs: number, previousLink?: string | null): Promise<string | null> {
@@ -1076,7 +1223,7 @@ export class TelegramConnector implements Connector {
   private async acknowledgeViewedMessageIds(
     client: TdClient,
     chatId: string,
-    messageIds: number[],
+    messageIds: Array<number | bigint>,
   ): Promise<void> {
     if (messageIds.length < 1) {
       return;
@@ -1201,6 +1348,52 @@ export class TelegramConnector implements Connector {
     }
 
     return undefined;
+  }
+
+  private async fetchOwnProfile(client: TdClient): Promise<ConnectorProfile> {
+    const user = await this.invokeWithTimeout<{
+      id?: number;
+      first_name?: string;
+      last_name?: string;
+      username?: string;
+      usernames?: { active_usernames?: string[] };
+      profile_photo?: { small?: { id?: number; local?: { path?: string } } };
+    }>(
+      client,
+      {
+        _: 'getMe',
+      },
+      'getMe',
+    );
+
+    const firstName = user.first_name?.trim() ?? '';
+    const lastName = user.last_name?.trim() ?? '';
+    const username =
+      user.usernames?.active_usernames?.[0]?.trim() ??
+      user.username?.trim() ??
+      undefined;
+    const displayName = `${firstName} ${lastName}`.trim() || 'Telegram user';
+    const avatarUrl = await resolveTdFileUrl({
+      client,
+      file: user.profile_photo?.small,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      mediaDataUrlCache: this.mediaDataUrlCache,
+    }).catch((): string | undefined => undefined);
+
+    if (user.id && displayName) {
+      const label = username ? `${displayName} (@${username})` : displayName;
+      this.userLabelCache.set(user.id, label);
+      this.userAvatarCache.set(user.id, avatarUrl);
+    }
+
+    return {
+      displayName,
+      firstName,
+      lastName,
+      username,
+      avatarUrl,
+    };
   }
 
   private async resolveUserLabel(client: TdClient, userId: number): Promise<string> {
@@ -1328,6 +1521,15 @@ export class TelegramConnector implements Connector {
       this.chatAvatarCache.set(chatId, undefined);
       return undefined;
     }
+  }
+
+  private shouldIncludeSenderInChatPreview(chat: TdChat): boolean {
+    const chatType = chat.type?._;
+    if (chatType === 'chatTypeBasicGroup') {
+      return true;
+    }
+
+    return chatType === 'chatTypeSupergroup' && chat.type?.is_channel !== true;
   }
 
   private compareMessageIds(a: string, b: string): number {

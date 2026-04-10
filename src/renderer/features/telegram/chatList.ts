@@ -15,6 +15,7 @@ export const getTelegramChatRenderSignature = (chat: ChatSummary): string =>
   [
     chat.id,
     chat.title,
+    chat.lastMessageSender ?? '',
     chat.lastMessagePreview,
     chat.lastMessageTimestamp ?? '',
     chat.unreadCount,
@@ -28,6 +29,7 @@ export const createTelegramChatListItem = (
 ): HTMLButtonElement => {
   const chatTitle = deps.safeLabel(chat.title, 'Untitled chat');
   const chatPreview = deps.safeText(chat.lastMessagePreview).trim() || 'No preview';
+  const chatPreviewSender = deps.safeText(chat.lastMessageSender).trim();
   const unreadCount = Math.max(0, Math.floor(chat.unreadCount));
   const button = document.createElement('button');
   button.type = 'button';
@@ -54,7 +56,16 @@ export const createTelegramChatListItem = (
   }
   const preview = document.createElement('div');
   preview.className = 'telegram-chat-preview';
-  preview.textContent = chatPreview;
+  if (chatPreviewSender) {
+    const sender = document.createElement('span');
+    sender.className = 'telegram-chat-preview-sender';
+    sender.textContent = `${chatPreviewSender}: `;
+    preview.append(sender);
+  }
+  const previewText = document.createElement('span');
+  previewText.className = 'telegram-chat-preview-text';
+  previewText.textContent = chatPreview;
+  preview.append(previewText);
   const status = document.createElement('div');
   status.className = 'telegram-chat-status';
 
@@ -64,11 +75,6 @@ export const createTelegramChatListItem = (
     badge.textContent = deps.formatTelegramUnreadBadge(unreadCount);
     badge.title = `${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`;
     status.append(badge);
-  } else {
-    const readDot = document.createElement('span');
-    readDot.className = 'telegram-chat-read-dot';
-    readDot.title = 'No unread messages';
-    status.append(readDot);
   }
 
   top.replaceChildren(name, date);

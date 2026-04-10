@@ -30,8 +30,10 @@ interface TelegramMessageListProps {
   activeChatId: string | null;
   activeChatTitle: string;
   canDropFiles?: boolean;
+  hasOlderMessages?: boolean;
   legacyApi: LegacyAppBridgeApi | null;
   loadError: string | null;
+  loadingOlderMessages?: boolean;
   messages: LegacyRenderableTelegramMessage[];
   messagesLoading: boolean;
   onBackToChats?: () => void;
@@ -1116,8 +1118,10 @@ export const TelegramMessageList = ({
   activeChatId,
   activeChatTitle,
   canDropFiles = false,
+  hasOlderMessages = false,
   legacyApi,
   loadError,
+  loadingOlderMessages = false,
   messages,
   messagesLoading,
   onBackToChats,
@@ -1130,7 +1134,9 @@ export const TelegramMessageList = ({
   const [voicePlaybackRate, setVoicePlaybackRate] =
     useState<(typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]>(1);
   const pendingAutoScrollRef = useRef<string | null>(null);
+  const pendingOlderHistoryAnchorRef = useRef<{ firstMessageId: string; scrollHeight: number } | null>(null);
   const latestScrollFollowupTimerRef = useRef<number | null>(null);
+  const previousLoadingOlderMessagesRef = useRef(loadingOlderMessages);
   const previousMessagesLoadingRef = useRef(messagesLoading);
   const previousActiveChatIdRef = useRef(activeChatId);
   const autoScrollGraceRef = useRef<{ chatId: string | null; expiresAt: number }>({
@@ -1263,6 +1269,10 @@ export const TelegramMessageList = ({
   }, [activeChatId, selectedMessageId, target]);
 
   useEffect(() => {
+    pendingOlderHistoryAnchorRef.current = null;
+  }, [activeChatId]);
+
+  useEffect(() => {
     pendingAutoScrollRef.current = activeChatId;
     armAutoScrollGrace(activeChatId);
   }, [activeChatId]);
@@ -1304,6 +1314,74 @@ export const TelegramMessageList = ({
       scrollContainer.removeEventListener('scroll', updateJumpState);
     };
   }, [target, activeChatId, bundles.length, messagesLoading]);
+
+  useEffect(() => {
+    const scrollContainer = getTelegramMessageScrollContainer(target);
+    if (!scrollContainer || !legacyApi || !activeChatId) {
+      pendingOlderHistoryAnchorRef.current = null;
+      return;
+    }
+
+    const maybeLoadOlderMessages = () => {
+      if (
+        scrollContainer.scrollTop > 32 ||
+        loadingOlderMessages ||
+        messagesLoading ||
+        !hasOlderMessages ||
+        messages.length < 1 ||
+        pendingOlderHistoryAnchorRef.current
+      ) {
+        return;
+      }
+
+      const firstMessageId = messages[0]?.id;
+      if (!firstMessageId) {
+        return;
+      }
+
+      pendingOlderHistoryAnchorRef.current = {
+        firstMessageId,
+        scrollHeight: scrollContainer.scrollHeight,
+      };
+      void legacyApi.loadOlderTelegramMessages();
+    };
+
+    scrollContainer.addEventListener('scroll', maybeLoadOlderMessages, { passive: true });
+    return () => {
+      scrollContainer.removeEventListener('scroll', maybeLoadOlderMessages);
+    };
+  }, [
+    activeChatId,
+    hasOlderMessages,
+    legacyApi,
+    loadingOlderMessages,
+    messages,
+    messagesLoading,
+    target,
+  ]);
+
+  useEffect(() => {
+    const scrollContainer = getTelegramMessageScrollContainer(target);
+    const wasLoadingOlderMessages = previousLoadingOlderMessagesRef.current;
+    previousLoadingOlderMessagesRef.current = loadingOlderMessages;
+    if (!scrollContainer || loadingOlderMessages || !wasLoadingOlderMessages) {
+      return;
+    }
+
+    const pendingAnchor = pendingOlderHistoryAnchorRef.current;
+    pendingOlderHistoryAnchorRef.current = null;
+    if (!pendingAnchor) {
+      return;
+    }
+
+    if (messages[0]?.id === pendingAnchor.firstMessageId) {
+      return;
+    }
+
+    runAfterPaint(() => {
+      scrollContainer.scrollTop += scrollContainer.scrollHeight - pendingAnchor.scrollHeight;
+    });
+  }, [loadingOlderMessages, messages, target]);
 
   useEffect(() => {
     const scrollContainer = getTelegramMessageScrollContainer(target);

@@ -72,6 +72,7 @@ export type TdChat = {
     content?: unknown;
     is_outgoing?: boolean;
     date?: number;
+    sender_id?: { user_id?: number; chat_id?: number; _: string };
   };
   last_read_outbox_message_id?: number | string | bigint;
   notification_settings?: {

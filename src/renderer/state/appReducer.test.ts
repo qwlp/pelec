@@ -36,8 +36,10 @@ describe('appReducer', () => {
         sending: false,
         visible: false,
       },
+      hasOlderMessages: false,
       imagePreviewUrl: null,
       loadError: null,
+      loadingOlderMessages: false,
       loading: false,
       messageLoadError: null,
       messages: [

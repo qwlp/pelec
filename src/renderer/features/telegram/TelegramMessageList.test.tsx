@@ -858,6 +858,139 @@ describe('TelegramMessageList', () => {
     expect(scrollContainer.scrollTop).toBe(600);
   });
 
+  it('loads older messages at the top and preserves scroll position after prepending history', async () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+
+    let scrollHeight = 600;
+    Object.defineProperty(scrollContainer, 'clientHeight', {
+      configurable: true,
+      value: 200,
+    });
+    Object.defineProperty(scrollContainer, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
+
+    const legacyApi = {
+      loadOlderTelegramMessages: vi.fn(async () => undefined),
+    } as unknown as LegacyAppBridgeApi;
+
+    const { rerender } = render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        hasOlderMessages
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: '2',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 2,
+          },
+          {
+            id: '3',
+            sender: 'Linus',
+            text: 'Latest',
+            timestamp: 3,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    scrollContainer.scrollTop = 0;
+    fireEvent.scroll(scrollContainer);
+
+    await waitFor(() => {
+      expect(legacyApi.loadOlderTelegramMessages).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        hasOlderMessages
+        legacyApi={legacyApi}
+        loadError={null}
+        loadingOlderMessages
+        messages={[
+          {
+            id: '2',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 2,
+          },
+          {
+            id: '3',
+            sender: 'Linus',
+            text: 'Latest',
+            timestamp: 3,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    scrollContainer.scrollTop = 0;
+    scrollHeight = 900;
+    rerender(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: '0',
+            sender: 'Grace',
+            text: 'Older',
+            timestamp: 0,
+          },
+          {
+            id: '1',
+            sender: 'Grace',
+            text: 'Earlier',
+            timestamp: 1,
+          },
+          {
+            id: '2',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 2,
+          },
+          {
+            id: '3',
+            sender: 'Linus',
+            text: 'Latest',
+            timestamp: 3,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(scrollContainer.scrollTop).toBe(300);
+    });
+  });
+
   it('auto-scrolls to the bottom after a chat click reload completes', async () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'telegram-message-list';

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildTelegramChatPreview,
   extractTelegramCallInfo,
   extractTelegramMessageText,
   extractTelegramReactions,
@@ -70,5 +71,47 @@ describe('telegram message helpers', () => {
       { value: '🔥', count: 3, chosen: true },
       { value: 'Paid', count: 1, chosen: undefined },
     ]);
+  });
+
+  it('adds sender context for group chat previews and trims usernames', () => {
+    expect(
+      buildTelegramChatPreview({
+        chatTitle: 'Ops Room',
+        includeSender: true,
+        isOutgoing: false,
+        previewText: 'Deploy done',
+        senderLabel: 'Ada Lovelace (@ada)',
+      }),
+    ).toEqual({
+      previewText: 'Deploy done',
+      senderLabel: 'Ada Lovelace',
+    });
+  });
+
+  it('uses You for outgoing group chat previews and suppresses duplicate chat-title senders', () => {
+    expect(
+      buildTelegramChatPreview({
+        chatTitle: 'Ops Room',
+        includeSender: true,
+        isOutgoing: true,
+        previewText: 'Deploy done',
+        senderLabel: 'Ignored',
+      }),
+    ).toEqual({
+      previewText: 'Deploy done',
+      senderLabel: 'You',
+    });
+
+    expect(
+      buildTelegramChatPreview({
+        chatTitle: 'Ops Room',
+        includeSender: true,
+        isOutgoing: false,
+        previewText: 'Announcement',
+        senderLabel: 'Ops Room',
+      }),
+    ).toEqual({
+      previewText: 'Announcement',
+    });
   });
 });

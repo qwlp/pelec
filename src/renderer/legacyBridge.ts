@@ -55,8 +55,10 @@ export interface LegacyTelegramSnapshot {
   contextMenu: LegacyTelegramContextMenuState;
   filteredChats: ChatSummary[];
   forward: LegacyTelegramForwardState;
+  hasOlderMessages: boolean;
   imagePreviewUrl: string | null;
   loadError: string | null;
+  loadingOlderMessages: boolean;
   loading: boolean;
   draftText: string;
   messageLoadError: string | null;
@@ -94,6 +96,7 @@ export interface LegacyAppBridgeApi {
   getCommands(): LegacyCommandItem[];
   getSnapshot(): LegacyAppSnapshot;
   handleEscape(): void;
+  loadOlderTelegramMessages(): Promise<void>;
   movePane(direction: -1 | 1): void;
   moveSelection(direction: -1 | 1): void;
   moveSelectionByPage(direction: -1 | 1): void;
@@ -121,6 +124,7 @@ export interface LegacyAppBridgeApi {
   setTelegramForwardQuery(query: string): void;
   setTelegramSearchQuery(query: string): void;
   setTelegramDraftValue(value: string): void;
+  setTelegramMessagesVisible(visible: boolean): void;
   sendTelegramMessage(): void;
   startTelegramVoiceRecording(pointerId?: number): void;
   stopTelegramVoiceRecording(): void;

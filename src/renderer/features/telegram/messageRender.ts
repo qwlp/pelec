@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../../shared/connectors';
+import { formatMessageDayLabel, hasValidTimestamp } from '../../lib/format';
 
 interface TelegramMessageRenderSignatureInput {
   albumCaption: string;
@@ -49,6 +50,18 @@ const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): 
     message.pendingState ?? '',
   ].join('::');
 
+const serializePreviousMessageContext = (message: ChatMessage | null): string => {
+  if (!message) {
+    return 'root';
+  }
+
+  return [
+    message.sender,
+    message.outgoing ? '1' : '0',
+    hasValidTimestamp(message.timestamp) ? formatMessageDayLabel(message.timestamp) : '',
+  ].join('::');
+};
+
 export const getTelegramMessageRenderSignature = ({
   albumCaption,
   previousMessage,
@@ -60,6 +73,6 @@ export const getTelegramMessageRenderSignature = ({
     shouldCollapseAlbum ? 'album' : 'single',
     albumCaption,
     serializeMessage(primaryMessage),
-    previousMessage ? serializeMessage(previousMessage) : 'root',
+    serializePreviousMessageContext(previousMessage),
     renderMessages.map((message) => serializeMessage(message)).join('||'),
   ].join('###');

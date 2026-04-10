@@ -34,6 +34,22 @@ export interface ConnectorStatus {
   lastError?: string;
 }
 
+export interface ConnectorProfile {
+  displayName: string;
+  firstName: string;
+  lastName: string;
+  username?: string;
+  avatarUrl?: string;
+}
+
+export interface ConnectorProfileUpdate {
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  avatarDataUrl?: string;
+  avatarFileName?: string;
+}
+
 export interface AuthStartResult {
   network: NetworkId;
   mode: AuthMode;
@@ -52,6 +68,7 @@ export interface ChatSummary {
   id: string;
   title: string;
   lastMessagePreview: string;
+  lastMessageSender?: string;
   lastMessageTimestamp?: number;
   unreadCount: number;
   avatarUrl?: string;
@@ -109,6 +126,8 @@ export interface ResolvedDocument extends ChatDocument {
 
 export interface ListMessagesOptions {
   passive?: boolean;
+  beforeMessageId?: string;
+  limit?: number;
 }
 
 export interface ChatMessage {
@@ -168,6 +187,8 @@ export interface Connector {
   init(): Promise<void>;
   shutdown?(): Promise<void>;
   getStatus(): ConnectorStatus;
+  getProfile?(): Promise<ConnectorProfile | null>;
+  updateProfile?(profile: ConnectorProfileUpdate): Promise<ConnectorProfile | null>;
   startAuth(): Promise<AuthStartResult>;
   submitAuth(payload: AuthSubmission): Promise<ConnectorStatus>;
   resetAuth?(): Promise<ConnectorStatus>;

@@ -19,6 +19,7 @@ describe('telegram chat list helpers', () => {
     const chat: ChatSummary = {
       id: '1',
       title: 'Ops',
+      lastMessageSender: 'Ada',
       lastMessagePreview: 'hello',
       lastMessageTimestamp: 123,
       unreadCount: 2,
@@ -27,6 +28,7 @@ describe('telegram chat list helpers', () => {
     };
 
     expect(getTelegramChatRenderSignature(chat)).toContain('Ops');
+    expect(getTelegramChatRenderSignature(chat)).toContain('Ada');
     expect(getTelegramChatRenderSignature({ ...chat, unreadCount: 3 })).not.toBe(
       getTelegramChatRenderSignature(chat),
     );
@@ -38,6 +40,7 @@ describe('telegram chat list helpers', () => {
       {
         id: '1',
         title: 'Ops',
+        lastMessageSender: 'Ada',
         lastMessagePreview: 'hello',
         lastMessageTimestamp: 123,
         unreadCount: 2,
@@ -62,7 +65,39 @@ describe('telegram chat list helpers', () => {
     row.click();
 
     expect(row.querySelector('.telegram-chat-name')?.textContent).toBe('Ops');
+    expect(row.querySelector('.telegram-chat-preview-sender')?.textContent).toBe('Ada: ');
+    expect(row.querySelector('.telegram-chat-preview-text')?.textContent).toBe('hello');
     expect(row.querySelector('.telegram-chat-unread-badge')?.textContent).toBe('2');
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render a read-status dot for chats with no unread messages', () => {
+    const row = createTelegramChatListItem(
+      {
+        id: '1',
+        title: 'Ops',
+        lastMessagePreview: 'hello',
+        lastMessageTimestamp: 123,
+        unreadCount: 0,
+        avatarUrl: undefined,
+      },
+      {
+        createAvatarNode: (label) => {
+          const node = document.createElement('div');
+          node.textContent = label;
+          return node;
+        },
+        formatChatTimestamp: () => '10:00',
+        formatFullDateTime: () => 'yesterday',
+        formatTelegramUnreadBadge: (count) => String(count),
+        hasValidTimestamp: () => true,
+        onClick: vi.fn(),
+        safeLabel: (value, fallback) => value ?? fallback,
+        safeText: (value) => value ?? '',
+      },
+    );
+
+    expect(row.querySelector('.telegram-chat-read-dot')).toBeNull();
+    expect(row.querySelector('.telegram-chat-unread-badge')).toBeNull();
   });
 });

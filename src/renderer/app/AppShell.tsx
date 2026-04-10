@@ -137,6 +137,10 @@ export const AppShell = () => {
     telegramSnapshot !== null &&
     telegramSnapshot.activeChatCanSend &&
     !telegramCompactShowChats;
+  const telegramMessagesVisible =
+    state.appShell.activeNetwork === 'telegram' &&
+    telegramSnapshot !== null &&
+    !telegramCompactShowChats;
   const showTelegramChatList =
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
@@ -313,6 +317,10 @@ export const AppShell = () => {
   }, [state.appShell.legacyReady]);
 
   useEffect(() => {
+    legacyApi?.setTelegramMessagesVisible(telegramMessagesVisible);
+  }, [legacyApi, telegramMessagesVisible]);
+
+  useEffect(() => {
     if (showTelegramComposer && state.appShell.mode === 'insert') {
       telegramComposerInputRef.current?.focus();
     }
@@ -395,6 +403,36 @@ export const AppShell = () => {
     closeCommandPalette();
   };
 
+  const handleTelegramOpenConfig = useEffectEvent(async () => {
+    const configPath = state.config.appConfig?.configPath;
+    if (!configPath) {
+      return;
+    }
+    await window.pelec.openPath(configPath);
+  });
+
+  const handleTelegramClearCache = useEffectEvent(async () => {
+    await window.pelec.clearAppCache();
+    legacyApi?.refresh();
+  });
+
+  const handleTelegramLogin = useEffectEvent(async () => {
+    legacyApi?.startAuth();
+  });
+
+  const handleTelegramLogout = useEffectEvent(async () => {
+    await window.pelec.resetConnectorAuth('telegram');
+    legacyApi?.refresh();
+  });
+
+  const handleTelegramRefresh = useEffectEvent(async () => {
+    legacyApi?.refresh();
+  });
+
+  const handleTelegramClearSearch = useEffectEvent(() => {
+    legacyApi?.setTelegramSearchQuery('');
+  });
+
   return (
     <div className="modern-app-shell">
       <div
@@ -413,9 +451,16 @@ export const AppShell = () => {
           <TelegramChatList
             activeChatId={telegramSnapshot.activeChatId}
             chats={telegramSnapshot.filteredChats}
+            configPath={state.config.appConfig?.configPath ?? null}
             listRef={telegramChatListRef}
             loadError={telegramSnapshot.loadError}
             loading={telegramSnapshot.loading}
+            onClearCache={() => void handleTelegramClearCache()}
+            onClearSearch={handleTelegramClearSearch}
+            onLogin={() => void handleTelegramLogin()}
+            onLogout={() => void handleTelegramLogout()}
+            onOpenConfig={() => void handleTelegramOpenConfig()}
+            onRefresh={() => void handleTelegramRefresh()}
             onSearchQueryChange={(query) => legacyApi?.setTelegramSearchQuery(query)}
             onSelectChat={(chatId) => handleTelegramChatSelect(chatId)}
             searchInputRef={telegramSearchInputRef}
@@ -430,8 +475,10 @@ export const AppShell = () => {
             activeChatId={telegramSnapshot.activeChatId}
             activeChatTitle={telegramSnapshot.activeChatTitle}
             canDropFiles={telegramSnapshot.activeChatCanSend}
+            hasOlderMessages={telegramSnapshot.hasOlderMessages}
             legacyApi={legacyApi}
             loadError={telegramSnapshot.messageLoadError}
+            loadingOlderMessages={telegramSnapshot.loadingOlderMessages}
             messages={telegramSnapshot.messages}
             messagesLoading={telegramSnapshot.messagesLoading}
             onBackToChats={telegramCompactShowMessages ? () => handleTelegramBackToChats() : undefined}
