@@ -86,7 +86,7 @@ describe('TelegramComposer', () => {
     expect(legacyApi.focusTelegramComposer).not.toHaveBeenCalled();
   });
 
-  it('grows the visible textarea when the draft becomes multiline', async () => {
+  it('keeps the visible textarea at a fixed compact height', async () => {
     const target = document.createElement('div');
     document.body.append(target);
     const legacyApi = {
@@ -116,9 +116,6 @@ describe('TelegramComposer', () => {
 
     const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
     expect(textarea).toBeTruthy();
-    const scrollHeightGetter = vi
-      .spyOn(window.HTMLTextAreaElement.prototype, 'scrollHeight', 'get')
-      .mockReturnValue(72);
 
     view.rerender(
       <TelegramComposer
@@ -134,9 +131,45 @@ describe('TelegramComposer', () => {
     );
 
     await waitFor(() => {
-      expect((textarea as HTMLTextAreaElement).style.height).toBe('72px');
+      expect((textarea as HTMLTextAreaElement).style.height).toBe('48px');
+      expect((textarea as HTMLTextAreaElement).style.overflowY).toBe('auto');
     });
-    scrollHeightGetter.mockRestore();
+  });
+
+  it('keeps oversized drafts inside the fixed composer textarea', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText={'line one\nline two\nline three'}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+
+    await waitFor(() => {
+      expect(textarea?.style.height).toBe('48px');
+      expect(textarea?.style.overflowY).toBe('auto');
+    });
   });
 
   it('does not render when sending is disabled for the active chat', () => {

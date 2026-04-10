@@ -34,6 +34,7 @@ interface TelegramMessageListProps {
   loadError: string | null;
   messages: LegacyRenderableTelegramMessage[];
   messagesLoading: boolean;
+  onBackToChats?: () => void;
   selectedMessageId: string | null;
   target: HTMLElement | null;
 }
@@ -1119,6 +1120,7 @@ export const TelegramMessageList = ({
   loadError,
   messages,
   messagesLoading,
+  onBackToChats,
   selectedMessageId,
   target,
 }: TelegramMessageListProps) => {
@@ -1427,6 +1429,17 @@ export const TelegramMessageList = ({
     <>
       {createPortal(
         <>
+          {onBackToChats ? (
+            <div className="telegram-message-nav">
+              <button
+                type="button"
+                className="telegram-message-back-button"
+                onClick={onBackToChats}
+              >
+                Back to chats
+              </button>
+            </div>
+          ) : null}
           {messagesLoading ? <div className="telegram-empty">Loading messages...</div> : null}
           {!messagesLoading && loadError ? <div className="telegram-empty">{loadError}</div> : null}
           {!messagesLoading && !loadError && bundles.length < 1 ? (

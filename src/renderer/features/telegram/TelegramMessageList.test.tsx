@@ -189,6 +189,31 @@ describe('TelegramMessageList', () => {
     expect(document.activeElement).toBe(scrollContainer);
   });
 
+  it('renders a compact back action and routes it to the provided handler', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const onBackToChats = vi.fn();
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[]}
+        messagesLoading={false}
+        onBackToChats={onBackToChats}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    fireEvent.click(document.body.querySelector('.telegram-message-back-button') as HTMLElement);
+
+    expect(target.textContent).toContain('Back to chats');
+    expect(onBackToChats).toHaveBeenCalledTimes(1);
+  });
+
   it('accepts dropped files anywhere in the message pane', () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'telegram-message-list';

@@ -16,6 +16,8 @@ import { LegacyWorkspaceAdapter } from './LegacyWorkspaceAdapter';
 import { ModalLayer } from './ModalLayer';
 import { WebviewHost } from './WebviewHost';
 
+const TELEGRAM_COMPACT_BREAKPOINT_PX = 820;
+
 const FALLBACK_SHORTCUTS: ShortcutConfig = {
   forceNormalMode: 'CommandOrControl+[',
   openCommandPalette: 'CommandOrControl+K',
@@ -32,10 +34,15 @@ export const AppShell = () => {
   const [legacyApi, setLegacyApi] = useState<LegacyAppBridgeApi | null>(null);
   const [telegramMessageTarget, setTelegramMessageTarget] = useState<HTMLElement | null>(null);
   const [telegramComposerTarget, setTelegramComposerTarget] = useState<HTMLElement | null>(null);
+  const [telegramCompactView, setTelegramCompactView] = useState<'chats' | 'messages'>('chats');
+  const [windowWidth, setWindowWidth] = useState<number>(() =>
+    typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
+  );
   const telegramChatListRef = useRef<HTMLElement | null>(null);
   const telegramSearchInputRef = useRef<HTMLInputElement | null>(null);
   const telegramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingTelegramPaneFocusRef = useRef<'telegram-chats' | 'telegram-messages' | null>(null);
+  const previousTelegramCompactLayoutRef = useRef(false);
 
   useEffect(() => {
     const end = beginMeasure('app.boot');
@@ -55,6 +62,18 @@ export const AppShell = () => {
       });
     });
   }, [dispatch]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowWidth(window.innerWidth);
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
 
   const shortcuts = state.config.appConfig?.shortcuts ?? FALLBACK_SHORTCUTS;
   const customKeymap = state.config.userConfig?.keyboard.keymap ?? {};
@@ -102,14 +121,57 @@ export const AppShell = () => {
   );
 
   const telegramSnapshot = selectLegacyTelegramSnapshot(state);
+  const telegramCompactLayout =
+    state.appShell.activeNetwork === 'telegram' &&
+    telegramSnapshot !== null &&
+    windowWidth < TELEGRAM_COMPACT_BREAKPOINT_PX;
+  const telegramCompactShowChats =
+    telegramCompactLayout &&
+    (!telegramSnapshot?.activeChatId || telegramCompactView === 'chats');
+  const telegramCompactShowMessages =
+    telegramCompactLayout &&
+    !!telegramSnapshot?.activeChatId &&
+    telegramCompactView === 'messages';
   const showTelegramComposer =
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
-    telegramSnapshot.activeChatCanSend;
+    telegramSnapshot.activeChatCanSend &&
+    !telegramCompactShowChats;
   const showTelegramChatList =
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
-    !telegramSnapshot.chatListMinimized;
+    (telegramCompactLayout ? telegramCompactShowChats : !telegramSnapshot.chatListMinimized);
+
+  useEffect(() => {
+    if (state.appShell.activeNetwork !== 'telegram') {
+      setTelegramCompactView('chats');
+      previousTelegramCompactLayoutRef.current = false;
+      return;
+    }
+
+    const enteringCompact = telegramCompactLayout && !previousTelegramCompactLayoutRef.current;
+    previousTelegramCompactLayoutRef.current = telegramCompactLayout;
+
+    if (!telegramCompactLayout) {
+      return;
+    }
+
+    if (!telegramSnapshot?.activeChatId) {
+      setTelegramCompactView('chats');
+      return;
+    }
+
+    if (enteringCompact) {
+      setTelegramCompactView(
+        state.appShell.activePane === 'telegram-chats' ? 'chats' : 'messages',
+      );
+    }
+  }, [
+    state.appShell.activeNetwork,
+    state.appShell.activePane,
+    telegramCompactLayout,
+    telegramSnapshot?.activeChatId,
+  ]);
 
   const focusSearch = useEffectEvent(() => {
     if (state.appShell.activeNetwork === 'telegram') {
@@ -151,7 +213,18 @@ export const AppShell = () => {
       return;
     }
 
+    if (telegramCompactLayout && state.appShell.activePane === 'telegram-composer') {
+      setTelegramCompactView('chats');
+      legacyApi.setMode('normal');
+      scheduleTelegramPaneFocus('telegram-chats');
+      legacyApi.movePane(-1);
+      return;
+    }
+
     if (state.appShell.activePane === 'telegram-messages') {
+      if (telegramCompactLayout) {
+        setTelegramCompactView('chats');
+      }
       scheduleTelegramPaneFocus('telegram-chats');
       legacyApi.movePane(-1);
       return;
@@ -176,6 +249,9 @@ export const AppShell = () => {
       if (nextChatId && nextChatId !== telegramSnapshot?.activeChatId) {
         legacyApi.activateTelegramChat(nextChatId);
       }
+      if (telegramCompactLayout) {
+        setTelegramCompactView('messages');
+      }
       scheduleTelegramPaneFocus('telegram-messages');
       legacyApi.activateTelegramMessagesPane();
       return;
@@ -187,6 +263,32 @@ export const AppShell = () => {
     }
 
     legacyApi.movePane(1);
+  });
+
+  const handleTelegramChatSelect = useEffectEvent((chatId: string) => {
+    if (telegramCompactLayout) {
+      setTelegramCompactView('messages');
+    }
+    legacyApi?.activateTelegramChat(chatId);
+    if (telegramCompactLayout) {
+      scheduleTelegramPaneFocus('telegram-messages');
+      legacyApi?.activateTelegramMessagesPane();
+    }
+  });
+
+  const handleTelegramBackToChats = useEffectEvent(() => {
+    if (!legacyApi) {
+      return;
+    }
+
+    setTelegramCompactView('chats');
+    if (state.appShell.activePane === 'telegram-composer') {
+      legacyApi.setMode('normal');
+    }
+    scheduleTelegramPaneFocus('telegram-chats');
+    if (state.appShell.activePane !== 'telegram-chats') {
+      legacyApi.movePane(-1);
+    }
   });
 
   useEffect(() => {
@@ -298,7 +400,11 @@ export const AppShell = () => {
       <div
         className={`modern-workspace${
           showTelegramChatList ? ' react-telegram-chat-list' : ''
-        }${showTelegramComposer ? ' react-telegram-composer' : ''}`}
+        }${showTelegramComposer ? ' react-telegram-composer' : ''}${
+          telegramCompactLayout ? ' telegram-compact-layout' : ''
+        }${telegramCompactShowChats ? ' telegram-compact-show-chats' : ''}${
+          telegramCompactShowMessages ? ' telegram-compact-show-messages' : ''
+        }`}
       >
         <WebviewHost>
           <LegacyWorkspaceAdapter bridge={bridge} />
@@ -311,7 +417,7 @@ export const AppShell = () => {
             loadError={telegramSnapshot.loadError}
             loading={telegramSnapshot.loading}
             onSearchQueryChange={(query) => legacyApi?.setTelegramSearchQuery(query)}
-            onSelectChat={(chatId) => legacyApi?.activateTelegramChat(chatId)}
+            onSelectChat={(chatId) => handleTelegramChatSelect(chatId)}
             searchInputRef={telegramSearchInputRef}
             searchQuery={telegramSnapshot.searchQuery}
             selectedChatId={
@@ -319,7 +425,7 @@ export const AppShell = () => {
             }
           />
         ) : null}
-        {state.appShell.activeNetwork === 'telegram' && telegramSnapshot ? (
+        {state.appShell.activeNetwork === 'telegram' && telegramSnapshot && !telegramCompactShowChats ? (
           <TelegramMessageList
             activeChatId={telegramSnapshot.activeChatId}
             activeChatTitle={telegramSnapshot.activeChatTitle}
@@ -328,6 +434,7 @@ export const AppShell = () => {
             loadError={telegramSnapshot.messageLoadError}
             messages={telegramSnapshot.messages}
             messagesLoading={telegramSnapshot.messagesLoading}
+            onBackToChats={telegramCompactShowMessages ? () => handleTelegramBackToChats() : undefined}
             selectedMessageId={
               state.appShell.activePane === 'telegram-messages'
                 ? telegramSnapshot.selectedMessageId

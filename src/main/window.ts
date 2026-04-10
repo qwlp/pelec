@@ -5,8 +5,6 @@ export const createMainWindow = (): BrowserWindow => {
   const mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    minWidth: 1100,
-    minHeight: 720,
     backgroundColor: '#0d0a12',
     autoHideMenuBar: true,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',

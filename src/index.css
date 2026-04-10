@@ -137,6 +137,11 @@ body {
   z-index: 8;
 }
 
+.modern-workspace.telegram-compact-layout .modern-telegram-chat-pane {
+  inset: 0;
+  width: auto;
+}
+
 .modern-network-rail {
   position: absolute;
   top: 20px;
@@ -608,6 +613,20 @@ textarea {
   overflow: hidden;
 }
 
+.modern-workspace.telegram-compact-layout.telegram-compact-show-chats .native-telegram {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+
+.modern-workspace.telegram-compact-layout.telegram-compact-show-messages .native-telegram {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.modern-workspace.telegram-compact-layout.telegram-compact-show-chats .telegram-chat-pane,
+.modern-workspace.telegram-compact-layout.telegram-compact-show-messages .telegram-left-pane {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .native-telegram.hidden {
   display: none;
 }
@@ -857,6 +876,34 @@ textarea {
   align-content: start;
   min-height: 0;
   min-width: 0;
+}
+
+.telegram-message-nav {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 4px;
+}
+
+.telegram-message-back-button {
+  border: 1px solid var(--line-soft);
+  background: rgb(var(--bg-header-rgb) / 0.94);
+  color: var(--ink-title);
+  padding: 8px 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  backdrop-filter: blur(10px);
+}
+
+.telegram-message-back-button:hover,
+.telegram-message-back-button:focus-visible {
+  border-color: var(--line-strong);
+  background: rgb(var(--bg-elev-rgb) / 0.96);
+  outline: none;
 }
 
 .telegram-message-root {
@@ -2153,9 +2200,12 @@ textarea {
   color: #ebdef6;
   padding: 12px 14px;
   font-size: calc(14px * var(--font-scale));
-  min-height: 40px;
+  min-height: 48px;
+  max-height: 48px;
+  height: 48px;
+  align-self: center;
   resize: none;
-  overflow-y: hidden;
+  overflow-y: auto;
   line-height: 1.4;
   box-shadow: none;
 }
@@ -3126,16 +3176,8 @@ textarea {
     padding: 0;
   }
 
-  .native-telegram {
-    grid-template-columns: 1fr;
-  }
-
   .native-instagram {
     grid-template-columns: 1fr;
-  }
-
-  .telegram-left-pane {
-    display: none;
   }
 
   .instagram-left-pane {

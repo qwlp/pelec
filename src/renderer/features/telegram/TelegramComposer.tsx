@@ -28,6 +28,8 @@ type TelegramEmojiCompletionState = {
   tokenStart: number;
 };
 
+const TELEGRAM_COMPOSER_HEIGHT_PX = 48;
+
 const formatRecordingDuration = (durationMs: number): string => {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -149,8 +151,9 @@ export const TelegramComposer = ({
     if (!textarea) {
       return;
     }
-    textarea.style.height = '0px';
-    textarea.style.height = `${textarea.scrollHeight}px`;
+
+    textarea.style.height = `${TELEGRAM_COMPOSER_HEIGHT_PX}px`;
+    textarea.style.overflowY = 'auto';
     if (pendingSelectionRef.current) {
       textarea.setSelectionRange(
         pendingSelectionRef.current.start,
