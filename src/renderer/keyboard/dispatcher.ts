@@ -102,6 +102,13 @@ export const dispatchKeyboardEvent = (
   }
   if (
     !normalized.isTypingTarget &&
+    runAction('switchInstagram') &&
+    matchesBinding(normalized, context.shortcuts.instagramNetwork)
+  ) {
+    return true;
+  }
+  if (
+    !normalized.isTypingTarget &&
     runAction('switchTelegram') &&
     matchesBinding(normalized, context.shortcuts.telegramNetwork)
   ) {

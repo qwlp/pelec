@@ -8,6 +8,7 @@ export type KeyboardScope =
   | 'telegramComposer'
   | 'instagramChats'
   | 'instagramMessages'
+  | 'instagramComposer'
   | 'commandPalette'
   | 'modal'
   | 'webview';
@@ -33,6 +34,9 @@ export const resolveKeyboardScope = (
   if (element?.id === 'telegram-compose-input') {
     return 'telegramComposer';
   }
+  if (element?.id === 'instagram-compose-input') {
+    return 'instagramComposer';
+  }
   if (element?.closest('#telegram-message-list, .telegram-message-list')) {
     return 'telegramMessages';
   }
@@ -49,6 +53,8 @@ export const resolveKeyboardScope = (
       return 'instagramChats';
     case 'instagram-messages':
       return 'instagramMessages';
+    case 'instagram-composer':
+      return 'instagramComposer';
     case 'networks':
       return 'networkRail';
     default:

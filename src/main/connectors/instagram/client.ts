@@ -1,38 +1,43 @@
-import path from 'node:path';
-import { createRequire } from 'node:module';
+import { EventEmitter } from 'node:events';
 import { mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
-import { session as electronSession } from 'electron';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import type { OutgoingAttachmentDocument } from '../../../shared/connectors';
 import type {
   InstagramAuthResult,
   InstagramBroadcastResponse,
   InstagramCurrentUserResponse,
   InstagramInboxResponse,
+  InstagramMessageItem,
   InstagramMetaState,
+  InstagramRealtimeStatus,
+  InstagramRuntimeEvent,
   InstagramThread,
   InstagramThreadResponse,
 } from './types';
-
-type InstagramCookieJar = {
-  setCookie(
-    cookie: string,
-    url: string,
-    options?: { ignoreError?: boolean },
-  ): Promise<unknown> | unknown;
-};
-
-type InstagramState = {
-  checkpoint?: unknown;
-  cookieJar: InstagramCookieJar;
-  deserialize(value: Record<string, unknown>): Promise<void>;
-  generateDevice(seed: string): void;
-  serialize(): Promise<Record<string, unknown>>;
-};
 
 type InstagramChallengeState = {
   step_name?: string;
   step_data?: {
     contact_point?: string;
   };
+};
+
+type InstagramState = {
+  authorization?: string;
+  constants?: {
+    HOST?: string;
+  };
+  cookieJar?: {
+    getCookies(uri: string): Array<{ key?: string; value?: string }>;
+    setCookie(cookieOrStr: string, uri: string): unknown;
+  };
+  checkpoint?: unknown;
+  cookieUserId?: string;
+  deserialize(value: Record<string, unknown>): Promise<void>;
+  generateDevice(seed: string): void;
+  serialize(): Promise<Record<string, unknown>>;
+  phoneId?: string;
 };
 
 type InstagramClient = {
@@ -54,28 +59,43 @@ type InstagramClient = {
     directThread(threadId: string): {
       broadcastText(
         text: string,
-        options?: {
-          item_id?: string;
-          client_context?: string;
-        },
-      ): Promise<void>;
+        replyToMessage?: InstagramMessageItem,
+        skipLinkCheck?: boolean,
+      ): Promise<InstagramBroadcastResponse>;
+      broadcastPhoto(options: { file: Buffer }): Promise<InstagramBroadcastResponse>;
+      broadcastVideo(options: { video: Buffer }): Promise<InstagramBroadcastResponse>;
+      deleteItem(itemId: string): Promise<unknown>;
+      markItemSeen(itemId: string): Promise<unknown>;
     };
   };
   feed: {
     directInbox(): {
       items(): Promise<InstagramThread[]>;
+      request?(): Promise<unknown>;
+      isMoreAvailable?(): boolean;
+      cursor?: string;
     };
-    directThread(input: { thread_id: string }): {
-      items(): Promise<InstagramThread['items'] extends Array<infer Item> ? Item[] : never[]>;
+    directThread(input: { thread_id: string; oldest_cursor?: string }): {
+      items(): Promise<InstagramMessageItem[]>;
       request(): Promise<{ thread?: Record<string, unknown> }>;
+      cursor?: string;
     };
+    reelsTray?(reason?: string): {
+      request(): Promise<unknown>;
+    };
+    timeline?(reason?: string): {
+      request(): Promise<unknown>;
+    };
+  };
+  launcher?: {
+    preLoginSync(): Promise<void>;
   };
   request: {
     end$: {
       subscribe(listener: () => void): void;
     };
   };
-  simulate: {
+  simulate?: {
     postLoginFlow(): Promise<void>;
     preLoginFlow(): Promise<void>;
   };
@@ -84,6 +104,34 @@ type InstagramClient = {
 
 type InstagramPrivateApiModule = {
   IgApiClient: new () => InstagramClient;
+};
+
+type InstagramMqttModule = {
+  IgApiClientExt?: new () => InstagramClient;
+  withRealtime(client: InstagramClient): {
+    realtime: {
+      on(event: 'error' | 'close' | 'message', listener: (...args: unknown[]) => void): void;
+      connect(options: {
+        graphQlSubs: unknown[];
+        skywalkerSubs: unknown[];
+        irisData?: unknown;
+      }): Promise<void>;
+      direct?: {
+        markAsSeen?(input: { threadId: string; itemId: string }): Promise<void>;
+      };
+    };
+  };
+  GraphQLSubscriptions: {
+    getAppPresenceSubscription(): unknown;
+    getZeroProvisionSubscription(phoneId?: string): unknown;
+    getDirectStatusSubscription(): unknown;
+    getDirectTypingSubscription(userId?: string): unknown;
+    getAsyncAdSubscription(userId?: string): unknown;
+  };
+  SkywalkerSubscriptions: {
+    directSub(userId?: string): unknown;
+    liveSub(userId?: string): unknown;
+  };
 };
 
 type InstagramLoginError = {
@@ -97,16 +145,43 @@ type InstagramLoginError = {
   };
 };
 
-const authLog = (...args: unknown[]): void => {
-  console.info('[instagram-auth][client]', ...args);
+type ActiveInstagramClientState = {
+  emitter: EventEmitter;
+  currentUser?: InstagramCurrentUserResponse['user'];
+  ig: InstagramClient;
+  partition: string;
+  realtime?: {
+    on(event: 'error' | 'close' | 'message', listener: (...args: unknown[]) => void): void;
+    connect(options: {
+      graphQlSubs: unknown[];
+      skywalkerSubs: unknown[];
+      irisData?: unknown;
+    }): Promise<void>;
+    direct?: {
+      markAsSeen?(input: { threadId: string; itemId: string }): Promise<void>;
+    };
+  };
+  realtimeInitPromise?: Promise<void>;
+  reconnectTimer?: ReturnType<typeof setTimeout>;
+  realtimeStatus: InstagramRealtimeStatus;
+  username: string;
 };
 
 const nodeRequire = createRequire(__filename);
+const activeClients = new Map<string, ActiveInstagramClientState>();
+const partitionRuntimeEmitters = new Map<string, EventEmitter>();
+const partitionRealtimeStatuses = new Map<string, InstagramRealtimeStatus>();
 
-const activeClients = new Map<string, { ig: InstagramClient; username: string }>();
+const getPartitionEmitter = (partition: string): EventEmitter => {
+  let emitter = partitionRuntimeEmitters.get(partition);
+  if (!emitter) {
+    emitter = new EventEmitter();
+    partitionRuntimeEmitters.set(partition, emitter);
+  }
+  return emitter;
+};
 
-const toPartitionKey = (partition: string): string =>
-  partition.replace(/[^a-zA-Z0-9_-]/g, '_');
+const toPartitionKey = (partition: string): string => partition.replace(/[^a-zA-Z0-9_-]/g, '_');
 
 const getStateRoot = (userDataPath: string, partition: string): string =>
   path.join(userDataPath, 'instagram-native', toPartitionKey(partition));
@@ -162,29 +237,43 @@ const clearPendingChallengeSession = async (
 const hasCheckpointState = (state: Record<string, unknown> | undefined): boolean =>
   Boolean(state && typeof state === 'object' && state.checkpoint);
 
-const clearPendingChallengeArtifacts = async (
+const getMetaState = async (
   userDataPath: string,
   partition: string,
-  meta?: InstagramMetaState,
+): Promise<InstagramMetaState> =>
+  (await readJsonFile<InstagramMetaState>(getMetaPath(userDataPath, partition))) ?? {};
+
+const saveMetaState = async (
+  userDataPath: string,
+  partition: string,
+  meta: InstagramMetaState,
 ): Promise<void> => {
-  await clearPendingChallengeSession(userDataPath, partition);
-  const nextMeta = meta ?? (await getMetaState(userDataPath, partition));
-  await saveMetaState(userDataPath, partition, {
-    ...nextMeta,
-    pendingChallenge: undefined,
-  });
+  await writeJsonFile(getMetaPath(userDataPath, partition), meta);
 };
 
-const isCheckpointError = (message: string): boolean => {
-  const lowered = message.toLowerCase();
-  return lowered.includes('checkpoint_required') || lowered.includes('checkpoint required');
+const loadInstagramModule = async (): Promise<InstagramPrivateApiModule> => {
+  try {
+    return nodeRequire('instagram-private-api') as InstagramPrivateApiModule;
+  } catch {
+    throw new Error(
+      'Instagram native dependency missing: install "instagram-private-api" in the app project.',
+    );
+  }
+};
+
+const loadInstagramMqttModule = async (): Promise<InstagramMqttModule> => {
+  try {
+    return nodeRequire('instagram_mqtt') as InstagramMqttModule;
+  } catch {
+    throw new Error('Instagram realtime dependency missing: install "instagram_mqtt" in the app project.');
+  }
 };
 
 const formatErrorMessage = (error: unknown): string => {
   if (error instanceof AggregateError) {
     const messages = Array.from(error.errors ?? [])
-      .map((inner) => formatErrorMessage(inner))
-      .filter((value) => !!value && value.toLowerCase() !== 'error');
+      .map((entry) => formatErrorMessage(entry))
+      .filter(Boolean);
     if (messages.length > 0) {
       return messages.join(' | ');
     }
@@ -202,53 +291,73 @@ const formatErrorMessage = (error: unknown): string => {
   }
 };
 
-const getCookieDomain = (domain: string): string => {
-  const trimmed = domain.trim();
-  if (!trimmed) {
-    return '.instagram.com';
+const parseAuthorizationSession = (
+  authorization: string | undefined,
+): { sessionId?: string; userId?: string } | undefined => {
+  if (!authorization?.startsWith('Bearer IGT:2:')) {
+    return undefined;
   }
-  return trimmed.startsWith('.') ? trimmed : `.${trimmed}`;
+
+  const raw = authorization.slice('Bearer IGT:2:'.length);
+  const tryDecode = (encoding: BufferEncoding | 'base64url'): string | undefined => {
+    try {
+      return Buffer.from(raw, encoding).toString('utf8');
+    } catch {
+      return undefined;
+    }
+  };
+
+  const decoded = tryDecode('base64url') ?? tryDecode('base64');
+  if (!decoded) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(decoded) as {
+      ds_user_id?: string;
+      sessionid?: string;
+    };
+    return {
+      sessionId: parsed.sessionid,
+      userId: parsed.ds_user_id,
+    };
+  } catch {
+    return undefined;
+  }
 };
 
-const setCookieOnJar = async (
-  cookieJar: InstagramCookieJar,
-  cookie: {
-    name: string;
-    value: string;
-    domain: string;
-    path?: string;
-    secure?: boolean;
-    httpOnly?: boolean;
-  },
-): Promise<void> => {
-  const attrs = [
-    `${cookie.name}=${cookie.value}`,
-    `Domain=${getCookieDomain(cookie.domain)}`,
-    `Path=${cookie.path || '/'}`,
-  ];
-  if (cookie.secure) {
-    attrs.push('Secure');
-  }
-  if (cookie.httpOnly) {
-    attrs.push('HttpOnly');
+const ensureSessionCookies = async (
+  ig: InstagramClient,
+  username?: string,
+): Promise<boolean> => {
+  const host = ig.state.constants?.HOST ?? 'https://i.instagram.com';
+  const existingCookies = ig.state.cookieJar?.getCookies(host) ?? [];
+  const hasSessionId = existingCookies.some((cookie) => cookie.key === 'sessionid' && cookie.value);
+  const hasUserId = existingCookies.some((cookie) => cookie.key === 'ds_user_id' && cookie.value);
+  if (hasSessionId && hasUserId) {
+    return false;
   }
 
-  const cookieString = attrs.join('; ');
-  try {
-    const result = cookieJar.setCookie(cookieString, 'https://i.instagram.com', {
-      ignoreError: true,
-    });
-    if (
-      typeof result === 'object' &&
-      result !== null &&
-      'then' in result &&
-      typeof result.then === 'function'
-    ) {
-      await result;
-    }
-  } catch (error) {
-    throw new Error(formatErrorMessage(error));
+  const parsed = parseAuthorizationSession(ig.state.authorization);
+  if (!parsed?.sessionId || !parsed.userId || !ig.state.cookieJar) {
+    return false;
   }
+
+  ig.state.cookieJar.setCookie(
+    `sessionid=${parsed.sessionId}; Domain=.instagram.com; Path=/; Secure; HttpOnly`,
+    host,
+  );
+  ig.state.cookieJar.setCookie(
+    `ds_user_id=${parsed.userId}; Domain=.instagram.com; Path=/; Secure`,
+    host,
+  );
+  if (username?.trim()) {
+    ig.state.cookieJar.setCookie(
+      `ds_user=${username.trim()}; Domain=.instagram.com; Path=/; Secure`,
+      host,
+    );
+  }
+  return true;
 };
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> =>
@@ -271,29 +380,30 @@ const resolveCurrentUser = async (
 ): Promise<InstagramCurrentUserResponse['user']> =>
   withTimeout(ig.account.currentUser(), timeoutMs, 'Timed out fetching Instagram current user.');
 
-const getMetaState = async (
-  userDataPath: string,
+const createActiveClientState = (
   partition: string,
-): Promise<InstagramMetaState> => {
-  return (await readJsonFile<InstagramMetaState>(getMetaPath(userDataPath, partition))) ?? {};
-};
+  ig: InstagramClient,
+  username: string,
+  currentUser?: InstagramCurrentUserResponse['user'],
+): ActiveInstagramClientState => ({
+  emitter: getPartitionEmitter(partition),
+  currentUser,
+  ig,
+  partition,
+  realtimeStatus: 'disconnected',
+  username,
+});
 
-const saveMetaState = async (
-  userDataPath: string,
-  partition: string,
-  meta: InstagramMetaState,
-): Promise<void> => {
-  await writeJsonFile(getMetaPath(userDataPath, partition), meta);
-};
-
-const loadInstagramModule = async (): Promise<InstagramPrivateApiModule> => {
-  try {
-    return nodeRequire('instagram-private-api');
-  } catch {
-    throw new Error(
-      'Instagram native dependency missing: install "instagram-private-api" in the app project.',
-    );
-  }
+const setRealtimeStatus = (
+  state: ActiveInstagramClientState,
+  status: InstagramRealtimeStatus,
+): void => {
+  state.realtimeStatus = status;
+  partitionRealtimeStatuses.set(state.partition, status);
+  state.emitter.emit('runtime', {
+    kind: 'realtime-status',
+    status,
+  } satisfies InstagramRuntimeEvent);
 };
 
 const createIgClient = async (
@@ -301,8 +411,10 @@ const createIgClient = async (
   partition: string,
   username: string,
 ): Promise<InstagramClient> => {
+  const mqttModule = await loadInstagramMqttModule();
   const igModule = await loadInstagramModule();
-  const ig = new igModule.IgApiClient();
+  const ClientCtor = mqttModule.IgApiClientExt ?? igModule.IgApiClient;
+  const ig = new ClientCtor();
   ig.state.generateDevice(username);
   ig.request.end$.subscribe(() => {
     void persistSessionState(userDataPath, partition, username, ig);
@@ -316,16 +428,175 @@ const persistSessionState = async (
   username: string,
   ig: InstagramClient,
 ): Promise<void> => {
+  await ensureSessionCookies(ig, username);
   const serialized = await ig.state.serialize();
   const { constants, ...stateToSave } = serialized as Record<string, unknown>;
   void constants;
   await writeJsonFile(getSessionPath(userDataPath, partition, username), stateToSave);
 };
 
+const safePreLoginFlow = async (ig: InstagramClient): Promise<void> => {
+  try {
+    if (ig.launcher?.preLoginSync) {
+      await ig.launcher.preLoginSync();
+      return;
+    }
+  } catch {
+    // Fall through to simulate flow.
+  }
+
+  try {
+    await ig.simulate?.preLoginFlow?.();
+  } catch {
+    // Non-fatal.
+  }
+};
+
+const safePostLoginFlow = async (ig: InstagramClient): Promise<void> => {
+  try {
+    if (ig.feed.reelsTray && ig.feed.timeline) {
+      await ig.feed.reelsTray('cold_start').request();
+      await ig.feed.timeline('cold_start_fetch').request();
+      return;
+    }
+  } catch {
+    // Fall through to simulate flow.
+  }
+
+  try {
+    await ig.simulate?.postLoginFlow?.();
+  } catch {
+    // Non-fatal.
+  }
+};
+
+const emitThreadEvent = (
+  state: ActiveInstagramClientState,
+  kind: 'message' | 'reaction' | 'seen',
+  threadId: string,
+): void => {
+  state.emitter.emit('runtime', {
+    kind,
+    threadId,
+  } satisfies InstagramRuntimeEvent);
+};
+
+const clearRealtimeReconnectTimer = (state: ActiveInstagramClientState): void => {
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = undefined;
+  }
+};
+
+const scheduleRealtimeReconnect = (
+  state: ActiveInstagramClientState,
+  delayMs = 2500,
+): void => {
+  clearRealtimeReconnectTimer(state);
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = undefined;
+    if (activeClients.get(state.partition) !== state) {
+      return;
+    }
+    void ensureRealtimeConnected(state).catch((error) => {
+      console.error('[instagram-realtime] reconnect failed', error);
+    });
+  }, delayMs);
+};
+
+const ensureRealtimeConnected = async (
+  state: ActiveInstagramClientState,
+): Promise<void> => {
+  if (state.realtime && state.realtimeStatus === 'connected') {
+    return;
+  }
+  if (state.realtimeInitPromise) {
+    await state.realtimeInitPromise;
+    return;
+  }
+
+  clearRealtimeReconnectTimer(state);
+  state.realtimeInitPromise = (async () => {
+    const mqtt = await loadInstagramMqttModule();
+    setRealtimeStatus(state, 'connecting');
+    const realtime = mqtt.withRealtime(state.ig).realtime;
+    state.realtime = realtime;
+
+    realtime.on('error', (error: unknown) => {
+      console.error('[instagram-realtime] error', error);
+      state.realtime = undefined;
+      setRealtimeStatus(state, 'error');
+      scheduleRealtimeReconnect(state);
+    });
+
+    realtime.on('close', () => {
+      state.realtime = undefined;
+      setRealtimeStatus(state, 'disconnected');
+      scheduleRealtimeReconnect(state);
+    });
+
+    realtime.on('message', (wrapper: unknown) => {
+      const payload = wrapper as {
+        delta_type?: string;
+        message?: {
+          action_type?: string;
+          thread_id?: string;
+          thread_v2_id?: string;
+        };
+      };
+      const threadId = payload.message?.thread_id ?? payload.message?.thread_v2_id;
+      if (!threadId) {
+        return;
+      }
+
+      if (payload.delta_type === 'deltaCreateReaction' && payload.message?.action_type !== 'action_log') {
+        emitThreadEvent(state, 'reaction', threadId);
+        return;
+      }
+      if (payload.delta_type === 'deltaReadReceipt') {
+        emitThreadEvent(state, 'seen', threadId);
+        return;
+      }
+      if (payload.delta_type === 'deltaNewMessage') {
+        emitThreadEvent(state, 'message', threadId);
+      }
+    });
+
+    const irisData = await state.ig.feed.directInbox().request?.();
+    await realtime.connect({
+      graphQlSubs: [
+        mqtt.GraphQLSubscriptions.getAppPresenceSubscription(),
+        mqtt.GraphQLSubscriptions.getZeroProvisionSubscription(state.ig.state.phoneId),
+        mqtt.GraphQLSubscriptions.getDirectStatusSubscription(),
+        mqtt.GraphQLSubscriptions.getDirectTypingSubscription(state.ig.state.cookieUserId),
+        mqtt.GraphQLSubscriptions.getAsyncAdSubscription(state.ig.state.cookieUserId),
+      ],
+      skywalkerSubs: [
+        mqtt.SkywalkerSubscriptions.directSub(state.ig.state.cookieUserId),
+        mqtt.SkywalkerSubscriptions.liveSub(state.ig.state.cookieUserId),
+      ],
+      irisData,
+    });
+
+    setRealtimeStatus(state, 'connected');
+  })().catch((error) => {
+    state.realtime = undefined;
+    setRealtimeStatus(state, 'error');
+    scheduleRealtimeReconnect(state);
+    throw error;
+  });
+
+  try {
+    await state.realtimeInitPromise;
+  } finally {
+    state.realtimeInitPromise = undefined;
+  }
+};
+
 const warmSessionClient = async (
   userDataPath: string,
   partition: string,
-): Promise<{ ig: InstagramClient; username: string } | undefined> => {
+): Promise<ActiveInstagramClientState | undefined> => {
   const cached = activeClients.get(partition);
   if (cached) {
     return cached;
@@ -346,53 +617,54 @@ const warmSessionClient = async (
 
   const ig = await createIgClient(userDataPath, partition, username);
   await ig.state.deserialize(sessionState);
-
-  const currentUser = await resolveCurrentUser(ig);
-  const resolvedUsername = String(currentUser?.username || username);
-  const clientState = { ig, username: resolvedUsername };
-  activeClients.set(partition, clientState);
+  const repairedCookies = await ensureSessionCookies(ig, username);
+  const resolvedUsername = username;
+  if (repairedCookies) {
+    await persistSessionState(userDataPath, partition, resolvedUsername, ig);
+  }
+  const state = createActiveClientState(partition, ig, resolvedUsername);
+  activeClients.set(partition, state);
 
   await saveMetaState(userDataPath, partition, {
     currentUsername: resolvedUsername,
     pendingTwoFactor: undefined,
+    pendingChallenge: undefined,
   });
 
-  return clientState;
+  void ensureRealtimeConnected(state).catch((error) => {
+    console.error('[instagram-realtime] session warm failed', error);
+  });
+
+  return state;
 };
 
-const requireAuthedClient = async (
+const requireAuthedState = async (
   userDataPath: string,
   partition: string,
-): Promise<InstagramClient> => {
+): Promise<ActiveInstagramClientState> => {
   const hydrated = await warmSessionClient(userDataPath, partition);
   if (!hydrated) {
     throw new Error('Instagram session is not authenticated.');
   }
-  return hydrated.ig;
+  return hydrated;
 };
 
-export const resetInstagramAuthState = async (
+const isCheckpointError = (message: string): boolean => {
+  const lowered = message.toLowerCase();
+  return lowered.includes('checkpoint_required') || lowered.includes('checkpoint required');
+};
+
+const clearPendingChallengeArtifacts = async (
   userDataPath: string,
   partition: string,
+  meta?: InstagramMetaState,
 ): Promise<void> => {
-  activeClients.delete(partition);
-  await rm(getStateRoot(userDataPath, partition), { recursive: true, force: true });
-};
-
-const safePreLoginFlow = async (ig: InstagramClient): Promise<void> => {
-  try {
-    await ig.simulate.preLoginFlow();
-  } catch {
-    // Non-fatal; CLI implementation also treats flow errors as recoverable.
-  }
-};
-
-const safePostLoginFlow = async (ig: InstagramClient): Promise<void> => {
-  try {
-    await ig.simulate.postLoginFlow();
-  } catch {
-    // Non-fatal; successful auth can still proceed.
-  }
+  await clearPendingChallengeSession(userDataPath, partition);
+  const nextMeta = meta ?? (await getMetaState(userDataPath, partition));
+  await saveMetaState(userDataPath, partition, {
+    ...nextMeta,
+    pendingChallenge: undefined,
+  });
 };
 
 const isChallengeCodeStep = (stepName?: string): boolean => {
@@ -403,6 +675,78 @@ const isChallengeCodeStep = (stepName?: string): boolean => {
     normalized.includes('submit_phone') ||
     normalized.includes('submit_code')
   );
+};
+
+const finalizeLoggedInState = async (
+  userDataPath: string,
+  partition: string,
+  normalizedUsername: string,
+  ig: InstagramClient,
+): Promise<InstagramAuthResult> => {
+  await ensureSessionCookies(ig, normalizedUsername);
+  const currentUser = await resolveCurrentUser(ig);
+  const resolvedUsername = String(currentUser?.username || normalizedUsername);
+
+  await persistSessionState(userDataPath, partition, resolvedUsername, ig);
+  await saveMetaState(userDataPath, partition, {
+    currentUsername: resolvedUsername,
+    pendingTwoFactor: undefined,
+    pendingChallenge: undefined,
+  });
+  await clearPendingTwoFactorSession(userDataPath, partition);
+  await clearPendingChallengeSession(userDataPath, partition);
+
+  const state = createActiveClientState(partition, ig, resolvedUsername, currentUser);
+  activeClients.set(partition, state);
+  void ensureRealtimeConnected(state).catch((error) => {
+    console.error('[instagram-realtime] login init failed', error);
+  });
+
+  return {
+    ok: true,
+    username: resolvedUsername,
+    details: `Instagram login successful for @${resolvedUsername}.`,
+  };
+};
+
+const dataUrlToBuffer = (value: string): Buffer => {
+  const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,(.+)$/u.exec(value);
+  if (!match) {
+    throw new Error('Expected a base64 data URL.');
+  }
+  return Buffer.from(match[2], 'base64');
+};
+
+const findReplyTarget = async (
+  ig: InstagramClient,
+  threadId: string,
+  replyToMessageId?: string,
+): Promise<InstagramMessageItem | undefined> => {
+  if (!replyToMessageId) {
+    return undefined;
+  }
+  try {
+    const items = await ig.feed.directThread({ thread_id: threadId }).items();
+    return items.find((item) => item.item_id === replyToMessageId);
+  } catch {
+    return undefined;
+  }
+};
+
+const extractItemId = (result: InstagramBroadcastResponse): string | undefined =>
+  result.payload?.item_id ?? result.item_id;
+
+export const resetInstagramAuthState = async (
+  userDataPath: string,
+  partition: string,
+): Promise<void> => {
+  const existing = activeClients.get(partition);
+  if (existing) {
+    clearRealtimeReconnectTimer(existing);
+  }
+  activeClients.delete(partition);
+  partitionRealtimeStatuses.set(partition, 'disconnected');
+  await rm(getStateRoot(userDataPath, partition), { recursive: true, force: true });
 };
 
 export const verifyInstagramCapability = async (
@@ -430,12 +774,12 @@ export const verifyInstagramCapability = async (
           return {
             ok: false,
             details:
-              'Instagram checkpoint session expired. Complete the challenge in Instagram web/app, then retry auth.',
+              'Instagram checkpoint session expired. Complete the challenge in Instagram browser/app, then retry auth.',
           };
         }
         const target = meta.pendingChallenge.contactPoint
           ? ` sent to ${meta.pendingChallenge.contactPoint}`
-          : ' from Instagram via email, SMS, or the Instagram app/web checkpoint flow';
+          : ' from Instagram via email, SMS, or the Instagram app/browser';
         return {
           ok: false,
           requiresChallenge: true,
@@ -460,7 +804,7 @@ export const verifyInstagramCapability = async (
       return {
         ok: false,
         details:
-          'Instagram checkpoint required. Complete the security challenge in the Instagram web/app first, then retry auth.',
+          'Instagram checkpoint required. Complete the security challenge in the Instagram browser/app first, then retry auth.',
       };
     }
     return {
@@ -485,32 +829,12 @@ export const loginInstagram = async (
   }
 
   const ig = await createIgClient(userDataPath, partition, normalizedUsername);
-
   await safePreLoginFlow(ig);
 
   try {
     await ig.account.login(normalizedUsername, password);
     await safePostLoginFlow(ig);
-
-    const currentUser = await ig.account.currentUser();
-    const resolvedUsername = String(currentUser?.username || normalizedUsername);
-
-    await persistSessionState(userDataPath, partition, resolvedUsername, ig);
-    await saveMetaState(userDataPath, partition, {
-      currentUsername: resolvedUsername,
-      pendingTwoFactor: undefined,
-      pendingChallenge: undefined,
-    });
-    await clearPendingTwoFactorSession(userDataPath, partition);
-    await clearPendingChallengeSession(userDataPath, partition);
-
-    activeClients.set(partition, { ig, username: resolvedUsername });
-
-    return {
-      ok: true,
-      username: resolvedUsername,
-      details: `Instagram login successful for @${resolvedUsername}.`,
-    };
+    return finalizeLoggedInState(userDataPath, partition, normalizedUsername, ig);
   } catch (error: unknown) {
     const loginError = error as InstagramLoginError;
     const twoFactorInfo = loginError.response?.body?.two_factor_info;
@@ -519,7 +843,6 @@ export const loginInstagram = async (
       const { constants, ...pendingState } = serialized as Record<string, unknown>;
       void constants;
       await writeJsonFile(getPendingTwoFactorSessionPath(userDataPath, partition), pendingState);
-
       await saveMetaState(userDataPath, partition, {
         currentUsername: undefined,
         pendingTwoFactor: {
@@ -543,30 +866,32 @@ export const loginInstagram = async (
         return {
           ok: false,
           details:
-            'Instagram checkpoint requires web/app review. Native challenge state was not available, so complete the challenge in Instagram web/app and retry auth.',
+            'Instagram checkpoint requires browser/app review. Complete the challenge outside the app and retry auth.',
         };
       }
       let challengeState: InstagramChallengeState | undefined;
       try {
         challengeState = await ig.challenge.auto(true);
       } catch {
-        // Continue; the checkpoint session may still be recoverable for code submission.
+        // Continue; the checkpoint session may still be recoverable.
       }
+
       const stepName = String(challengeState?.step_name || '').trim() || undefined;
       const contactPoint = String(challengeState?.step_data?.contact_point || '').trim() || undefined;
       if (stepName && !isChallengeCodeStep(stepName)) {
         return {
           ok: false,
           details:
-            `Instagram checkpoint requires interactive review (${stepName}). Complete it in the Instagram web/app, then retry auth.`,
+            `Instagram checkpoint requires interactive review (${stepName}). Complete it in the Instagram browser/app, then retry auth.`,
         };
       }
+
       const serialized = await ig.state.serialize();
       if (!hasCheckpointState(serialized as Record<string, unknown>)) {
         return {
           ok: false,
           details:
-            'Instagram checkpoint could not be resumed natively. Complete the challenge in Instagram web/app, then retry auth.',
+            'Instagram checkpoint could not be resumed natively. Complete the challenge in the browser/app, then retry auth.',
         };
       }
       const { constants, ...pendingState } = serialized as Record<string, unknown>;
@@ -583,7 +908,7 @@ export const loginInstagram = async (
       });
       const target = contactPoint
         ? ` sent to ${contactPoint}`
-        : ' from Instagram via email, SMS, or the Instagram app/web checkpoint flow';
+        : ' from Instagram via email, SMS, or the Instagram browser/app';
       return {
         ok: false,
         requiresChallenge: true,
@@ -591,6 +916,7 @@ export const loginInstagram = async (
         details: `Instagram checkpoint required. Enter the security code${target} to complete login.`,
       };
     }
+
     const lowered = message.toLowerCase();
     if (lowered.includes('password')) {
       return {
@@ -602,150 +928,6 @@ export const loginInstagram = async (
     return {
       ok: false,
       details: message,
-    };
-  }
-};
-
-export const adoptInstagramWebSession = async (
-  userDataPath: string,
-  partition: string,
-): Promise<InstagramAuthResult> => {
-  try {
-    authLog('adopt-web-session:start', { partition });
-    const partitionSession = electronSession.fromPartition(partition);
-    const [wwwCookies, rootCookies, iCookies] = await Promise.all([
-      withTimeout(
-        partitionSession.cookies.get({ url: 'https://www.instagram.com/' }),
-        5000,
-        'Timed out reading Instagram cookies (www).',
-      ),
-      withTimeout(
-        partitionSession.cookies.get({ url: 'https://instagram.com/' }),
-        5000,
-        'Timed out reading Instagram cookies (root).',
-      ),
-      withTimeout(
-        partitionSession.cookies.get({ url: 'https://i.instagram.com/' }),
-        5000,
-        'Timed out reading Instagram cookies (api).',
-      ),
-    ]);
-    const allCookies = [...wwwCookies, ...rootCookies, ...iCookies];
-    const cookies = allCookies
-      .filter((cookie) => {
-        const domain = (cookie.domain || '').toLowerCase();
-        return domain.includes('instagram.com');
-      })
-      .filter((cookie, index, list) => {
-      const key = `${cookie.name}|${cookie.domain}|${cookie.path}|${cookie.value}`;
-      return list.findIndex((entry) => {
-        const entryKey = `${entry.name}|${entry.domain}|${entry.path}|${entry.value}`;
-        return entryKey === key;
-      }) === index;
-    });
-    const sessionCookie = cookies.find((cookie) => cookie.name === 'sessionid');
-    const userIdCookie = cookies.find((cookie) => cookie.name === 'ds_user_id');
-    authLog('adopt-web-session:cookies', {
-      totalInstagramCookies: cookies.length,
-      hasSessionId: Boolean(sessionCookie?.value),
-      hasDsUserId: Boolean(userIdCookie?.value),
-    });
-
-    if (!sessionCookie?.value || !userIdCookie?.value) {
-      const cookieNames = cookies.map((cookie) => cookie.name).slice(0, 12).join(', ') || 'none';
-      authLog('adopt-web-session:missing-session-cookies', { cookieNames });
-      return {
-        ok: false,
-        details:
-          `No Instagram browser session found in partition ${partition}. Missing session cookies (sessionid/ds_user_id). Found: ${cookieNames}`,
-      };
-    }
-
-    const seed = `web-${userIdCookie.value}`;
-    authLog('adopt-web-session:create-client:start', { seed });
-    const ig = await withTimeout(
-      createIgClient(userDataPath, partition, seed),
-      6000,
-      'Timed out creating Instagram API client.',
-    );
-    authLog('adopt-web-session:create-client:ok');
-
-    let imported = 0;
-    let skipped = 0;
-    for (const cookie of cookies) {
-      if (!cookie.name || !cookie.value) {
-        skipped += 1;
-        continue;
-      }
-      try {
-        await withTimeout(
-          setCookieOnJar(ig.state.cookieJar, {
-            name: cookie.name,
-            value: cookie.value,
-            domain: cookie.domain || '.instagram.com',
-            path: cookie.path,
-            secure: cookie.secure,
-            httpOnly: cookie.httpOnly,
-          }),
-          1500,
-          `Timed out setting cookie ${cookie.name}.`,
-        );
-        imported += 1;
-      } catch (error) {
-        skipped += 1;
-        authLog('adopt-web-session:cookie-set-failed', {
-          name: cookie.name,
-          domain: cookie.domain,
-          message: formatErrorMessage(error),
-        });
-      }
-    }
-    authLog('adopt-web-session:cookie-import-summary', { imported, skipped });
-
-    authLog('adopt-web-session:current-user:start');
-    const currentUser = await resolveCurrentUser(ig);
-    authLog('adopt-web-session:current-user:ok');
-    const resolvedUsername = String(currentUser?.username || '').trim();
-    if (!resolvedUsername) {
-      authLog('adopt-web-session:username-empty');
-      return {
-        ok: false,
-        details: 'Instagram browser session was detected but username could not be resolved.',
-      };
-    }
-
-    authLog('adopt-web-session:persist:start', { resolvedUsername });
-    await persistSessionState(userDataPath, partition, resolvedUsername, ig);
-    await saveMetaState(userDataPath, partition, {
-      currentUsername: resolvedUsername,
-      pendingTwoFactor: undefined,
-      pendingChallenge: undefined,
-    });
-    await clearPendingTwoFactorSession(userDataPath, partition);
-    await clearPendingChallengeSession(userDataPath, partition);
-    authLog('adopt-web-session:persist:ok');
-
-    activeClients.set(partition, { ig, username: resolvedUsername });
-    authLog('adopt-web-session:success', { username: resolvedUsername, partition });
-
-    return {
-      ok: true,
-      username: resolvedUsername,
-      details: `Instagram browser session linked for @${resolvedUsername}.`,
-    };
-  } catch (error) {
-    const message = formatErrorMessage(error) || 'Failed to adopt Instagram browser session.';
-    authLog('adopt-web-session:error', { message });
-    if (isCheckpointError(message)) {
-      return {
-        ok: false,
-        details:
-          'Instagram checkpoint required. Complete the security challenge in the Instagram web/app first, then retry auth.',
-      };
-    }
-    return {
-      ok: false,
-      details: `Instagram browser-session login failed: ${message}`,
     };
   }
 };
@@ -780,14 +962,12 @@ export const submitInstagramTwoFactorCode = async (
   if (pendingState) {
     await ig.state.deserialize(pendingState);
   } else {
-    // Fall back if pending state is unavailable.
     await safePreLoginFlow(ig);
   }
 
   try {
     const primaryMethod = pending.totpTwoFactorOn ? '0' : '1';
     const fallbackMethod = primaryMethod === '0' ? '1' : '0';
-
     try {
       await ig.account.twoFactorLogin({
         username: pending.username,
@@ -802,7 +982,6 @@ export const submitInstagramTwoFactorCode = async (
       if (!shouldRetryAlternateMethod) {
         throw primaryError;
       }
-
       await ig.account.twoFactorLogin({
         username: pending.username,
         verificationCode: code,
@@ -812,26 +991,7 @@ export const submitInstagramTwoFactorCode = async (
     }
 
     await safePostLoginFlow(ig);
-
-    const currentUser = await ig.account.currentUser();
-    const resolvedUsername = String(currentUser?.username || pending.username);
-
-    await persistSessionState(userDataPath, partition, resolvedUsername, ig);
-    await saveMetaState(userDataPath, partition, {
-      currentUsername: resolvedUsername,
-      pendingTwoFactor: undefined,
-      pendingChallenge: undefined,
-    });
-    await clearPendingTwoFactorSession(userDataPath, partition);
-    await clearPendingChallengeSession(userDataPath, partition);
-
-    activeClients.set(partition, { ig, username: resolvedUsername });
-
-    return {
-      ok: true,
-      username: resolvedUsername,
-      details: `Instagram 2FA complete for @${resolvedUsername}.`,
-    };
+    return finalizeLoggedInState(userDataPath, partition, pending.username, ig);
   } catch (error) {
     const message = formatErrorMessage(error) || 'Instagram 2FA verification failed.';
     if (isCheckpointError(message)) {
@@ -839,7 +999,7 @@ export const submitInstagramTwoFactorCode = async (
         ok: false,
         username: pending.username,
         details:
-          'Instagram checkpoint required after 2FA. Complete the challenge in Instagram web/app, then retry auth.',
+          'Instagram checkpoint required after 2FA. Complete the challenge in the Instagram browser/app, then retry auth.',
       };
     }
     return {
@@ -883,7 +1043,7 @@ export const submitInstagramChallengeCode = async (
     return {
       ok: false,
       details:
-        'Instagram checkpoint session expired. Complete the challenge in Instagram web/app, then retry auth.',
+        'Instagram checkpoint session expired. Complete the challenge in Instagram browser/app, then retry auth.',
     };
   }
   if (pendingState) {
@@ -894,33 +1054,14 @@ export const submitInstagramChallengeCode = async (
     return {
       ok: false,
       details:
-        'Instagram checkpoint session expired. Complete the challenge in Instagram web/app, then retry auth.',
+        'Instagram checkpoint session expired. Complete the challenge in Instagram browser/app, then retry auth.',
     };
   }
 
   try {
     await ig.challenge.sendSecurityCode(code);
     await safePostLoginFlow(ig);
-
-    const currentUser = await ig.account.currentUser();
-    const resolvedUsername = String(currentUser?.username || pending.username);
-
-    await persistSessionState(userDataPath, partition, resolvedUsername, ig);
-    await saveMetaState(userDataPath, partition, {
-      currentUsername: resolvedUsername,
-      pendingTwoFactor: undefined,
-      pendingChallenge: undefined,
-    });
-    await clearPendingTwoFactorSession(userDataPath, partition);
-    await clearPendingChallengeSession(userDataPath, partition);
-
-    activeClients.set(partition, { ig, username: resolvedUsername });
-
-    return {
-      ok: true,
-      username: resolvedUsername,
-      details: `Instagram challenge complete for @${resolvedUsername}.`,
-    };
+    return finalizeLoggedInState(userDataPath, partition, pending.username, ig);
   } catch (error) {
     const message = formatErrorMessage(error) || 'Instagram challenge verification failed.';
     if (isCheckpointError(message)) {
@@ -944,9 +1085,8 @@ export const fetchInbox = async (
   userDataPath: string,
   partition: string,
 ): Promise<InstagramInboxResponse> => {
-  const ig = await requireAuthedClient(userDataPath, partition);
-  const feed = ig.feed.directInbox();
-  const threads = (await feed.items()) as InstagramThread[];
+  const state = await requireAuthedState(userDataPath, partition);
+  const threads = (await state.ig.feed.directInbox().items()) as InstagramThread[];
   return {
     inbox: {
       threads,
@@ -959,18 +1099,42 @@ export const fetchThread = async (
   partition: string,
   threadId: string,
 ): Promise<InstagramThreadResponse> => {
-  const ig = await requireAuthedClient(userDataPath, partition);
-  const feed = ig.feed.directThread({ thread_id: threadId });
+  const state = await requireAuthedState(userDataPath, partition);
+  const feed = state.ig.feed.directThread({ thread_id: threadId });
 
   let threadInfo: Record<string, unknown> = {};
   try {
-    const response = (await feed.request()) as { thread?: Record<string, unknown> };
+    const response = await feed.request();
     threadInfo = response.thread ?? {};
   } catch {
     // If request() is unavailable/blocked, continue with items only.
   }
 
   const items = await feed.items();
+  if (!Array.isArray((threadInfo as { users?: unknown[] }).users) || (threadInfo as { users?: unknown[] }).users?.length === 0) {
+    try {
+      const inboxThreads = (await state.ig.feed.directInbox().items()) as InstagramThread[];
+      const fallbackThread = inboxThreads.find(
+        (entry) => String(entry.thread_id ?? entry.thread_v2_id ?? '') === threadId,
+      );
+      if (fallbackThread) {
+        threadInfo = {
+          ...fallbackThread,
+          ...threadInfo,
+          users:
+            Array.isArray((threadInfo as { users?: unknown[] }).users) &&
+            (threadInfo as { users?: unknown[] }).users!.length > 0
+              ? (threadInfo as { users?: unknown[] }).users
+              : fallbackThread.users,
+          thread_title:
+            String((threadInfo as { thread_title?: string }).thread_title ?? '').trim() ||
+            fallbackThread.thread_title,
+        };
+      }
+    } catch {
+      // Best-effort metadata backfill only.
+    }
+  }
   return {
     thread: {
       ...threadInfo,
@@ -984,8 +1148,12 @@ export const fetchCurrentUser = async (
   userDataPath: string,
   partition: string,
 ): Promise<InstagramCurrentUserResponse> => {
-  const ig = await requireAuthedClient(userDataPath, partition);
-  const user = (await resolveCurrentUser(ig)) as InstagramCurrentUserResponse['user'];
+  const state = await requireAuthedState(userDataPath, partition);
+  if (state.currentUser) {
+    return { user: state.currentUser };
+  }
+  const user = (await resolveCurrentUser(state.ig)) as InstagramCurrentUserResponse['user'];
+  state.currentUser = user;
   return { user };
 };
 
@@ -996,21 +1164,111 @@ export const sendThreadMessage = async (
   text: string,
   replyToMessageId?: string,
 ): Promise<InstagramBroadcastResponse> => {
-  const ig = await requireAuthedClient(userDataPath, partition);
-  const thread = ig.entity.directThread(threadId);
-
-  if (replyToMessageId) {
-    try {
-      await thread.broadcastText(text, {
-        item_id: replyToMessageId,
-        client_context: replyToMessageId,
-      });
-      return { status: 'ok' };
-    } catch {
-      // Fall through to plain send if API rejects reply payload shape.
-    }
-  }
-
-  await thread.broadcastText(text);
-  return { status: 'ok' };
+  const state = await requireAuthedState(userDataPath, partition);
+  const thread = state.ig.entity.directThread(threadId);
+  const replyTarget = await findReplyTarget(state.ig, threadId, replyToMessageId);
+  return thread.broadcastText(text, replyTarget);
 };
+
+export const sendThreadImage = async (
+  userDataPath: string,
+  partition: string,
+  threadId: string,
+  dataUrl: string,
+  caption?: string,
+  replyToMessageId?: string,
+): Promise<InstagramBroadcastResponse> => {
+  const state = await requireAuthedState(userDataPath, partition);
+  const thread = state.ig.entity.directThread(threadId);
+  const result = await thread.broadcastPhoto({
+    file: dataUrlToBuffer(dataUrl),
+  });
+  if (caption?.trim()) {
+    const replyTarget = await findReplyTarget(state.ig, threadId, replyToMessageId);
+    await thread.broadcastText(caption.trim(), replyTarget);
+  }
+  return result;
+};
+
+export const sendThreadVideo = async (
+  userDataPath: string,
+  partition: string,
+  threadId: string,
+  document: OutgoingAttachmentDocument,
+  caption?: string,
+  replyToMessageId?: string,
+): Promise<InstagramBroadcastResponse> => {
+  const state = await requireAuthedState(userDataPath, partition);
+  const thread = state.ig.entity.directThread(threadId);
+  const result = await thread.broadcastVideo({
+    video: dataUrlToBuffer(document.dataUrl),
+  });
+  if (caption?.trim()) {
+    const replyTarget = await findReplyTarget(state.ig, threadId, replyToMessageId);
+    await thread.broadcastText(caption.trim(), replyTarget);
+  }
+  return result;
+};
+
+export const deleteThreadMessage = async (
+  userDataPath: string,
+  partition: string,
+  threadId: string,
+  messageId: string,
+): Promise<boolean> => {
+  const state = await requireAuthedState(userDataPath, partition);
+  await state.ig.entity.directThread(threadId).deleteItem(messageId);
+  return true;
+};
+
+export const markInstagramThreadRead = async (
+  userDataPath: string,
+  partition: string,
+  threadId: string,
+  itemId: string,
+): Promise<void> => {
+  const state = await requireAuthedState(userDataPath, partition);
+  try {
+    await state.realtime?.direct?.markAsSeen?.({ threadId, itemId });
+  } catch {
+    // Fall back to API below.
+  }
+  await state.ig.entity.directThread(threadId).markItemSeen(itemId);
+};
+
+export const getInstagramRealtimeStatus = async (
+  userDataPath: string,
+  partition: string,
+): Promise<InstagramRealtimeStatus> => {
+  const partitionStatus = partitionRealtimeStatuses.get(partition);
+  if (partitionStatus) {
+    return partitionStatus;
+  }
+  const existing = activeClients.get(partition);
+  if (existing) {
+    return existing.realtimeStatus;
+  }
+  const state = await warmSessionClient(userDataPath, partition);
+  return state?.realtimeStatus ?? 'disconnected';
+};
+
+export const subscribeInstagramRuntimeEvents = async (
+  userDataPath: string,
+  partition: string,
+  listener: (event: InstagramRuntimeEvent) => void,
+): Promise<() => void> => {
+  const emitter = getPartitionEmitter(partition);
+  const state = activeClients.get(partition) ?? (await warmSessionClient(userDataPath, partition));
+  const wrapped = (event: InstagramRuntimeEvent) => listener(event);
+  emitter.on('runtime', wrapped);
+  listener({
+    kind: 'realtime-status',
+    status: state?.realtimeStatus ?? partitionRealtimeStatuses.get(partition) ?? 'disconnected',
+  });
+  return () => {
+    emitter.off('runtime', wrapped);
+  };
+};
+
+export const getBroadcastItemId = (result: InstagramBroadcastResponse): string | undefined =>
+  extractItemId(result);

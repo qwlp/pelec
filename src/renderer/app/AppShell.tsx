@@ -4,6 +4,9 @@ import { useKeyboardBindings } from '../keyboard/useKeyboardBindings';
 import type { LegacyAppBridgeApi } from '../legacyBridge';
 import { applyUserTheme } from '../lib/theme';
 import type { CommandPaletteItem } from '../features/commandPalette/CommandPalette';
+import { InstagramChatList } from '../features/instagram/InstagramChatList';
+import { InstagramComposer } from '../features/instagram/InstagramComposer';
+import { InstagramMessageList } from '../features/instagram/InstagramMessageList';
 import { TelegramChatList } from '../features/telegram/TelegramChatList';
 import { TelegramComposer } from '../features/telegram/TelegramComposer';
 import { TelegramMessageList } from '../features/telegram/TelegramMessageList';
@@ -11,7 +14,11 @@ import { loadRendererBootstrapData } from '../services/connectors';
 import { beginMeasure } from '../services/performance';
 import { configLoaded, legacyCommandsChanged, legacyReady, legacySnapshotChanged } from '../state/actions';
 import { useAppDispatch, useAppState } from '../state/appStore';
-import { selectCommandPaletteItems, selectLegacyTelegramSnapshot } from '../state/selectors';
+import {
+  selectCommandPaletteItems,
+  selectLegacyInstagramSnapshot,
+  selectLegacyTelegramSnapshot,
+} from '../state/selectors';
 import { LegacyWorkspaceAdapter } from './LegacyWorkspaceAdapter';
 import { ModalLayer } from './ModalLayer';
 import { WebviewHost } from './WebviewHost';
@@ -26,6 +33,7 @@ const FALLBACK_SHORTCUTS: ShortcutConfig = {
   nextPane: 'Tab',
   previousPane: 'Shift+Tab',
   telegramNetwork: 'Alt+1',
+  instagramNetwork: 'Alt+2',
 };
 
 export const AppShell = () => {
@@ -34,13 +42,19 @@ export const AppShell = () => {
   const [legacyApi, setLegacyApi] = useState<LegacyAppBridgeApi | null>(null);
   const [telegramMessageTarget, setTelegramMessageTarget] = useState<HTMLElement | null>(null);
   const [telegramComposerTarget, setTelegramComposerTarget] = useState<HTMLElement | null>(null);
+  const [instagramCompactView, setInstagramCompactView] = useState<'chats' | 'messages'>('chats');
   const [telegramCompactView, setTelegramCompactView] = useState<'chats' | 'messages'>('chats');
   const [windowWidth, setWindowWidth] = useState<number>(() =>
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
   );
+  const instagramChatListRef = useRef<HTMLDivElement | null>(null);
+  const instagramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const instagramSearchInputRef = useRef<HTMLInputElement | null>(null);
   const telegramChatListRef = useRef<HTMLElement | null>(null);
   const telegramSearchInputRef = useRef<HTMLInputElement | null>(null);
   const telegramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingInstagramPaneFocusRef = useRef<'instagram-chats' | 'instagram-messages' | null>(null);
+  const previousInstagramCompactLayoutRef = useRef(false);
   const pendingTelegramPaneFocusRef = useRef<'telegram-chats' | 'telegram-messages' | null>(null);
   const previousTelegramCompactLayoutRef = useRef(false);
 
@@ -120,7 +134,28 @@ export const AppShell = () => {
     [state],
   );
 
+  const instagramSnapshot = selectLegacyInstagramSnapshot(state);
   const telegramSnapshot = selectLegacyTelegramSnapshot(state);
+  const instagramCompactLayout =
+    state.appShell.activeNetwork === 'instagram' &&
+    instagramSnapshot !== null &&
+    windowWidth < TELEGRAM_COMPACT_BREAKPOINT_PX;
+  const instagramCompactShowChats =
+    instagramCompactLayout &&
+    (!instagramSnapshot?.activeChatId || instagramCompactView === 'chats');
+  const instagramCompactShowMessages =
+    instagramCompactLayout &&
+    !!instagramSnapshot?.activeChatId &&
+    instagramCompactView === 'messages';
+  const showInstagramComposer =
+    state.appShell.activeNetwork === 'instagram' &&
+    instagramSnapshot !== null &&
+    instagramSnapshot.activeChatCanSend &&
+    !instagramCompactShowChats;
+  const showInstagramChatList =
+    state.appShell.activeNetwork === 'instagram' &&
+    instagramSnapshot !== null &&
+    (instagramCompactLayout ? instagramCompactShowChats : true);
   const telegramCompactLayout =
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
@@ -145,6 +180,37 @@ export const AppShell = () => {
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
     (telegramCompactLayout ? telegramCompactShowChats : !telegramSnapshot.chatListMinimized);
+
+  useEffect(() => {
+    if (state.appShell.activeNetwork !== 'instagram') {
+      setInstagramCompactView('chats');
+      previousInstagramCompactLayoutRef.current = false;
+      return;
+    }
+
+    const enteringCompact = instagramCompactLayout && !previousInstagramCompactLayoutRef.current;
+    previousInstagramCompactLayoutRef.current = instagramCompactLayout;
+
+    if (!instagramCompactLayout) {
+      return;
+    }
+
+    if (!instagramSnapshot?.activeChatId) {
+      setInstagramCompactView('chats');
+      return;
+    }
+
+    if (enteringCompact) {
+      setInstagramCompactView(
+        state.appShell.activePane === 'instagram-chats' ? 'chats' : 'messages',
+      );
+    }
+  }, [
+    instagramCompactLayout,
+    instagramSnapshot?.activeChatId,
+    state.appShell.activeNetwork,
+    state.appShell.activePane,
+  ]);
 
   useEffect(() => {
     if (state.appShell.activeNetwork !== 'telegram') {
@@ -188,8 +254,35 @@ export const AppShell = () => {
       return;
     }
 
+    if (state.appShell.activeNetwork === 'instagram') {
+      instagramSearchInputRef.current?.focus();
+      instagramSearchInputRef.current?.select();
+      return;
+    }
+
     legacyApi?.focusSearch();
   });
+
+  const focusInstagramPaneSurface = useEffectEvent((pane: 'instagram-chats' | 'instagram-messages') => {
+    const fallbackSelector = pane === 'instagram-chats' ? '#instagram-chat-list' : '#instagram-message-list';
+    const target =
+      pane === 'instagram-chats'
+        ? instagramChatListRef.current ?? document.querySelector<HTMLElement>(fallbackSelector)
+        : document.querySelector<HTMLElement>(fallbackSelector);
+    target?.focus({ preventScroll: true });
+  });
+
+  const scheduleInstagramPaneFocus = useEffectEvent(
+    (pane: 'instagram-chats' | 'instagram-messages') => {
+      pendingInstagramPaneFocusRef.current = pane;
+      focusInstagramPaneSurface(pane);
+      requestAnimationFrame(() => {
+        if (pendingInstagramPaneFocusRef.current === pane) {
+          focusInstagramPaneSurface(pane);
+        }
+      });
+    },
+  );
 
   const focusTelegramPaneSurface = useEffectEvent((pane: 'telegram-chats' | 'telegram-messages') => {
     const fallbackSelector = pane === 'telegram-chats' ? '#telegram-chat-list' : '#telegram-message-list';
@@ -212,8 +305,35 @@ export const AppShell = () => {
   });
 
   const handleMoveLeft = useEffectEvent(() => {
-    if (!legacyApi || state.appShell.activeNetwork !== 'telegram') {
+    if (!legacyApi) {
       legacyApi?.movePane(-1);
+      return;
+    }
+
+    if (state.appShell.activeNetwork === 'instagram') {
+      if (instagramCompactLayout && state.appShell.activePane === 'instagram-composer') {
+        setInstagramCompactView('chats');
+        legacyApi.setMode('normal');
+        scheduleInstagramPaneFocus('instagram-chats');
+        legacyApi.movePane(-1);
+        return;
+      }
+
+      if (state.appShell.activePane === 'instagram-messages') {
+        if (instagramCompactLayout) {
+          setInstagramCompactView('chats');
+        }
+        scheduleInstagramPaneFocus('instagram-chats');
+        legacyApi.movePane(-1);
+        return;
+      }
+
+      if (state.appShell.activePane === 'instagram-chats') {
+        scheduleInstagramPaneFocus('instagram-chats');
+        return;
+      }
+
+      legacyApi.movePane(-1);
       return;
     }
 
@@ -243,8 +363,31 @@ export const AppShell = () => {
   });
 
   const handleMoveRight = useEffectEvent(() => {
-    if (!legacyApi || state.appShell.activeNetwork !== 'telegram') {
+    if (!legacyApi) {
       legacyApi?.movePane(1);
+      return;
+    }
+
+    if (state.appShell.activeNetwork === 'instagram') {
+      if (state.appShell.activePane === 'instagram-chats') {
+        const nextChatId = instagramSnapshot?.selectedChatId;
+        if (nextChatId && nextChatId !== instagramSnapshot?.activeChatId) {
+          legacyApi.activateInstagramChat(nextChatId);
+        }
+        if (instagramCompactLayout) {
+          setInstagramCompactView('messages');
+        }
+        scheduleInstagramPaneFocus('instagram-messages');
+        legacyApi.activateInstagramMessagesPane();
+        return;
+      }
+
+      if (state.appShell.activePane === 'instagram-messages') {
+        scheduleInstagramPaneFocus('instagram-messages');
+        return;
+      }
+
+      legacyApi.movePane(1);
       return;
     }
 
@@ -280,6 +423,17 @@ export const AppShell = () => {
     }
   });
 
+  const handleInstagramChatSelect = useEffectEvent((chatId: string) => {
+    if (instagramCompactLayout) {
+      setInstagramCompactView('messages');
+    }
+    legacyApi?.activateInstagramChat(chatId);
+    if (instagramCompactLayout) {
+      scheduleInstagramPaneFocus('instagram-messages');
+      legacyApi?.activateInstagramMessagesPane();
+    }
+  });
+
   const handleTelegramBackToChats = useEffectEvent(() => {
     if (!legacyApi) {
       return;
@@ -291,6 +445,21 @@ export const AppShell = () => {
     }
     scheduleTelegramPaneFocus('telegram-chats');
     if (state.appShell.activePane !== 'telegram-chats') {
+      legacyApi.movePane(-1);
+    }
+  });
+
+  const handleInstagramBackToChats = useEffectEvent(() => {
+    if (!legacyApi) {
+      return;
+    }
+
+    setInstagramCompactView('chats');
+    if (state.appShell.activePane === 'instagram-composer') {
+      legacyApi.setMode('normal');
+    }
+    scheduleInstagramPaneFocus('instagram-chats');
+    if (state.appShell.activePane !== 'instagram-chats') {
       legacyApi.movePane(-1);
     }
   });
@@ -327,6 +496,12 @@ export const AppShell = () => {
   }, [showTelegramComposer, state.appShell.mode]);
 
   useEffect(() => {
+    if (showInstagramComposer && state.appShell.mode === 'insert') {
+      instagramComposerInputRef.current?.focus();
+    }
+  }, [showInstagramComposer, state.appShell.mode]);
+
+  useEffect(() => {
     if (
       state.appShell.activeNetwork !== 'telegram' ||
       state.appShell.activePane !== 'telegram-messages' ||
@@ -350,6 +525,29 @@ export const AppShell = () => {
   ]);
 
   useEffect(() => {
+    if (
+      state.appShell.activeNetwork !== 'instagram' ||
+      state.appShell.activePane !== 'instagram-messages' ||
+      !legacyApi ||
+      !instagramSnapshot ||
+      instagramSnapshot.selectedMessageId ||
+      instagramSnapshot.messages.length < 1
+    ) {
+      return;
+    }
+
+    const fallbackMessageId = instagramSnapshot.messages[instagramSnapshot.messages.length - 1]?.id;
+    if (fallbackMessageId) {
+      legacyApi.selectInstagramMessage(fallbackMessageId);
+    }
+  }, [
+    instagramSnapshot,
+    legacyApi,
+    state.appShell.activeNetwork,
+    state.appShell.activePane,
+  ]);
+
+  useEffect(() => {
     const pendingPane = pendingTelegramPaneFocusRef.current;
     if (!pendingPane || state.appShell.activeNetwork !== 'telegram') {
       return;
@@ -362,6 +560,20 @@ export const AppShell = () => {
     focusTelegramPaneSurface(pendingPane);
     pendingTelegramPaneFocusRef.current = null;
   }, [focusTelegramPaneSurface, state.appShell.activeNetwork, state.appShell.activePane, telegramMessageTarget]);
+
+  useEffect(() => {
+    const pendingPane = pendingInstagramPaneFocusRef.current;
+    if (!pendingPane || state.appShell.activeNetwork !== 'instagram') {
+      return;
+    }
+
+    if (pendingPane !== state.appShell.activePane) {
+      return;
+    }
+
+    focusInstagramPaneSurface(pendingPane);
+    pendingInstagramPaneFocusRef.current = null;
+  }, [focusInstagramPaneSurface, state.appShell.activeNetwork, state.appShell.activePane]);
 
   useKeyboardBindings({
     activePane: state.appShell.activePane,
@@ -437,8 +649,14 @@ export const AppShell = () => {
     <div className="modern-app-shell">
       <div
         className={`modern-workspace${
+          state.appShell.activeNetwork === 'instagram' ? ' instagram-active' : ''
+        }${
           showTelegramChatList ? ' react-telegram-chat-list' : ''
         }${showTelegramComposer ? ' react-telegram-composer' : ''}${
+          instagramCompactLayout ? ' instagram-compact-layout' : ''
+        }${instagramCompactShowChats ? ' instagram-compact-show-chats' : ''}${
+          instagramCompactShowMessages ? ' instagram-compact-show-messages' : ''
+        }${
           telegramCompactLayout ? ' telegram-compact-layout' : ''
         }${telegramCompactShowChats ? ' telegram-compact-show-chats' : ''}${
           telegramCompactShowMessages ? ' telegram-compact-show-messages' : ''
@@ -501,6 +719,60 @@ export const AppShell = () => {
             sendBehavior={state.config.userConfig?.keyboard.sendBehavior ?? 'enter'}
             target={telegramComposerTarget}
             voiceRecorderState={telegramSnapshot.voiceRecorderState}
+          />
+        ) : null}
+        {showInstagramChatList && instagramSnapshot ? (
+          <InstagramChatList
+            activeChatId={instagramSnapshot.activeChatId}
+            chats={instagramSnapshot.filteredChats}
+            listRef={instagramChatListRef}
+            loadError={instagramSnapshot.loadError}
+            loading={instagramSnapshot.loading}
+            onRefresh={() => legacyApi?.refresh()}
+            onSearchQueryChange={(query) => legacyApi?.setInstagramSearchQuery(query)}
+            onSelectChat={(chatId) => handleInstagramChatSelect(chatId)}
+            onStartAuth={() => void legacyApi?.startAuth()}
+            searchInputRef={instagramSearchInputRef}
+            searchQuery={instagramSnapshot.searchQuery}
+            selectedChatId={
+              state.appShell.activePane === 'instagram-chats'
+                ? instagramSnapshot.selectedChatId
+                : null
+            }
+          />
+        ) : null}
+        {state.appShell.activeNetwork === 'instagram' && instagramSnapshot && !instagramCompactShowChats ? (
+          <InstagramMessageList
+            activeChatId={instagramSnapshot.activeChatId}
+            activeChatTitle={instagramSnapshot.activeChatTitle}
+            loadError={instagramSnapshot.messageLoadError}
+            messages={instagramSnapshot.messages}
+            messagesLoading={instagramSnapshot.messagesLoading}
+            onBackToChats={instagramCompactShowMessages ? () => handleInstagramBackToChats() : undefined}
+            selectedMessageId={
+              state.appShell.activePane === 'instagram-messages'
+                ? instagramSnapshot.selectedMessageId
+                : null
+            }
+          />
+        ) : null}
+        {showInstagramComposer && instagramSnapshot ? (
+          <InstagramComposer
+            attachments={instagramSnapshot.pendingAttachments}
+            canSend={instagramSnapshot.activeChatCanSend}
+            draftText={instagramSnapshot.draftText}
+            inputRef={instagramComposerInputRef}
+            onClearReply={() => legacyApi?.clearInstagramReply()}
+            onDraftChange={(value) => legacyApi?.setInstagramDraftValue(value)}
+            onPickFiles={(files) => {
+              if (!files || files.length < 1) {
+                return;
+              }
+              legacyApi?.appendInstagramFiles(Array.from(files));
+            }}
+            onRemoveAttachment={(attachmentId) => legacyApi?.removeInstagramAttachment(attachmentId)}
+            onSend={() => legacyApi?.sendInstagramMessage()}
+            replyPreview={instagramSnapshot.replyPreview}
           />
         ) : null}
       </div>

@@ -44,10 +44,16 @@ const matchesAccelerator = (input: Electron.Input, accelerator: string): boolean
 
 export const resolveAppShortcutTarget = (
   input: Electron.Input,
-  shortcuts: Pick<ShortcutConfig, 'openCommandPalette' | 'openKeyboardHelp' | 'telegramNetwork'>,
+  shortcuts: Pick<
+    ShortcutConfig,
+    'openCommandPalette' | 'openKeyboardHelp' | 'telegramNetwork' | 'instagramNetwork'
+  >,
 ): AppShortcutTarget | null => {
   if (matchesAccelerator(input, shortcuts.telegramNetwork)) {
     return 'telegram';
+  }
+  if (matchesAccelerator(input, shortcuts.instagramNetwork)) {
+    return 'instagram';
   }
 
   if (matchesAccelerator(input, shortcuts.openCommandPalette)) {
@@ -63,7 +69,10 @@ export const resolveAppShortcutTarget = (
 
 export const wireAppShortcutHandling = (
   contents: WebContents,
-  shortcuts: Pick<ShortcutConfig, 'openCommandPalette' | 'openKeyboardHelp' | 'telegramNetwork'>,
+  shortcuts: Pick<
+    ShortcutConfig,
+    'openCommandPalette' | 'openKeyboardHelp' | 'telegramNetwork' | 'instagramNetwork'
+  >,
   handlers: {
     onActivateNetwork?: (network: NetworkId) => void;
     onOpenCommandPalette: () => void;

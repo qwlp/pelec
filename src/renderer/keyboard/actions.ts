@@ -111,6 +111,10 @@ export const performKeyboardAction = (
     case 'startAuth':
       api.startAuth();
       return true;
+    case 'switchInstagram':
+      api.activateNetwork('instagram');
+      context.closeCommandPalette();
+      return true;
     case 'switchTelegram':
       api.activateNetwork('telegram');
       context.closeCommandPalette();

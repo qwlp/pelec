@@ -6,6 +6,7 @@ describe('resolveAppShortcutTarget', () => {
     openCommandPalette: 'CommandOrControl+K',
     openKeyboardHelp: 'Shift+/',
     telegramNetwork: 'Alt+1',
+    instagramNetwork: 'Alt+2',
   };
 
   it('matches network accelerators', () => {
@@ -23,6 +24,23 @@ describe('resolveAppShortcutTarget', () => {
         shortcuts,
       ),
     ).toBe('telegram');
+  });
+
+  it('matches instagram accelerators', () => {
+    expect(
+      resolveAppShortcutTarget(
+        {
+          alt: true,
+          code: 'Digit2',
+          control: false,
+          key: '2',
+          meta: false,
+          shift: false,
+          type: 'keyDown',
+        } as Electron.Input,
+        shortcuts,
+      ),
+    ).toBe('instagram');
   });
 
   it('matches palette accelerators', () => {
@@ -110,5 +128,40 @@ describe('resolveAppShortcutTarget', () => {
     );
 
     expect(onActivateNetwork).toHaveBeenCalledWith('telegram');
+  });
+
+  it('activates Instagram when the Instagram shortcut is allowed', () => {
+    const listenerByEvent = new Map<string, (event: { preventDefault: () => void }, input: Electron.Input) => void>();
+    const contents = {
+      on: (eventName: string, listener: (event: { preventDefault: () => void }, input: Electron.Input) => void) => {
+        listenerByEvent.set(eventName, listener);
+      },
+    } as unknown as Electron.WebContents;
+
+    const onActivateNetwork = vi.fn();
+    wireAppShortcutHandling(contents, shortcuts, {
+      allowNetworkTargets: ['instagram'],
+      onActivateNetwork,
+      onOpenCommandPalette: vi.fn(),
+      onOpenKeyboardHelp: vi.fn(),
+    });
+
+    const beforeInput = listenerByEvent.get('before-input-event');
+    expect(beforeInput).toBeTruthy();
+
+    beforeInput?.(
+      { preventDefault: vi.fn() },
+      {
+        alt: true,
+        code: 'Digit2',
+        control: false,
+        key: '2',
+        meta: false,
+        shift: false,
+        type: 'keyDown',
+      } as Electron.Input,
+    );
+
+    expect(onActivateNetwork).toHaveBeenCalledWith('instagram');
   });
 });

@@ -31,12 +31,47 @@ const extractMessageText = (item: InstagramMessageItem | undefined): string => {
   }
   const itemType = item.item_type ?? '';
   if (itemType === 'media' || itemType === 'media_share') {
+    const media = item.media ?? item.media_share;
+    if (media?.video_versions?.length) {
+      return '[video]';
+    }
     return '[photo]';
+  }
+  if (itemType === 'action_log') {
+    return item.action_log?.description?.trim() || '[activity]';
   }
   if (itemType) {
     return `[${itemType}]`;
   }
   return '';
+};
+
+const resolveMedia = (item: InstagramMessageItem | undefined) => item?.media ?? item?.media_share;
+
+const mapReactions = (
+  reactions: InstagramMessageItem['reactions'],
+): ChatMessage['reactions'] | undefined => {
+  if (!reactions) {
+    return undefined;
+  }
+
+  const counts = new Map<string, number>();
+  for (const like of reactions.likes ?? []) {
+    void like;
+    counts.set('❤️', (counts.get('❤️') ?? 0) + 1);
+  }
+  for (const emoji of reactions.emojis ?? []) {
+    counts.set(emoji.emoji, (counts.get(emoji.emoji) ?? 0) + 1);
+  }
+
+  if (counts.size < 1) {
+    return undefined;
+  }
+
+  return Array.from(counts.entries()).map(([value, count]) => ({
+    value,
+    count,
+  }));
 };
 
 export const mapThreadToChatSummary = (thread: InstagramThread): ChatSummary => {
@@ -58,7 +93,13 @@ export const mapThreadToChatSummary = (thread: InstagramThread): ChatSummary => 
     title: thread.thread_title || fallbackTitle,
     unreadCount: Number(unreadCount),
     lastMessagePreview: extractMessageText(lastItem),
+    lastMessageSender:
+      lastItem?.user_id !== undefined
+        ? thread.users?.find((user) => String(user.pk) === String(lastItem.user_id))?.username
+        : undefined,
+    lastMessageTimestamp: toTimestamp(lastItem?.timestamp ?? thread.last_activity_at),
     avatarUrl: thread.users?.[0]?.profile_pic_url,
+    canSend: true,
   };
 };
 
@@ -70,21 +111,29 @@ export const mapItemToChatMessage = (
 ): ChatMessage => {
   const senderId = String(item.user_id ?? '');
   const text = extractMessageText(item);
-  const imageUrl = item.media?.image_versions2?.candidates?.[0]?.url;
-  const animationUrl = item.media?.video_versions?.[0]?.url;
-  const repliedTo = item.replied_to_message?.item_id;
-  const replySuffix = repliedTo ? ` (reply to ${repliedTo})` : '';
+  const media = resolveMedia(item);
+  const imageUrl = media?.image_versions2?.candidates?.[0]?.url;
+  const videoUrl = media?.video_versions?.[0]?.url;
+  const replySenderId = item.replied_to_message?.user_id;
 
   return {
     id: item.item_id ?? `${senderId}:${item.timestamp ?? Date.now()}`,
     sender: senderLabelById.get(senderId) ?? 'Unknown',
     senderAvatarUrl: senderAvatarById.get(senderId),
-    text: `${text}${replySuffix}`.trim(),
+    text,
     imageUrl,
-    animationUrl,
-    animationMimeType: animationUrl ? 'video/mp4' : undefined,
+    videoUrl,
+    videoMimeType: videoUrl ? 'video/mp4' : undefined,
     timestamp: toTimestamp(item.timestamp),
-    outgoing: !!currentUserPk && senderId === currentUserPk,
+    outgoing: item.is_sent_by_viewer ?? (!!currentUserPk && senderId === currentUserPk),
+    readByPeer: Array.isArray(item.seen_user_ids)
+      ? item.seen_user_ids.some((id) => String(id) !== currentUserPk)
+      : undefined,
+    replyToMessageId: item.replied_to_message?.item_id,
+    replyToSender:
+      replySenderId !== undefined ? senderLabelById.get(String(replySenderId)) ?? 'Unknown' : undefined,
+    replyToText: item.replied_to_message?.text?.trim() || undefined,
+    reactions: mapReactions(item.reactions),
   };
 };
 

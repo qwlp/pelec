@@ -49,6 +49,7 @@ const TOML_KEY_TO_SHORTCUT_KEY: Record<string, keyof ShortcutConfig> = {
   next_pane: 'nextPane',
   previous_pane: 'previousPane',
   telegram_network: 'telegramNetwork',
+  instagram_network: 'instagramNetwork',
 };
 
 const TOML_KEY_TO_KEYMAP_ACTION: Record<string, KeyboardActionId> = {
@@ -71,6 +72,7 @@ const TOML_KEY_TO_KEYMAP_ACTION: Record<string, KeyboardActionId> = {
   refresh: 'refresh',
   reply: 'reply',
   start_auth: 'startAuth',
+  switch_instagram: 'switchInstagram',
   switch_telegram: 'switchTelegram',
   toggle_insert_mode: 'toggleInsertMode',
 };
@@ -83,6 +85,7 @@ export const DEFAULT_SHORTCUT_CONFIG: ShortcutConfig = {
   nextPane: 'Tab',
   previousPane: 'Shift+Tab',
   telegramNetwork: 'Alt+1',
+  instagramNetwork: 'Alt+2',
 };
 
 export const DEFAULT_USER_CONFIG: UserConfig = {
@@ -156,6 +159,7 @@ focus_search = "/"
 next_pane = "Tab"
 previous_pane = "Shift+Tab"
 telegram_network = "Alt+1"
+instagram_network = "Alt+2"
 
 [keymap]
 reply = "r"
@@ -302,9 +306,6 @@ const parseUserConfigToml = (source: string): ParsedUserConfig => {
 
     if (section === 'shortcuts') {
       rawConfig.shortcuts ??= {};
-      if (key === 'instagram_network') {
-        continue;
-      }
       const shortcutKey = TOML_KEY_TO_SHORTCUT_KEY[key];
       if (!shortcutKey) {
         warnings.push(`Ignoring unknown shortcuts key "${key}" on line ${lineIndex + 1}.`);
@@ -315,9 +316,6 @@ const parseUserConfigToml = (source: string): ParsedUserConfig => {
     }
 
     rawConfig.keymap ??= {};
-    if (key === 'switch_instagram') {
-      continue;
-    }
     const action = TOML_KEY_TO_KEYMAP_ACTION[key];
     if (!action) {
       warnings.push(`Ignoring unknown keymap key "${key}" on line ${lineIndex + 1}.`);
@@ -444,6 +442,12 @@ const resolveShortcutConfig = (
     rawConfig.shortcuts?.telegramNetwork,
     DEFAULT_SHORTCUT_CONFIG.telegramNetwork,
     'shortcuts.telegram_network',
+    warnings,
+  ),
+  instagramNetwork: coerceString(
+    rawConfig.shortcuts?.instagramNetwork,
+    DEFAULT_SHORTCUT_CONFIG.instagramNetwork,
+    'shortcuts.instagram_network',
     warnings,
   ),
 });

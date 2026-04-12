@@ -17,9 +17,6 @@ export const bootstrapApp = (): void => {
   let appShutdownStarted = false;
   let appConfig: AppConfig | null = null;
 
-  const activateNetwork = (network: AppConfig['networks'][number]['id']): void => {
-    mainWindow?.webContents.send('app:activate-network', network);
-  };
   const openCommandPalette = (): void => {
     mainWindow?.webContents.send('app:open-command-palette');
   };
@@ -79,8 +76,6 @@ export const bootstrapApp = (): void => {
         }
 
         wireAppShortcutHandling(contents, appConfig.shortcuts, {
-          allowNetworkTargets: ['telegram'],
-          onActivateNetwork: activateNetwork,
           onOpenCommandPalette: openCommandPalette,
           onOpenKeyboardHelp: openKeyboardHelp,
         });

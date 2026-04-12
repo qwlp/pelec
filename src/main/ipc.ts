@@ -384,6 +384,28 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:send-video',
+    async (
+      _event,
+      network: NetworkId,
+      chatId: string,
+      document: OutgoingAttachmentDocument,
+      caption?: string,
+      replyToMessageId?: string,
+    ) => {
+      return (
+        (await getConnectorManager()?.sendVideoMessage(
+          network,
+          chatId,
+          document,
+          caption,
+          replyToMessageId,
+        )) ?? false
+      );
+    },
+  );
+
+  ipcMain.handle(
     'connector:send-document',
     async (
       _event,

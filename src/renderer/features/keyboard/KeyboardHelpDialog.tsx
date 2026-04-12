@@ -19,6 +19,7 @@ const HELP_ROWS: Array<{ actionId: KeyboardActionId; description: string }> = [
   { actionId: 'refresh', description: 'Refresh the active network' },
   { actionId: 'startAuth', description: 'Start auth for the active network' },
   { actionId: 'openBrowser', description: 'Open the active network in the browser' },
+  { actionId: 'switchInstagram', description: 'Switch to Instagram' },
   { actionId: 'switchTelegram', description: 'Switch to Telegram' },
 ];
 

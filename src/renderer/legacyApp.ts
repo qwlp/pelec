@@ -72,6 +72,7 @@ import { applyUserTheme } from './lib/theme';
 import type {
   BootLegacyAppOptions,
   LegacyAppBridgeApi,
+  LegacyInstagramAttachment,
   LegacyAppSnapshot,
   LegacyCommandItem,
 } from './legacyBridge';
@@ -91,7 +92,8 @@ interface AppState {
     | 'telegram-chats'
     | 'telegram-messages'
     | 'instagram-chats'
-    | 'instagram-messages';
+    | 'instagram-messages'
+    | 'instagram-composer';
   commandPaletteOpen: boolean;
   commandQuery: string;
   loading: Record<NetworkId, boolean>;
@@ -116,7 +118,11 @@ interface AppState {
   selectedInstagramMessageId: string | null;
   replyingToInstagramMessageId: string | null;
   replyingToInstagramSender: string | null;
+  pendingInstagramAttachments: LegacyInstagramAttachment[];
+  instagramDraftText: string;
   instagramLoading: boolean;
+  instagramMessagesLoading: boolean;
+  instagramLoadError: string | null;
   instagramSearchQuery: string;
 }
 
@@ -181,6 +187,8 @@ type QrAuthState = {
 
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
 const TELEGRAM_MESSAGES_PAGE_SIZE = 80;
+const INSTAGRAM_CHAT_LIST_TIMEOUT_MS = 15000;
+const INSTAGRAM_MESSAGES_TIMEOUT_MS = 18000;
 const NETWORK_RAIL_VISIBLE = false;
 export const bootLegacyApp = async (
   mountRoot?: HTMLDivElement,
@@ -238,7 +246,11 @@ export const bootLegacyApp = async (
     selectedInstagramMessageId: null,
     replyingToInstagramMessageId: null,
     replyingToInstagramSender: null,
+    pendingInstagramAttachments: [],
+    instagramDraftText: '',
     instagramLoading: false,
+    instagramMessagesLoading: false,
+    instagramLoadError: null,
     instagramSearchQuery: '',
   };
 
@@ -254,6 +266,13 @@ export const bootLegacyApp = async (
     ) {
       return 'telegram-composer';
     }
+    if (
+      state.mode === 'insert' &&
+      state.activeNetwork === 'instagram' &&
+      activeInstagramChatCanSend()
+    ) {
+      return 'instagram-composer';
+    }
 
     return state.vimPane;
   };
@@ -261,6 +280,10 @@ export const bootLegacyApp = async (
   const activeTelegramChatCanSend = (): boolean =>
     !!state.activeTelegramChatId &&
     (state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId)?.canSend ?? true);
+
+  const activeInstagramChatCanSend = (): boolean =>
+    !!state.activeInstagramChatId &&
+    (state.instagramChats.find((chat) => chat.id === state.activeInstagramChatId)?.canSend ?? true);
 
   const areTelegramMessagesVisible = (): boolean =>
     !useReactTelegramMessageList || reactTelegramMessagesVisible;
@@ -302,6 +325,27 @@ export const bootLegacyApp = async (
           visible: true,
         }
       : null,
+    instagram: {
+      activeChatTitle: safeLabel(
+        state.instagramChats.find((chat) => chat.id === state.activeInstagramChatId)?.title,
+        'Instagram',
+      ),
+      activeChatId: state.activeInstagramChatId,
+      activeChatCanSend: activeInstagramChatCanSend(),
+      draftText: state.instagramDraftText,
+      filteredChats: filterChatsByQuery(state.instagramChats, state.instagramSearchQuery),
+      loadError: state.instagramLoadError,
+      loading: state.instagramLoading,
+      messageLoadError: state.instagramLoadError,
+      messages: [...state.instagramMessages],
+      messagesLoading: state.instagramMessagesLoading,
+      pendingAttachments: [...state.pendingInstagramAttachments],
+      realtimeStatus: getStatusByNetwork('instagram')?.realtimeStatus ?? 'disconnected',
+      replyPreview: getInstagramReplyPreview(),
+      searchQuery: state.instagramSearchQuery,
+      selectedChatId: state.selectedInstagramChatId,
+      selectedMessageId: state.selectedInstagramMessageId,
+    },
     telegram: {
       activeChatTitle: safeLabel(
         state.telegramChats.find((chat) => chat.id === state.activeTelegramChatId)?.title,
@@ -430,6 +474,7 @@ export const bootLegacyApp = async (
   let telegramScrollFollowupTimer: number | null = null;
   let telegramReadAcknowledgeTimer: number | null = null;
   let lastTelegramReadAcknowledgeKey: string | null = null;
+  let lastInstagramReadAcknowledgeKey: string | null = null;
   let telegramHasOlderMessages = false;
   let telegramLoadingOlderMessages = false;
   let reactTelegramMessagesVisible = !useReactTelegramMessageList;
@@ -1106,89 +1151,17 @@ export const bootLegacyApp = async (
   };
 
   const pollInstagramWebFallbackNotifications = async (): Promise<void> => {
-    if (!instagramEnabled) {
-      return;
-    }
-    const instagramStatus = getStatusByNetwork('instagram');
-    if (instagramStatus.mode !== 'web-fallback') {
-      lastInstagramWebFallbackState = null;
-      lastInstagramWebFallbackNotificationKey = null;
-      return;
-    }
-
-    const view = webviewMap.get('instagram');
-    if (!view) {
-      return;
-    }
-
-    const nextState = await readInstagramWebFallbackState(view);
-    if (nextState === null) {
-      return;
-    }
-    const previousState = lastInstagramWebFallbackState;
-    if (previousState === null) {
-      lastInstagramWebFallbackState = nextState;
-      return;
-    }
-
-    if (nextState.unreadCount < previousState.unreadCount || nextState.unreadCount === 0) {
-      lastInstagramWebFallbackNotificationKey = null;
-    }
-
-    const unreadIncreased = nextState.unreadCount > previousState.unreadCount;
-    const previewChanged =
-      Boolean(nextState.preview) && nextState.preview !== previousState.preview;
-    const signatureChanged =
-      Boolean(nextState.signature) && nextState.signature !== previousState.signature;
-    const inboxMeaningfullyChanged =
-      nextState.unreadCount > 0 &&
-      nextState.unreadCount >= previousState.unreadCount &&
-      (previewChanged || signatureChanged);
-
-    if ((unreadIncreased || inboxMeaningfullyChanged) && !isWebFallbackVisible('instagram')) {
-      const payload = buildInstagramWebFallbackNotification(nextState, previousState);
-      const notificationKey = buildInstagramWebFallbackNotificationKey(
-        nextState.unreadCount,
-        payload,
-      );
-      if (notificationKey !== lastInstagramWebFallbackNotificationKey) {
-        void window.pelec.showNotification(payload.title, payload.body);
-        lastInstagramWebFallbackNotificationKey = notificationKey;
-      }
-    }
-
-    lastInstagramWebFallbackState = nextState;
+    lastInstagramWebFallbackState = null;
+    lastInstagramWebFallbackNotificationKey = null;
   };
 
   const ensureInstagramWebFallbackMonitor = (): void => {
-    if (!instagramEnabled) {
-      if (instagramWebFallbackMonitorTimer !== null) {
-        window.clearInterval(instagramWebFallbackMonitorTimer);
-        instagramWebFallbackMonitorTimer = null;
-      }
-      lastInstagramWebFallbackState = null;
-      lastInstagramWebFallbackNotificationKey = null;
-      return;
-    }
-    const instagramStatus = getStatusByNetwork('instagram');
-    if (instagramStatus.mode !== 'web-fallback') {
-      if (instagramWebFallbackMonitorTimer !== null) {
-        window.clearInterval(instagramWebFallbackMonitorTimer);
-        instagramWebFallbackMonitorTimer = null;
-      }
-      lastInstagramWebFallbackState = null;
-      lastInstagramWebFallbackNotificationKey = null;
-      return;
-    }
-
     if (instagramWebFallbackMonitorTimer !== null) {
-      return;
+      window.clearInterval(instagramWebFallbackMonitorTimer);
+      instagramWebFallbackMonitorTimer = null;
     }
-
-    instagramWebFallbackMonitorTimer = window.setInterval(() => {
-      void pollInstagramWebFallbackNotifications();
-    }, 5000);
-    void pollInstagramWebFallbackNotifications();
+    lastInstagramWebFallbackState = null;
+    lastInstagramWebFallbackNotificationKey = null;
   };
 
   const fetchChatMessages = async (
@@ -1201,29 +1174,66 @@ export const bootLegacyApp = async (
       network === 'telegram' ? { passive: true } : undefined,
     );
 
+  const withTimeout = async <T>(
+    operation: Promise<T>,
+    timeoutMs: number,
+    timeoutMessage: string,
+  ): Promise<T> => {
+    let timeoutId: number | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => {
+        reject(new Error(timeoutMessage));
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  };
+
   const scanChatsForNotifications = async (
     network: NetworkId,
     chats: ChatSummary[],
     activeChatId: string | null,
     suppressNotifications = false,
   ): Promise<void> => {
+    if (suppressNotifications) {
+      for (const chat of chats) {
+        lastUnreadCountByChat.set(buildChatKey(network, chat.id), chat.unreadCount);
+      }
+      return;
+    }
+
     const candidates = chats
       .filter((chat) => {
         if (chat.unreadCount < 1 || chat.isMuted || activeChatId === chat.id) {
           return false;
         }
-        if (suppressNotifications) {
-          return true;
-        }
         const key = buildChatKey(network, chat.id);
         const previousUnreadCount = lastUnreadCountByChat.get(key) ?? 0;
         return chat.unreadCount > previousUnreadCount;
       })
-      .sort((a, b) => b.unreadCount - a.unreadCount);
+      .sort(
+        (a, b) =>
+          (b.lastMessageTimestamp ?? 0) - (a.lastMessageTimestamp ?? 0) ||
+          b.unreadCount - a.unreadCount,
+      )
+      .slice(0, network === 'instagram' ? 1 : 3);
 
     for (const chat of candidates) {
       try {
-        const messages = await fetchChatMessages(network, chat.id);
+        const messages =
+          network === 'instagram'
+            ? await withTimeout(
+                fetchChatMessages(network, chat.id),
+                4500,
+                `Timed out loading ${network} notifications for ${chat.id}.`,
+              )
+            : await fetchChatMessages(network, chat.id);
         maybeNotifyNewMessages(network, chat.id, chat.title, messages, suppressNotifications);
       } catch (error) {
         console.warn(`[${network}] notification scan failed for chat ${chat.id}`, error);
@@ -1588,26 +1598,6 @@ export const bootLegacyApp = async (
     closeTelegramEmojiCompletion();
     return true;
   };
-
-  const instagramWebShell = instagramEnabled ? document.createElement('section') : null;
-  if (instagramWebShell) {
-    instagramWebShell.className = 'instagram-web-shell hidden';
-    instagramWebShell.innerHTML = `
-      <div class="instagram-web-stage">
-        <div class="instagram-web-frame">
-          <div id="instagram-webview-host" class="instagram-webview-host"></div>
-        </div>
-      </div>
-    `;
-    views.append(instagramWebShell);
-  }
-
-  const instagramWebviewHost =
-    instagramWebShell?.querySelector<HTMLElement>('#instagram-webview-host') ?? null;
-
-  if (instagramEnabled && !instagramWebviewHost) {
-    throw new Error('Instagram web shell elements missing');
-  }
 
   const telegramImageModal = document.createElement('div');
   telegramImageModal.className = 'qr-modal hidden';
@@ -2063,6 +2053,25 @@ export const bootLegacyApp = async (
     }
   };
 
+  const findInstagramMessageById = (messageId: string | null): ChatMessage | undefined => {
+    if (!messageId) {
+      return undefined;
+    }
+    return state.instagramMessages.find((message) => message.id === messageId);
+  };
+
+  const selectInstagramMessage = (messageId: string): void => {
+    state.vimPane = 'instagram-messages';
+    state.selectedInstagramMessageId = messageId;
+  };
+
+  const activateInstagramMessagesPane = (): void => {
+    state.vimPane = 'instagram-messages';
+    if (!state.selectedInstagramMessageId) {
+      state.selectedInstagramMessageId = state.instagramMessages[state.instagramMessages.length - 1]?.id ?? null;
+    }
+  };
+
   const openTelegramContextMenu = (messageId: string, x: number, y: number): void => {
     const message = findTelegramMessageById(messageId);
     if (isPendingTelegramMessage(message)) {
@@ -2191,6 +2200,33 @@ export const bootLegacyApp = async (
     };
   };
 
+  const clearInstagramReplyState = (options: { clearAttachments?: boolean } = {}): void => {
+    state.replyingToInstagramMessageId = null;
+    state.replyingToInstagramSender = null;
+    if (options.clearAttachments) {
+      state.pendingInstagramAttachments = [];
+    }
+  };
+
+  const getInstagramReplyPreview = (): { sender: string; text: string } | null => {
+    if (!state.replyingToInstagramMessageId) {
+      return null;
+    }
+
+    const replyTarget = findInstagramMessageById(state.replyingToInstagramMessageId);
+    if (replyTarget) {
+      return {
+        sender: safeLabel(replyTarget.sender, state.replyingToInstagramSender ?? 'Reply'),
+        text: safeLabel(replyTarget.text, '[message]'),
+      };
+    }
+
+    return {
+      sender: safeLabel(state.replyingToInstagramSender, 'Reply'),
+      text: 'Original message unavailable.',
+    };
+  };
+
   const beginReplyToTelegramMessage = (message: ChatMessage): void => {
     if (isPendingTelegramMessage(message)) {
       statusBar.textContent = 'Wait for the message to finish sending.';
@@ -2205,6 +2241,19 @@ export const bootLegacyApp = async (
     state.replyingToSender = message.sender;
     setMode('insert');
     statusBar.textContent = `Replying to ${message.sender}`;
+  };
+
+  const beginReplyToInstagramMessage = (message: ChatMessage): void => {
+    if (!activeInstagramChatCanSend()) {
+      statusBar.textContent = 'You cannot post in this chat.';
+      render();
+      return;
+    }
+    state.replyingToInstagramMessageId = message.id;
+    state.replyingToInstagramSender = message.sender;
+    setMode('insert');
+    statusBar.textContent = `Replying to ${message.sender}`;
+    render();
   };
 
   const forwardTelegramMessageToChat = async (chat: ChatSummary): Promise<void> => {
@@ -2619,30 +2668,6 @@ export const bootLegacyApp = async (
 
   const startInstagramBrowserSessionPolling = (): void => {
     stopInstagramBrowserSessionPolling();
-    instagramBrowserSessionPollTimer = window.setInterval(() => {
-      if (instagramBrowserSessionPollBusy) {
-        return;
-      }
-      instagramBrowserSessionPollBusy = true;
-      void (async () => {
-        try {
-          const submittedStatus = await window.pelec.submitConnectorAuth('instagram', {
-            type: 'code',
-            value: 'session-check',
-          });
-          await refreshConnectorStatuses();
-          if (submittedStatus.authState === 'authenticated') {
-            stopInstagramBrowserSessionPolling();
-            setMode('normal');
-          }
-          render();
-        } catch {
-          // Keep polling while the user completes login/challenge in the webview.
-        } finally {
-          instagramBrowserSessionPollBusy = false;
-        }
-      })();
-    }, 2000);
   };
 
   const hideQrModal = (): void => {
@@ -2692,12 +2717,13 @@ export const bootLegacyApp = async (
       const network = appConfig.networks.find((value) => value.id === id);
       return {
         network: id,
-        mode: 'web-fallback',
+        mode: 'native',
         authState: 'unauthenticated',
         capabilities: { qr: false, twoFactor: false, officialApi: false },
+        realtimeStatus: id === 'instagram' ? 'disconnected' : undefined,
         partition: network?.partition ?? `persist:${id}`,
         webUrl: network?.homeUrl ?? 'about:blank',
-        details: 'No connector status available. Using web fallback.',
+        details: 'No connector status available yet.',
       };
     }
     return status;
@@ -3008,6 +3034,10 @@ export const bootLegacyApp = async (
   };
 
   for (const network of appConfig.networks) {
+    if (network.id === 'instagram') {
+      continue;
+    }
+
     const connectorStatus = getStatusByNetwork(network.id);
     const view = document.createElement('webview');
     view.className = 'network-view';
@@ -3040,26 +3070,9 @@ export const bootLegacyApp = async (
       render();
     });
 
-    if (network.id === 'instagram' && instagramEnabled) {
-      view.addEventListener('dom-ready', () => {
-        void injectInstagramWebTheme(view);
-        void pollInstagramWebFallbackNotifications();
-      });
-    }
-
     view.addEventListener('did-stop-loading', () => {
       state.loading[network.id] = false;
-      if (network.id === 'instagram' && instagramEnabled) {
-        void injectInstagramWebTheme(view);
-        void pollInstagramWebFallbackNotifications();
-      }
       render();
-
-      if (network.id === 'instagram' && instagramEnabled && isInstagramCheckpointCooldownActive()) {
-        const remaining = formatCooldownRemaining(instagramCheckpointCooldownUntil);
-        statusBar.textContent = `Instagram checkpoint cooldown active (${remaining} remaining).`;
-        render();
-      }
     });
 
     view.addEventListener('did-fail-load', () => {
@@ -3068,12 +3081,7 @@ export const bootLegacyApp = async (
       render();
     });
 
-    if (network.id === 'instagram' && instagramWebviewHost) {
-      view.classList.add('instagram-webview');
-      instagramWebviewHost.append(view);
-    } else {
-      views.append(view);
-    }
+    views.append(view);
     webviewMap.set(network.id, view);
   }
 
@@ -3253,6 +3261,21 @@ export const bootLegacyApp = async (
     );
   };
 
+  const selectInstagramChat = (
+    chatId: string,
+    options: {
+      forceMessagesPane?: boolean;
+    } = {},
+  ): Promise<void> => {
+    if (chatId !== state.activeInstagramChatId) {
+      lastInstagramReadAcknowledgeKey = null;
+    }
+    state.selectedInstagramChatId = chatId;
+    clearInstagramReplyState({ clearAttachments: true });
+    state.vimPane = options.forceMessagesPane ? 'instagram-messages' : 'instagram-chats';
+    return loadInstagramMessages(chatId);
+  };
+
   const loadTelegramChats = async (
     options: {
       refreshActiveMessages?: boolean;
@@ -3386,9 +3409,26 @@ export const bootLegacyApp = async (
     return instagramController.refreshMessages(chatId, async () => {
       const endMeasure = beginMeasure('instagram.messages.load');
       const requestSeq = instagramController.beginMessagesRequest();
+      const previousActiveInstagramChatId = state.activeInstagramChatId;
+      const switchingChats = previousActiveInstagramChatId !== chatId;
       try {
+        if (switchingChats) {
+          lastInstagramReadAcknowledgeKey = null;
+        }
         state.activeInstagramChatId = chatId;
-        const messages = await window.pelec.listConnectorMessages('instagram', chatId);
+        void window.pelec.setConnectorActiveChat('instagram', chatId);
+        state.instagramMessagesLoading = true;
+        state.instagramLoadError = null;
+        if (switchingChats) {
+          state.instagramMessages = [];
+          state.selectedInstagramMessageId = null;
+        }
+        render();
+        const messages = await withTimeout(
+          window.pelec.listConnectorMessages('instagram', chatId),
+          INSTAGRAM_MESSAGES_TIMEOUT_MS,
+          'Timed out loading Instagram messages.',
+        );
         if (!instagramController.isCurrentMessagesRequest(requestSeq) || chatId !== state.activeInstagramChatId) {
           return;
         }
@@ -3398,11 +3438,31 @@ export const bootLegacyApp = async (
         maybeNotifyNewMessages('instagram', chatId, chatTitle, messages);
         state.instagramMessages = messages;
         state.selectedInstagramMessageId = messages[messages.length - 1]?.id ?? null;
-        if (changed) {
-          render();
+        state.instagramMessagesLoading = false;
+        const activeChatUnreadCount =
+          state.instagramChats.find((chat) => chat.id === chatId)?.unreadCount ?? 0;
+        const latestIncomingMessageId = [...messages].reverse().find((message) => !message.outgoing)?.id;
+        if (activeChatUnreadCount > 0 && latestIncomingMessageId) {
+          const acknowledgeKey = `${chatId}:${latestIncomingMessageId}`;
+          if (acknowledgeKey !== lastInstagramReadAcknowledgeKey) {
+            lastInstagramReadAcknowledgeKey = acknowledgeKey;
+            void window.pelec
+              .markConnectorChatRead('instagram', chatId, [latestIncomingMessageId])
+              .catch(() => {
+                if (lastInstagramReadAcknowledgeKey === acknowledgeKey) {
+                  lastInstagramReadAcknowledgeKey = null;
+                }
+              });
+          }
         }
+        void changed;
+        render();
         endMeasure();
       } catch (error) {
+        state.instagramMessagesLoading = false;
+        state.instagramLoadError =
+          error instanceof Error ? error.message : 'Failed to load Instagram messages.';
+        render();
         endMeasure();
         throw error;
       }
@@ -3423,15 +3483,23 @@ export const bootLegacyApp = async (
           state.instagramChats = [];
           state.instagramMessages = [];
           instagramController.clearMessageRefresh();
+          lastInstagramReadAcknowledgeKey = null;
           state.activeInstagramChatId = null;
           state.selectedInstagramChatId = null;
           state.selectedInstagramMessageId = null;
           state.replyingToInstagramMessageId = null;
           state.replyingToInstagramSender = null;
+          state.pendingInstagramAttachments = [];
+          state.instagramDraftText = '';
+          state.instagramMessagesLoading = false;
+          state.instagramLoadError = null;
+          void window.pelec.setConnectorActiveChat('instagram', null);
           render();
           endMeasure();
           return;
         }
+
+        const previousActiveChatId = state.activeInstagramChatId;
 
         const hasExistingChats = state.instagramChats.length > 0;
         state.instagramLoading = !hasExistingChats;
@@ -3439,14 +3507,20 @@ export const bootLegacyApp = async (
           render();
         }
 
-        const chats = await window.pelec.listConnectorChats('instagram');
+        const chats = await withTimeout(
+          window.pelec.listConnectorChats('instagram'),
+          INSTAGRAM_CHAT_LIST_TIMEOUT_MS,
+          'Timed out loading Instagram chats.',
+        );
         if (!instagramController.isCurrentChatsRequest(requestSeq)) {
           return;
         }
 
         const chatsChanged = !areChatListsEqual(state.instagramChats, chats);
+        const hadLoadError = Boolean(state.instagramLoadError);
         state.instagramChats = chats;
         state.instagramLoading = false;
+        state.instagramLoadError = null;
         const suppressNotifications = !notificationBaselineReady.instagram;
 
         if (!state.activeInstagramChatId && chats.length > 0) {
@@ -3466,16 +3540,22 @@ export const bootLegacyApp = async (
           !chats.some((chat) => chat.id === state.activeInstagramChatId)
         ) {
           instagramController.clearMessageRefresh(state.activeInstagramChatId);
+          lastInstagramReadAcknowledgeKey = null;
           state.activeInstagramChatId = chats[0]?.id ?? null;
           state.instagramMessages = [];
           state.selectedInstagramMessageId = null;
         }
 
-        if (chatsChanged) {
+        if (chatsChanged || hadLoadError) {
           render();
         }
 
-        if (state.activeInstagramChatId && options.refreshActiveMessages !== false) {
+        const activeChatChanged = previousActiveChatId !== state.activeInstagramChatId;
+        if (
+          state.activeInstagramChatId &&
+          options.refreshActiveMessages !== false &&
+          (activeChatChanged || chatsChanged || state.instagramMessages.length < 1)
+        ) {
           await loadInstagramMessages(state.activeInstagramChatId);
         }
 
@@ -3500,6 +3580,15 @@ export const bootLegacyApp = async (
         if (isInstagramNativeReady()) {
           scheduleBackgroundRefresh('instagram');
         }
+      } catch (error) {
+        if (!instagramController.isCurrentChatsRequest(requestSeq)) {
+          return;
+        }
+        state.instagramLoading = false;
+        state.instagramMessagesLoading = false;
+        state.instagramLoadError =
+          error instanceof Error ? error.message : 'Failed to load Instagram chats.';
+        render();
       } finally {
         state.instagramLoading = false;
         endMeasure();
@@ -3626,13 +3715,10 @@ export const bootLegacyApp = async (
       if (state.activeNetwork === 'telegram') {
         state.vimPane = 'telegram-messages';
         telegramComposeInput.focus();
+      } else if (state.activeNetwork === 'instagram' && activeInstagramChatCanSend()) {
+        state.vimPane = 'instagram-messages';
       } else {
-        const activeWebview = webviewMap.get(state.activeNetwork);
-        if (activeWebview) {
-          activeWebview.focus();
-        } else {
-          quickFilter.focus();
-        }
+        quickFilter.focus();
       }
     }
     render();
@@ -3666,6 +3752,7 @@ export const bootLegacyApp = async (
       state.vimPane = isInstagramNativeReady() && !NETWORK_RAIL_VISIBLE
         ? 'instagram-chats'
         : 'networks';
+      void loadInstagramChats();
     } else {
       state.vimPane = 'networks';
     }
@@ -4199,6 +4286,102 @@ export const bootLegacyApp = async (
     }
   };
 
+  const sendInstagramMessage = async (): Promise<void> => {
+    if (state.activeNetwork !== 'instagram' || !state.activeInstagramChatId) {
+      return;
+    }
+    if (!activeInstagramChatCanSend()) {
+      statusBar.textContent = 'You cannot post in this chat.';
+      render();
+      return;
+    }
+
+    const chatId = state.activeInstagramChatId;
+    const text = state.instagramDraftText.trim();
+    const attachments = [...state.pendingInstagramAttachments];
+    if (!text && attachments.length < 1) {
+      return;
+    }
+
+    const replyToMessageId = state.replyingToInstagramMessageId ?? undefined;
+    const previousDraft = state.instagramDraftText;
+    const previousAttachments = [...state.pendingInstagramAttachments];
+    const previousReplyId = state.replyingToInstagramMessageId;
+    const previousReplySender = state.replyingToInstagramSender;
+
+    state.instagramDraftText = '';
+    state.pendingInstagramAttachments = [];
+    clearInstagramReplyState();
+    render();
+
+    let sent = true;
+    try {
+      if (attachments.length > 0) {
+        for (let index = 0; index < attachments.length; index += 1) {
+          if (!sent) {
+            break;
+          }
+          const attachment = attachments[index];
+          if (!attachment) {
+            continue;
+          }
+          const caption = index === 0 ? text : '';
+          sent =
+            attachment.kind === 'image'
+              ? await window.pelec.sendConnectorImage(
+                  'instagram',
+                  chatId,
+                  attachment.dataUrl,
+                  caption,
+                  replyToMessageId,
+                )
+              : await window.pelec.sendConnectorVideo(
+                  'instagram',
+                  chatId,
+                  {
+                    dataUrl: attachment.dataUrl,
+                    fileName: attachment.name,
+                    mimeType: attachment.mimeType,
+                  },
+                  caption,
+                  replyToMessageId,
+                );
+        }
+      } else {
+        sent = await window.pelec.sendConnectorMessage(
+          'instagram',
+          chatId,
+          text,
+          replyToMessageId,
+        );
+      }
+
+      if (!sent) {
+        state.instagramDraftText = previousDraft;
+        state.pendingInstagramAttachments = previousAttachments;
+        state.replyingToInstagramMessageId = previousReplyId;
+        state.replyingToInstagramSender = previousReplySender;
+        await refreshConnectorStatuses();
+        const status = getStatusByNetwork('instagram');
+        statusBar.textContent = `Failed to send: ${status.lastError ?? status.details}`;
+        render();
+        return;
+      }
+
+      scheduleInstagramMessagesRefresh(chatId, 0);
+      scheduleInstagramChatsRefresh(0);
+      statusBar.textContent = 'Message sent.';
+      render();
+    } catch (error) {
+      state.instagramDraftText = previousDraft;
+      state.pendingInstagramAttachments = previousAttachments;
+      state.replyingToInstagramMessageId = previousReplyId;
+      state.replyingToInstagramSender = previousReplySender;
+      statusBar.textContent = error instanceof Error ? error.message : 'Instagram send failed.';
+      render();
+    }
+  };
+
   const scheduleTelegramChatsRefresh = (
     delayMs = 300,
     refreshActiveMessages = true,
@@ -4222,7 +4405,7 @@ export const bootLegacyApp = async (
     }, delayMs);
   };
 
-  const scheduleInstagramChatsRefresh = (delayMs = 450): void => {
+  const scheduleInstagramChatsRefresh = (delayMs = 180): void => {
     if (instagramChatsRefreshTimer !== null) {
       window.clearTimeout(instagramChatsRefreshTimer);
     }
@@ -4232,7 +4415,7 @@ export const bootLegacyApp = async (
     }, delayMs);
   };
 
-  const scheduleInstagramMessagesRefresh = (chatId: string, delayMs = 350): void => {
+  const scheduleInstagramMessagesRefresh = (chatId: string, delayMs = 80): void => {
     if (instagramMessagesRefreshTimer !== null) {
       window.clearTimeout(instagramMessagesRefreshTimer);
     }
@@ -4525,6 +4708,22 @@ export const bootLegacyApp = async (
       return;
     }
 
+    if (state.activeNetwork === 'instagram' && state.vimPane === 'instagram-chats') {
+      const nextChatId = state.selectedInstagramChatId;
+      if (nextChatId) {
+        state.activeInstagramChatId = nextChatId;
+        clearInstagramReplyState({ clearAttachments: true });
+        void selectInstagramChat(nextChatId, {
+          forceMessagesPane: true,
+        });
+      }
+      return;
+    }
+
+    if (state.activeNetwork === 'instagram' && state.vimPane === 'instagram-messages') {
+      return;
+    }
+
     if (!NETWORK_RAIL_VISIBLE) {
       return;
     }
@@ -4535,6 +4734,9 @@ export const bootLegacyApp = async (
     const message = findTelegramMessageById(state.selectedTelegramMessageId);
     return isPendingTelegramMessage(message) ? undefined : message;
   };
+
+  const findSelectedInstagramMessage = (): ChatMessage | undefined =>
+    findInstagramMessageById(state.selectedInstagramMessageId);
 
   const removeTelegramMessageLocally = (chatId: string, messageId: string): boolean => {
     if (state.activeTelegramChatId !== chatId) {
@@ -4601,6 +4803,43 @@ export const bootLegacyApp = async (
     statusBar.textContent = 'Message deleted.';
   };
 
+  const deleteSelectedInstagramMessage = async (): Promise<void> => {
+    if (state.activeNetwork !== 'instagram' || !state.activeInstagramChatId) {
+      return;
+    }
+
+    const chatId = state.activeInstagramChatId;
+    const selected = findSelectedInstagramMessage();
+    if (!selected) {
+      statusBar.textContent = 'No Instagram message selected.';
+      render();
+      return;
+    }
+
+    statusBar.textContent = 'Deleting message...';
+    const deleted = await window.pelec.deleteConnectorMessage(
+      'instagram',
+      chatId,
+      selected.id,
+    );
+    if (!deleted) {
+      await refreshConnectorStatuses();
+      if (state.activeInstagramChatId === chatId) {
+        await loadInstagramMessages(chatId);
+      }
+      scheduleInstagramChatsRefresh(0);
+      const status = getStatusByNetwork('instagram');
+      statusBar.textContent = `Delete failed: ${status.lastError ?? status.details}`;
+      render();
+      return;
+    }
+
+    scheduleInstagramMessagesRefresh(chatId, 120);
+    scheduleInstagramChatsRefresh(0);
+    statusBar.textContent = 'Message deleted.';
+    render();
+  };
+
   const beginReplyToSelectedTelegramMessage = (): void => {
     if (state.activeNetwork !== 'telegram') {
       return;
@@ -4610,6 +4849,17 @@ export const bootLegacyApp = async (
       return;
     }
     beginReplyToTelegramMessage(selected);
+  };
+
+  const beginReplyToSelectedInstagramMessage = (): void => {
+    if (state.activeNetwork !== 'instagram') {
+      return;
+    }
+    const selected = findSelectedInstagramMessage();
+    if (!selected) {
+      return;
+    }
+    beginReplyToInstagramMessage(selected);
   };
 
   const applyAuthResult = async (result: AuthStartResult): Promise<void> => {
@@ -4622,23 +4872,21 @@ export const bootLegacyApp = async (
     }
 
     if (result.mode === 'browser' && result.webUrl) {
+      if (result.network === 'instagram') {
+        statusBar.textContent =
+          'Instagram native mode cannot complete auth inside the app. Finish any checkpoint review in the browser/app, then retry.';
+        void window.pelec.openExternal(result.webUrl);
+        await refreshConnectorStatuses();
+        render();
+        return;
+      }
       const webview = webviewMap.get(result.network);
       if (webview) {
         webview.setAttribute('src', result.webUrl);
       }
-      if (result.network === 'instagram') {
-        startInstagramBrowserSessionPolling();
-      }
       activateNetwork(result.network);
       setMode('insert');
       await refreshConnectorStatuses();
-      if (result.network === 'instagram') {
-        const status = getStatusByNetwork('instagram');
-        if (status.authState === 'authenticated') {
-          stopInstagramBrowserSessionPolling();
-          setMode('normal');
-        }
-      }
       render();
       return;
     }
@@ -4681,9 +4929,6 @@ export const bootLegacyApp = async (
         return;
       }
       await refreshConnectorStatuses();
-      if (result.network === 'instagram') {
-        stopInstagramBrowserSessionPolling();
-      }
       render();
       return;
     }
@@ -4698,7 +4943,6 @@ export const bootLegacyApp = async (
         submitLabel: 'Verify',
         onCancel: async () => {
           if (result.network === 'instagram') {
-            stopInstagramBrowserSessionPolling();
             await window.pelec.resetConnectorAuth('instagram');
           }
         },
@@ -4716,11 +4960,7 @@ export const bootLegacyApp = async (
       await refreshConnectorStatuses();
       if (result.network === 'instagram') {
         if (submittedStatus.authState === 'authenticated') {
-          stopInstagramBrowserSessionPolling();
           setMode('normal');
-        } else if (submittedStatus.mode === 'web-fallback') {
-          activateNetwork('instagram');
-          startInstagramBrowserSessionPolling();
         }
       }
       render();
@@ -4791,6 +5031,9 @@ export const bootLegacyApp = async (
       run: () => {
         void refreshConnectorStatuses().then(async () => {
           await loadTelegramChats();
+          if (instagramEnabled) {
+            await loadInstagramChats();
+          }
           render();
         });
       },
@@ -4801,6 +5044,14 @@ export const bootLegacyApp = async (
       group: 'actions',
       run: () => {
         void loadTelegramChats();
+      },
+    },
+    {
+      id: 'refresh-instagram',
+      label: 'refresh instagram',
+      group: 'actions',
+      run: () => {
+        void loadInstagramChats();
       },
     },
     {
@@ -4876,9 +5127,22 @@ export const bootLegacyApp = async (
     telegramComposeInput.focus();
   };
 
+  const focusInstagramComposer = (): void => {
+    if (!activeInstagramChatCanSend()) {
+      return;
+    }
+    state.vimPane = 'instagram-messages';
+    setMode('insert');
+  };
+
   const setTelegramSearchQuery = (query: string): void => {
     state.telegramSearchQuery = query;
     telegramSearchInput.value = query;
+    render();
+  };
+
+  const setInstagramSearchQuery = (query: string): void => {
+    state.instagramSearchQuery = query;
     render();
   };
 
@@ -4888,10 +5152,86 @@ export const bootLegacyApp = async (
     updateTelegramEmojiCompletion();
   };
 
+  const setInstagramDraftValue = (value: string): void => {
+    state.instagramDraftText = value;
+    render();
+  };
+
   const removeTelegramAttachment = (attachmentId: string): void => {
     state.pendingTelegramAttachments = state.pendingTelegramAttachments.filter(
       (item) => item.id !== attachmentId,
     );
+    render();
+  };
+
+  const removeInstagramAttachment = (attachmentId: string): void => {
+    state.pendingInstagramAttachments = state.pendingInstagramAttachments.filter(
+      (item) => item.id !== attachmentId,
+    );
+    render();
+  };
+
+  const appendInstagramFiles = async (
+    files: File[],
+    source: 'selected' | 'pasted',
+  ): Promise<void> => {
+    if (files.length < 1) {
+      return;
+    }
+
+    const availableSlots = Math.max(0, TELEGRAM_MAX_ATTACHMENTS - state.pendingInstagramAttachments.length);
+    const acceptedFiles = files.slice(0, availableSlots);
+    if (acceptedFiles.length < 1) {
+      statusBar.textContent = `Attachment limit reached (${TELEGRAM_MAX_ATTACHMENTS}).`;
+      render();
+      return;
+    }
+
+    const attachments = (
+      await Promise.all(
+        acceptedFiles.map(async (file): Promise<LegacyInstagramAttachment | null> => {
+          if (file.size > TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES) {
+            return null;
+          }
+          const mimeType = file.type.toLowerCase();
+          const kind = mimeType.startsWith('image/')
+            ? 'image'
+            : mimeType.startsWith('video/')
+              ? 'video'
+              : null;
+          if (!kind) {
+            return null;
+          }
+          const dataUrl = await readFileAsDataUrl(file);
+          if (!dataUrl) {
+            return null;
+          }
+          return {
+            id: createTelegramAttachmentId(),
+            kind,
+            name: file.name || (kind === 'image' ? 'image' : 'video'),
+            mimeType: file.type || undefined,
+            sizeBytes: file.size,
+            dataUrl,
+          };
+        }),
+      )
+    ).filter((attachment): attachment is LegacyInstagramAttachment => Boolean(attachment));
+
+    if (attachments.length < 1) {
+      statusBar.textContent =
+        source === 'pasted'
+          ? 'Only Instagram image and video attachments are supported.'
+          : 'No supported Instagram image/video attachments were selected.';
+      render();
+      return;
+    }
+
+    state.pendingInstagramAttachments = [...state.pendingInstagramAttachments, ...attachments];
+    statusBar.textContent =
+      attachments.length === 1
+        ? `Attached ${attachments[0].name}.`
+        : `Attached ${attachments.length} files.`;
     render();
   };
 
@@ -5990,16 +6330,7 @@ export const bootLegacyApp = async (
   };
 
   const renderInstagramWeb = (): void => {
-    if (!instagramWebShell) {
-      return;
-    }
-
-    if (state.activeNetwork !== 'instagram' || !instagramEnabled) {
-      instagramWebShell.classList.add('hidden');
-      return;
-    }
-
-    instagramWebShell.classList.remove('hidden');
+    void 0;
   };
 
   const render = (): void => {
@@ -6246,15 +6577,6 @@ export const bootLegacyApp = async (
     setMode('normal');
   });
 
-  window.pelec.onActivateNetwork((network) => {
-    state.commandPaletteOpen = false;
-    state.commandQuery = '';
-    commandInput.value = '';
-    clearGPending();
-    setMode('normal');
-    activateNetwork(network);
-  });
-
   window.pelec.onAppActivity((activity) => {
     setStatusActivity(activity);
     render();
@@ -6307,6 +6629,13 @@ export const bootLegacyApp = async (
     if (event.network === 'instagram') {
       if (event.kind === 'status-changed') {
         void refreshConnectorStatuses().then(() => {
+          const instagramStatus = getStatusByNetwork('instagram');
+          if (
+            instagramStatus.mode === 'native' &&
+            instagramStatus.authState === 'authenticated'
+          ) {
+            void loadInstagramChats();
+          }
           render();
         });
         return;
@@ -6324,7 +6653,9 @@ export const bootLegacyApp = async (
         if (state.activeNetwork === 'instagram' && event.chatId === state.activeInstagramChatId) {
           scheduleInstagramMessagesRefresh(event.chatId);
         }
-        scheduleInstagramChatsRefresh();
+        if (event.reason !== 'read-state') {
+          scheduleInstagramChatsRefresh();
+        }
         if (state.activeNetwork === 'instagram') {
           render();
         }
@@ -6520,6 +6851,8 @@ export const bootLegacyApp = async (
         beginReplyToSelectedTelegramMessage();
       } else if (state.activeNetwork === 'telegram') {
         void loadTelegramChats();
+      } else if (state.activeNetwork === 'instagram') {
+        void loadInstagramChats();
       } else {
         const activeWebview = webviewMap.get(state.activeNetwork);
         activeWebview?.reload();
@@ -6556,6 +6889,15 @@ export const bootLegacyApp = async (
 
   const bridgeApi: LegacyAppBridgeApi = {
     activateNetwork,
+    activateInstagramChat: (chatId) => {
+      void selectInstagramChat(chatId, {
+        forceMessagesPane: true,
+      });
+    },
+    activateInstagramMessagesPane: () => {
+      activateInstagramMessagesPane();
+      render();
+    },
     activateTelegramChat: (chatId) => {
       void selectTelegramChat(chatId, {
         forceScroll: true,
@@ -6572,6 +6914,10 @@ export const bootLegacyApp = async (
     },
     activateSelection: activateVimSelection,
     deleteSelection: () => {
+      if (state.activeNetwork === 'instagram') {
+        void deleteSelectedInstagramMessage();
+        return;
+      }
       void deleteSelectedTelegramMessage();
     },
     cancelAuthPrompt,
@@ -6625,11 +6971,36 @@ export const bootLegacyApp = async (
     refresh: () => {
       if (state.activeNetwork === 'telegram') {
         void loadTelegramChats();
+      } else if (state.activeNetwork === 'instagram') {
+        void loadInstagramChats();
       } else {
         webviewMap.get(state.activeNetwork)?.reload();
       }
     },
-    reply: beginReplyToSelectedTelegramMessage,
+    reply: () => {
+      if (state.activeNetwork === 'instagram') {
+        beginReplyToSelectedInstagramMessage();
+        return;
+      }
+      beginReplyToSelectedTelegramMessage();
+    },
+    appendInstagramFiles: (files) => {
+      void appendInstagramFiles(files, 'selected');
+    },
+    clearInstagramReply: () => {
+      clearInstagramReplyState();
+      render();
+    },
+    removeInstagramAttachment,
+    sendInstagramMessage: () => {
+      void sendInstagramMessage();
+    },
+    setInstagramDraftValue,
+    setInstagramSearchQuery,
+    selectInstagramMessage: (messageId) => {
+      selectInstagramMessage(messageId);
+      render();
+    },
     selectTelegramMessage: (messageId) => {
       selectTelegramMessage(messageId);
       render();

@@ -96,6 +96,21 @@ const api = {
       caption,
       replyToMessageId,
     ) as Promise<boolean>,
+  sendConnectorVideo: (
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:send-video',
+      network,
+      chatId,
+      document,
+      caption,
+      replyToMessageId,
+    ) as Promise<boolean>,
   sendConnectorDocument: (
     network: NetworkId,
     chatId: string,
@@ -149,12 +164,6 @@ const api = {
     const wrapped = () => handler();
     ipcRenderer.on('app:force-normal-mode', wrapped);
     return () => ipcRenderer.removeListener('app:force-normal-mode', wrapped);
-  },
-  onActivateNetwork: (handler: (network: NetworkId) => void) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, payload: NetworkId) =>
-      handler(payload);
-    ipcRenderer.on('app:activate-network', wrapped);
-    return () => ipcRenderer.removeListener('app:activate-network', wrapped);
   },
   onOpenCommandPalette: (handler: () => void) => {
     const wrapped = () => handler();

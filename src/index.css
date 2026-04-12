@@ -112,6 +112,12 @@ body {
   height: 100%;
 }
 
+.modern-workspace.instagram-active .modern-webview-host,
+.modern-workspace.instagram-active .modern-legacy-host {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .modern-webview-host,
 .modern-legacy-host {
   width: 100%;
@@ -141,6 +147,288 @@ body {
 .modern-workspace.telegram-compact-layout .modern-telegram-chat-pane {
   inset: 0;
   width: auto;
+}
+
+.modern-instagram-chat-pane,
+.modern-instagram-message-pane,
+.modern-instagram-composer {
+  position: absolute;
+  z-index: 10;
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  border: 1px solid var(--line-soft);
+  border-radius: calc(var(--window-border-radius) + 6px);
+  backdrop-filter: blur(18px);
+}
+
+.modern-instagram-chat-pane {
+  top: 16px;
+  left: 16px;
+  bottom: 16px;
+  width: 340px;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  gap: 12px;
+  padding: 14px;
+}
+
+.modern-instagram-message-pane {
+  top: 16px;
+  right: 16px;
+  bottom: 132px;
+  left: 372px;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 12px;
+  padding: 14px;
+}
+
+.modern-instagram-composer {
+  right: 16px;
+  bottom: 16px;
+  left: 372px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.modern-workspace.instagram-compact-layout .modern-instagram-chat-pane,
+.modern-workspace.instagram-compact-layout .modern-instagram-message-pane,
+.modern-workspace.instagram-compact-layout .modern-instagram-composer {
+  left: 16px;
+  right: 16px;
+}
+
+.modern-workspace.instagram-compact-layout .modern-instagram-chat-pane {
+  width: auto;
+}
+
+.modern-workspace.instagram-compact-layout.instagram-compact-show-chats .modern-instagram-message-pane,
+.modern-workspace.instagram-compact-layout.instagram-compact-show-chats .modern-instagram-composer {
+  display: none;
+}
+
+.modern-workspace.instagram-compact-layout.instagram-compact-show-messages .modern-instagram-chat-pane {
+  display: none;
+}
+
+.modern-instagram-pane-header,
+.modern-instagram-message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+}
+
+.modern-instagram-pane-header h2,
+.modern-instagram-message-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.modern-instagram-pane-header p {
+  margin: 4px 0 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.modern-instagram-pane-actions,
+.modern-instagram-composer-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.modern-instagram-pane-actions button,
+.modern-instagram-composer-actions button,
+.modern-instagram-back,
+.modern-instagram-reply-preview button,
+.modern-instagram-attachment-pill button {
+  border: 1px solid var(--line-soft);
+  background: var(--bg-elevated);
+  color: var(--ink-main);
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.modern-instagram-search-shell {
+  display: block;
+}
+
+.modern-instagram-search,
+.modern-instagram-composer-input {
+  width: 100%;
+  border: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--bg-main) 88%, transparent);
+  color: var(--ink-main);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.modern-instagram-composer-input {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.modern-instagram-state {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.modern-instagram-error {
+  color: var(--danger-ink, #ff8f8f);
+}
+
+.modern-instagram-chat-list,
+.modern-instagram-message-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+}
+
+.modern-instagram-chat-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--bg-main) 90%, transparent);
+  color: var(--ink-main);
+  border-radius: 16px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+  position: relative;
+  cursor: pointer;
+}
+
+.modern-instagram-chat-item.selected {
+  border-color: var(--accent-main);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-main) 60%, transparent);
+}
+
+.modern-instagram-chat-item.active {
+  background: color-mix(in srgb, var(--bg-elevated) 94%, transparent);
+}
+
+.modern-instagram-chat-title-row,
+.modern-instagram-message-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.modern-instagram-chat-title {
+  font-weight: 700;
+}
+
+.modern-instagram-chat-time,
+.modern-instagram-message-meta {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.modern-instagram-chat-preview {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.modern-instagram-chat-unread {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent-main);
+  color: var(--bg-main);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.modern-instagram-message {
+  border: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--bg-main) 90%, transparent);
+  border-radius: 18px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.modern-instagram-message.outgoing {
+  background: color-mix(in srgb, var(--accent-main) 16%, var(--bg-main));
+}
+
+.modern-instagram-message.selected {
+  border-color: var(--accent-main);
+}
+
+.modern-instagram-reply-block,
+.modern-instagram-reply-preview {
+  border-left: 2px solid var(--accent-main);
+  padding-left: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.modern-instagram-reply-preview {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+.modern-instagram-message-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.modern-instagram-media {
+  max-width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--line-soft);
+}
+
+.modern-instagram-reactions,
+.modern-instagram-attachment-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modern-instagram-reaction,
+.modern-instagram-attachment-pill {
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--bg-elevated) 90%, transparent);
+  color: var(--ink-main);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modern-instagram-composer-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.modern-instagram-attach {
+  border: 1px solid var(--line-soft);
+  background: var(--bg-elevated);
+  color: var(--ink-main);
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.modern-instagram-attach.disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 .modern-network-rail {
@@ -570,37 +858,6 @@ textarea {
   min-height: 0;
   height: 100%;
   padding: 8px;
-}
-
-.instagram-web-frame {
-  position: relative;
-  height: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: transparent;
-  box-shadow: none;
-  overflow: hidden;
-}
-
-.instagram-web-frame::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border: 1px solid rgba(255, 255, 255, 0.03);
-  pointer-events: none;
-}
-
-.instagram-webview-host {
-  position: relative;
-  min-height: 0;
-  background: transparent;
-  height: 100%;
-}
-
-.instagram-webview {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
 }
 
 .native-telegram {

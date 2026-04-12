@@ -11,6 +11,8 @@ type ShellCommandItem = {
 export const selectDisplayMode = (state: AppState) =>
   state.commandPalette.isOpen ? 'command' : state.appShell.mode;
 
+export const selectLegacyInstagramSnapshot = (state: AppState) => state.legacy.snapshot?.instagram ?? null;
+
 export const selectLegacyTelegramSnapshot = (state: AppState) => state.legacy.snapshot?.telegram ?? null;
 
 export const selectAvailableCommandItems = (

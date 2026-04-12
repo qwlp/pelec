@@ -4,27 +4,35 @@ import type {
   ChatMessage,
   ChatSummary,
   Connector,
-  ConnectorUpdateEvent,
   ConnectorStatus,
+  ConnectorUpdateEvent,
+  OutgoingAttachmentDocument,
 } from '../../shared/connectors';
 import type { NetworkDefinition } from '../../shared/types';
 import { verifyInstagramCapability } from './instagram/capability';
 import {
-  adoptInstagramWebSession,
+  deleteThreadMessage,
   fetchCurrentUser,
   fetchInbox,
   fetchThread,
+  getBroadcastItemId,
+  getInstagramRealtimeStatus,
   loginInstagram,
+  markInstagramThreadRead,
   resetInstagramAuthState,
+  sendThreadImage,
   sendThreadMessage,
+  sendThreadVideo,
   submitInstagramChallengeCode,
   submitInstagramTwoFactorCode,
+  subscribeInstagramRuntimeEvents,
 } from './instagram/client';
 import {
   buildParticipantMaps,
   mapItemToChatMessage,
   mapThreadToChatSummary,
 } from './instagram/mappers';
+import type { InstagramRuntimeEvent } from './instagram/types';
 
 const parseCredentialPayload = (value: string): { username: string; password: string } | undefined => {
   const raw = value.trim();
@@ -66,25 +74,13 @@ const isCheckpointStatus = (details?: string): boolean => {
 };
 
 export class InstagramConnector implements Connector {
+  private cleanupRuntimeSubscription: (() => void) | null = null;
+
+  private readonly updateListeners = new Set<(event: ConnectorUpdateEvent) => void>();
+
+  private activeChatId: string | null = null;
+
   private status: ConnectorStatus;
-  private updateListeners = new Set<(event: ConnectorUpdateEvent) => void>();
-  private authLog(...args: unknown[]): void {
-    console.info('[instagram-auth][connector]', ...args);
-  }
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      promise
-        .then((value) => {
-          clearTimeout(timer);
-          resolve(value);
-        })
-        .catch((error) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-    });
-  }
 
   constructor(
     private readonly network: NetworkDefinition,
@@ -92,13 +88,14 @@ export class InstagramConnector implements Connector {
   ) {
     this.status = {
       network: this.network.id,
-      mode: 'web-fallback',
+      mode: 'native',
       authState: 'unauthenticated',
       capabilities: {
         qr: false,
         twoFactor: true,
         officialApi: false,
       },
+      realtimeStatus: 'disconnected',
       partition: this.network.partition,
       webUrl: this.network.homeUrl,
       details: 'Checking Instagram native DM capability.',
@@ -107,6 +104,13 @@ export class InstagramConnector implements Connector {
 
   async init(): Promise<void> {
     await this.detectCapability();
+    await this.ensureRuntimeSubscription();
+    this.emitStatusUpdate();
+  }
+
+  async shutdown(): Promise<void> {
+    this.cleanupRuntimeSubscription?.();
+    this.cleanupRuntimeSubscription = null;
   }
 
   getStatus(): ConnectorStatus {
@@ -121,44 +125,12 @@ export class InstagramConnector implements Connector {
   }
 
   async startAuth(): Promise<AuthStartResult> {
-    this.authLog('start-auth:begin', { partition: this.network.partition });
     this.status.authState = 'authenticating';
     this.emitStatusUpdate();
 
-    let capability:
-      | { ok: boolean; details: string; username?: string; requiresTwoFactor?: boolean; requiresChallenge?: boolean }
-      | undefined;
-    try {
-      capability = await this.withTimeout(
-        verifyInstagramCapability(this.userDataPath, this.network.partition),
-        9000,
-        'Timed out while checking Instagram capability.',
-      );
-      this.authLog('start-auth:capability', capability);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.authLog('start-auth:capability-timeout-or-error', { message });
-      this.status.mode = 'web-fallback';
-      this.status.authState = 'unauthenticated';
-      this.status.details = 'Instagram auth check timed out. Use web login and retry.';
-      this.status.lastError = message;
-      this.emitStatusUpdate();
-      return {
-        network: this.network.id,
-        mode: 'browser',
-        instructions: 'Instagram auth check timed out. Log in in web view, then run auth again.',
-        webUrl: 'https://www.instagram.com/accounts/login/',
-      };
-    }
-
+    const capability = await verifyInstagramCapability(this.userDataPath, this.network.partition);
     if (capability.ok) {
-      this.status.mode = 'native';
-      this.status.authState = 'authenticated';
-      this.status.details = capability.username
-        ? `Instagram native mode active for @${capability.username}.`
-        : 'Instagram native mode active.';
-      this.status.lastError = undefined;
-      this.emitStatusUpdate();
+      await this.detectCapability();
       return {
         network: this.network.id,
         mode: 'none',
@@ -166,82 +138,59 @@ export class InstagramConnector implements Connector {
       };
     }
 
-    this.status.mode = 'web-fallback';
     this.status.authState =
       capability.requiresTwoFactor || capability.requiresChallenge ? 'authenticating' : 'unauthenticated';
     this.status.details = capability.requiresTwoFactor
       ? 'Instagram 2FA is pending. Submit your verification code.'
       : capability.requiresChallenge
         ? 'Instagram challenge is pending. Submit your security code.'
-      : 'Instagram requires username/password for native mode.';
+        : isCheckpointStatus(capability.details)
+          ? 'Instagram checkpoint review is required in the browser/app. Complete it there, then retry.'
+          : 'Instagram requires username and password for native mode.';
     this.status.lastError = capability.details;
     this.emitStatusUpdate();
 
-    if (capability.requiresTwoFactor) {
+    if (capability.requiresTwoFactor || capability.requiresChallenge) {
       return {
         network: this.network.id,
         mode: 'code',
-        instructions:
-          'Enter your Instagram 2FA code to complete native login. Web login remains available as fallback.',
-      };
-    }
-
-    if (capability.requiresChallenge) {
-      return {
-        network: this.network.id,
-        mode: 'code',
-        instructions: `${capability.details} If no code arrives, complete the checkpoint in Instagram web/app and then retry auth.`,
+        instructions: this.status.details,
       };
     }
 
     return {
       network: this.network.id,
       mode: 'password',
-      instructions:
-        'Enter Instagram username and password to enable native DM mode. Web login remains available as fallback.',
+      instructions: this.status.details,
     };
   }
 
   async submitAuth(payload: AuthSubmission): Promise<ConnectorStatus> {
-    this.authLog('submit-auth:begin', { type: payload.type, valuePreview: payload.value.slice(0, 20) });
     if (payload.type === 'code') {
-      if (payload.value.trim() === 'session-check') {
-        const adopted = await adoptInstagramWebSession(this.userDataPath, this.network.partition);
-        this.authLog('submit-auth:session-check-result', adopted);
-        if (!adopted.ok) {
-          this.status.authState = 'unauthenticated';
-          this.status.mode = 'web-fallback';
-          this.status.details = adopted.details;
-          this.status.lastError = adopted.details;
-          this.emitStatusUpdate();
-          return this.status;
-        }
-      } else {
-        const currentCapability = await verifyInstagramCapability(this.userDataPath, this.network.partition);
-        const codeResult = currentCapability.requiresChallenge
-          ? await submitInstagramChallengeCode(
-              this.userDataPath,
-              this.network.partition,
-              payload.value,
-            )
-          : await submitInstagramTwoFactorCode(
-              this.userDataPath,
-              this.network.partition,
-              payload.value,
-            );
-        if (!codeResult.ok) {
-          this.status.authState = codeResult.requiresTwoFactor || codeResult.requiresChallenge
-            ? 'authenticating'
-            : 'unauthenticated';
-          this.status.mode = 'web-fallback';
-          this.status.details = codeResult.details;
-          this.status.lastError = codeResult.details;
-          this.emitStatusUpdate();
-          return this.status;
-        }
+      const currentCapability = await verifyInstagramCapability(this.userDataPath, this.network.partition);
+      const codeResult = currentCapability.requiresChallenge
+        ? await submitInstagramChallengeCode(
+            this.userDataPath,
+            this.network.partition,
+            payload.value,
+          )
+        : await submitInstagramTwoFactorCode(
+            this.userDataPath,
+            this.network.partition,
+            payload.value,
+          );
+      if (!codeResult.ok) {
+        this.status.authState = codeResult.requiresTwoFactor || codeResult.requiresChallenge
+          ? 'authenticating'
+          : 'unauthenticated';
+        this.status.details = codeResult.details;
+        this.status.lastError = codeResult.details;
+        this.emitStatusUpdate();
+        return this.status;
       }
 
       await this.detectCapability();
+      await this.ensureRuntimeSubscription();
       this.emitStatusUpdate();
       return this.status;
     }
@@ -263,17 +212,10 @@ export class InstagramConnector implements Connector {
         credentials.username,
         credentials.password,
       );
-      this.authLog('submit-auth:password-result', {
-        ok: loginResult.ok,
-        requiresTwoFactor: loginResult.requiresTwoFactor,
-        details: loginResult.details,
-      });
-
       if (!loginResult.ok) {
         this.status.authState = loginResult.requiresTwoFactor || loginResult.requiresChallenge
           ? 'authenticating'
           : 'degraded';
-        this.status.mode = 'web-fallback';
         this.status.details = loginResult.details;
         this.status.lastError = loginResult.details;
         this.emitStatusUpdate();
@@ -281,6 +223,7 @@ export class InstagramConnector implements Connector {
       }
 
       await this.detectCapability();
+      await this.ensureRuntimeSubscription();
       this.emitStatusUpdate();
       return this.status;
     }
@@ -291,17 +234,20 @@ export class InstagramConnector implements Connector {
   }
 
   async resetAuth(): Promise<ConnectorStatus> {
+    this.cleanupRuntimeSubscription?.();
+    this.cleanupRuntimeSubscription = null;
     await resetInstagramAuthState(this.userDataPath, this.network.partition);
-    this.status.mode = 'web-fallback';
+    this.status.mode = 'native';
     this.status.authState = 'unauthenticated';
-    this.status.details = 'Instagram auth was reset. Start auth again to enter your username and password.';
+    this.status.realtimeStatus = 'disconnected';
+    this.status.details = 'Instagram auth was reset. Start auth again to log in natively.';
     this.status.lastError = undefined;
     this.emitStatusUpdate();
     return this.status;
   }
 
   async listChats(): Promise<ChatSummary[]> {
-    if (this.status.mode !== 'native' || this.status.authState !== 'authenticated') {
+    if (!(await this.ensureAuthenticated())) {
       return [];
     }
 
@@ -313,22 +259,32 @@ export class InstagramConnector implements Connector {
       this.status.lastError = undefined;
       return chats;
     } catch (error) {
-      this.markDegraded(error, 'Failed to load Instagram chats. Falling back to web mode.');
+      this.status.details = 'Failed to load Instagram chats.';
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Instagram chat error';
       this.emitStatusUpdate();
-      return [];
+      throw error;
     }
   }
 
   async listMessages(chatId: string): Promise<ChatMessage[]> {
-    if (!chatId || this.status.mode !== 'native' || this.status.authState !== 'authenticated') {
+    if (!chatId) {
+      return [];
+    }
+
+    if (!(await this.ensureAuthenticated())) {
       return [];
     }
 
     try {
       const threadData = await fetchThread(this.userDataPath, this.network.partition, chatId);
       const thread = threadData.thread;
-      const currentUser = await fetchCurrentUser(this.userDataPath, this.network.partition);
-      const currentUserPk = currentUser.user?.pk !== undefined ? String(currentUser.user.pk) : undefined;
+      let currentUserPk =
+        thread?.viewer_id !== undefined ? String(thread.viewer_id) : undefined;
+      let currentUser: Awaited<ReturnType<typeof fetchCurrentUser>> | undefined;
+      if (!currentUserPk) {
+        currentUser = await fetchCurrentUser(this.userDataPath, this.network.partition);
+        currentUserPk = currentUser.user?.pk !== undefined ? String(currentUser.user.pk) : undefined;
+      }
       const { senderLabelById, senderAvatarById } = buildParticipantMaps(thread, currentUser);
       const messages = (thread?.items ?? [])
         .map((item) => mapItemToChatMessage(item, senderLabelById, senderAvatarById, currentUserPk))
@@ -339,7 +295,31 @@ export class InstagramConnector implements Connector {
       this.status.lastError =
         error instanceof Error ? error.message : 'Unknown Instagram message error';
       this.status.details = `Failed to load Instagram messages: ${this.status.lastError}`;
-      return [];
+      this.emitStatusUpdate();
+      throw error;
+    }
+  }
+
+  async setActiveChat(chatId?: string | null): Promise<void> {
+    this.activeChatId = chatId?.trim() ? chatId.trim() : null;
+  }
+
+  async markChatRead(chatId: string, messageIds?: string[]): Promise<void> {
+    if (!chatId || this.status.authState !== 'authenticated') {
+      return;
+    }
+
+    const targetMessageId = messageIds?.[messageIds.length - 1];
+    if (!targetMessageId) {
+      return;
+    }
+
+    try {
+      await markInstagramThreadRead(this.userDataPath, this.network.partition, chatId, targetMessageId);
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Failed to update read state.';
+      this.status.details = `Instagram read-state refresh failed: ${this.status.lastError}`;
+      this.emitStatusUpdate();
     }
   }
 
@@ -347,7 +327,8 @@ export class InstagramConnector implements Connector {
     if (!chatId || !text.trim()) {
       return false;
     }
-    if (this.status.mode !== 'native' || this.status.authState !== 'authenticated') {
+
+    if (!(await this.ensureAuthenticated())) {
       return false;
     }
 
@@ -359,25 +340,114 @@ export class InstagramConnector implements Connector {
         text.trim(),
         replyToMessageId,
       );
-      if (result.status !== 'ok') {
-        throw new Error('Instagram send did not return ok status');
-      }
+      void getBroadcastItemId(result);
       this.status.lastError = undefined;
       this.emitMessagesInvalidated(chatId, 'outgoing');
       this.emitChatListInvalidated([chatId]);
       return true;
     } catch (error) {
-      this.status.lastError =
-        error instanceof Error ? error.message : 'Unknown Instagram send error';
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Instagram send error';
       this.status.details = `Instagram send failed: ${this.status.lastError}`;
+      this.emitStatusUpdate();
+      return false;
+    }
+  }
+
+  async sendImageMessage(
+    chatId: string,
+    dataUrl: string,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!chatId || !dataUrl) {
+      return false;
+    }
+
+    if (!(await this.ensureAuthenticated())) {
+      return false;
+    }
+
+    try {
+      await sendThreadImage(
+        this.userDataPath,
+        this.network.partition,
+        chatId,
+        dataUrl,
+        caption,
+        replyToMessageId,
+      );
+      this.emitMessagesInvalidated(chatId, 'outgoing');
+      this.emitChatListInvalidated([chatId]);
+      return true;
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Instagram image error';
+      this.status.details = `Instagram image send failed: ${this.status.lastError}`;
+      this.emitStatusUpdate();
+      return false;
+    }
+  }
+
+  async sendVideoMessage(
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!chatId || !document.dataUrl) {
+      return false;
+    }
+
+    if (!(await this.ensureAuthenticated())) {
+      return false;
+    }
+
+    try {
+      await sendThreadVideo(
+        this.userDataPath,
+        this.network.partition,
+        chatId,
+        document,
+        caption,
+        replyToMessageId,
+      );
+      this.emitMessagesInvalidated(chatId, 'outgoing');
+      this.emitChatListInvalidated([chatId]);
+      return true;
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Instagram video error';
+      this.status.details = `Instagram video send failed: ${this.status.lastError}`;
+      this.emitStatusUpdate();
+      return false;
+    }
+  }
+
+  async deleteMessage(chatId: string, messageId: string): Promise<boolean> {
+    if (!chatId || !messageId) {
+      return false;
+    }
+
+    if (!(await this.ensureAuthenticated())) {
+      return false;
+    }
+
+    try {
+      await deleteThreadMessage(this.userDataPath, this.network.partition, chatId, messageId);
+      this.emitMessagesInvalidated(chatId, 'history');
+      this.emitChatListInvalidated([chatId]);
+      return true;
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Instagram delete error';
+      this.status.details = `Instagram delete failed: ${this.status.lastError}`;
+      this.emitStatusUpdate();
       return false;
     }
   }
 
   private async detectCapability(): Promise<void> {
     const result = await verifyInstagramCapability(this.userDataPath, this.network.partition);
+    this.status.mode = 'native';
+    this.status.realtimeStatus = await getInstagramRealtimeStatus(this.userDataPath, this.network.partition);
     if (!result.ok) {
-      this.status.mode = 'web-fallback';
       this.status.authState =
         result.requiresTwoFactor || result.requiresChallenge ? 'authenticating' : 'unauthenticated';
       this.status.details = result.requiresTwoFactor
@@ -385,13 +455,12 @@ export class InstagramConnector implements Connector {
         : result.requiresChallenge
           ? 'Instagram challenge required. Submit your code to complete native login.'
           : isCheckpointStatus(result.details)
-            ? 'Instagram checkpoint required. Complete the challenge in web view, then retry auth.'
-          : 'Instagram native mode unavailable until login is completed.';
+            ? 'Instagram checkpoint required. Complete it in the browser/app, then retry auth.'
+            : 'Instagram native mode unavailable until login is completed.';
       this.status.lastError = result.details;
       return;
     }
 
-    this.status.mode = 'native';
     this.status.authState = 'authenticated';
     this.status.details = result.username
       ? `Instagram native mode active for @${result.username}.`
@@ -399,12 +468,61 @@ export class InstagramConnector implements Connector {
     this.status.lastError = undefined;
   }
 
-  private markDegraded(error: unknown, details: string): void {
-    this.status.mode = 'web-fallback';
-    this.status.authState = 'degraded';
-    this.status.details = details;
-    this.status.lastError =
-      error instanceof Error ? error.message : 'Unknown Instagram connector error';
+  private async ensureRuntimeSubscription(): Promise<void> {
+    if (this.cleanupRuntimeSubscription) {
+      return;
+    }
+    this.cleanupRuntimeSubscription = await subscribeInstagramRuntimeEvents(
+      this.userDataPath,
+      this.network.partition,
+      (event) => {
+        this.handleRuntimeEvent(event);
+      },
+    );
+  }
+
+  private handleRuntimeEvent(event: InstagramRuntimeEvent): void {
+    if (event.kind === 'realtime-status') {
+      this.status.realtimeStatus = event.status;
+      this.emitStatusUpdate();
+      return;
+    }
+
+    this.emitChatListInvalidated(event.threadId ? [event.threadId] : undefined);
+    if (event.kind === 'message') {
+      this.emitMessagesInvalidated(event.threadId, 'incoming');
+      return;
+    }
+    if (event.kind === 'reaction') {
+      this.emitMessagesInvalidated(event.threadId, 'history');
+      return;
+    }
+    if (event.kind === 'seen') {
+      this.emitMessagesInvalidated(event.threadId, 'read-state');
+    }
+  }
+
+  private async ensureAuthenticated(): Promise<boolean> {
+    if (this.status.authState === 'authenticated') {
+      return true;
+    }
+
+    try {
+      await this.detectCapability();
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Failed to verify Instagram auth state.';
+      this.status.details = `Instagram auth check failed: ${this.status.lastError}`;
+      this.emitStatusUpdate();
+      return false;
+    }
+
+    const authState: ConnectorStatus['authState'] = this.getStatus().authState;
+    if (authState !== 'authenticated') {
+      this.emitStatusUpdate();
+      return false;
+    }
+
+    return true;
   }
 
   private emitStatusUpdate(): void {

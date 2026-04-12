@@ -14,6 +14,7 @@ import type {
 } from '../../shared/connectors';
 import type { AppConfig, NetworkDefinition, NetworkId } from '../../shared/types';
 import { TelegramConnector } from './telegramConnector';
+import { InstagramConnector } from './instagramConnector';
 
 export class ConnectorManager {
   private readonly connectors = new Map<NetworkId, Connector>();
@@ -192,6 +193,20 @@ export class ConnectorManager {
     return connector.sendImageMessage(chatId, dataUrl, caption, replyToMessageId);
   }
 
+  async sendVideoMessage(
+    network: NetworkId,
+    chatId: string,
+    document: OutgoingAttachmentDocument,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.sendVideoMessage) {
+      return false;
+    }
+    return connector.sendVideoMessage(chatId, document, caption, replyToMessageId);
+  }
+
   async sendDocumentMessage(
     network: NetworkId,
     chatId: string,
@@ -258,6 +273,9 @@ export class ConnectorManager {
   private createConnector(network: NetworkDefinition): Connector {
     if (network.id === 'telegram') {
       return new TelegramConnector(network, this.userDataPath, this.config.userConfig.telegram);
+    }
+    if (network.id === 'instagram') {
+      return new InstagramConnector(network, this.userDataPath);
     }
 
     throw new Error(`Unsupported network: ${network.id as string}`);

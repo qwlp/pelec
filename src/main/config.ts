@@ -15,6 +15,14 @@ export const networks: NetworkDefinition[] = [
     loginHint: 'TDLib native auth: phone number, login code, and 2FA password if needed.',
     supportLevel: 'native-web',
   },
+  {
+    id: 'instagram',
+    name: 'Instagram',
+    partition: 'persist:instagram',
+    homeUrl: 'https://www.instagram.com/direct/inbox/',
+    loginHint: 'Native Instagram auth: username/password, 2FA code, and challenge code when required.',
+    supportLevel: 'native-web',
+  },
 ];
 
 export const loadEnv = (): void => {

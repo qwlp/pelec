@@ -28,6 +28,7 @@ export interface ConnectorStatus {
   mode: ConnectorMode;
   authState: AuthState;
   capabilities: ConnectorCapabilities;
+  realtimeStatus?: 'disconnected' | 'connecting' | 'connected' | 'error';
   partition: string;
   webUrl: string;
   details: string;
@@ -202,6 +203,12 @@ export interface Connector {
   sendImageMessage?(
     chatId: string,
     dataUrl: string,
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean>;
+  sendVideoMessage?(
+    chatId: string,
+    document: OutgoingAttachmentDocument,
     caption?: string,
     replyToMessageId?: string,
   ): Promise<boolean>;

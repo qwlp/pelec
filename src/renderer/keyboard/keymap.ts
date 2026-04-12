@@ -20,6 +20,7 @@ export const DEFAULT_KEYBOARD_ACTION_KEYMAP: Record<KeyboardActionId, string> = 
   refresh: 'r',
   reply: 'r',
   startAuth: 'a',
+  switchInstagram: 'Alt+2',
   switchTelegram: 'Alt+1',
   toggleInsertMode: 'i',
 };
@@ -46,6 +47,9 @@ export const resolveActionBinding = (
   }
   if (actionId === 'switchTelegram') {
     return shortcuts.telegramNetwork;
+  }
+  if (actionId === 'switchInstagram') {
+    return shortcuts.instagramNetwork;
   }
 
   return customKeymap[actionId] ?? DEFAULT_KEYBOARD_ACTION_KEYMAP[actionId];

@@ -7,6 +7,7 @@ export type AppPane =
   | 'telegram-composer'
   | 'instagram-chats'
   | 'instagram-messages'
+  | 'instagram-composer'
   | 'command-palette'
   | 'modal'
   | 'webview';
@@ -35,6 +36,7 @@ export type KeyboardActionId =
   | 'refresh'
   | 'reply'
   | 'startAuth'
+  | 'switchInstagram'
   | 'switchTelegram'
   | 'toggleInsertMode';
 
@@ -76,6 +78,7 @@ export interface ShortcutConfig {
   nextPane: string;
   previousPane: string;
   telegramNetwork: string;
+  instagramNetwork: string;
 }
 
 export interface UserConfig {
