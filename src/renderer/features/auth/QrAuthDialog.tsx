@@ -30,16 +30,18 @@ export const QrAuthDialog = ({
       return;
     }
 
+    canvas.width = 260;
+    canvas.height = 260;
+    canvas.style.width = '260px';
+    canvas.style.height = '260px';
+
     if (!qrAuth.qrLink) {
       const context = canvas.getContext('2d');
       context?.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
 
-    void renderQrCodeToCanvas(canvas, qrAuth.qrLink, {
-      margin: 1,
-      width: 260,
-    });
+    void renderQrCodeToCanvas(canvas, qrAuth.qrLink, { margin: 1, width: 260 });
   }, [qrAuth.qrLink]);
 
   return (

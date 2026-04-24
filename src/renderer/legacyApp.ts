@@ -3578,6 +3578,19 @@ export const bootLegacyApp = async (
     state.connectorStatuses = Object.fromEntries(
       next.map((status) => [status.network, status]),
     ) as Record<NetworkId, ConnectorStatus>;
+
+    let qrAuthUpdated = false;
+    if (qrAuthState) {
+      const qrStatus = state.connectorStatuses[qrAuthState.network];
+      if (qrStatus?.qrLink && qrStatus.qrLink !== qrAuthState.qrLink) {
+        qrAuthState = {
+          ...qrAuthState,
+          qrLink: qrStatus.qrLink,
+        };
+        qrAuthUpdated = true;
+      }
+    }
+
     ensureBackgroundRefreshLoops();
     if (instagramEnabled) {
       ensureInstagramWebFallbackMonitor();
@@ -3590,6 +3603,10 @@ export const bootLegacyApp = async (
           setInstagramCheckpointCooldown(instagramStatus.lastError ?? instagramStatus.details);
         }
       }
+    }
+
+    if (qrAuthUpdated) {
+      render();
     }
 
     for (const network of appConfig.networks) {

@@ -1,3 +1,5 @@
+import QRCode from 'qrcode';
+
 interface QrCodeRenderer {
   toCanvas(
     canvas: HTMLCanvasElement,
@@ -9,15 +11,7 @@ interface QrCodeRenderer {
   ): Promise<void>;
 }
 
-let qrCodeModulePromise: Promise<QrCodeRenderer> | null = null;
-
-const loadQrCodeRenderer = async (): Promise<QrCodeRenderer> => {
-  if (!qrCodeModulePromise) {
-    qrCodeModulePromise = import('qrcode').then((module) => module.default);
-  }
-
-  return qrCodeModulePromise;
-};
+const loadQrCodeRenderer = async (): Promise<QrCodeRenderer> => QRCode as QrCodeRenderer;
 
 export const renderQrCodeToCanvas = async (
   canvas: HTMLCanvasElement,

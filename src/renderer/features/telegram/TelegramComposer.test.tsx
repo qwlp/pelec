@@ -291,6 +291,97 @@ describe('TelegramComposer', () => {
     expect(legacyApi.appendTelegramFiles).toHaveBeenCalledWith([file]);
   });
 
+  it('accepts pasted image files from the composer textarea', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    const file = new File(['image'], 'pasted.png', { type: 'image/png' });
+
+    fireEvent.paste(textarea as HTMLTextAreaElement, {
+      clipboardData: {
+        files: [file],
+        items: [
+          {
+            kind: 'file',
+            getAsFile: () => file,
+          },
+        ],
+      },
+    });
+
+    expect(legacyApi.appendTelegramFiles).toHaveBeenCalledWith([file]);
+  });
+
+  it('keeps normal text paste behavior when no files are present', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+
+    fireEvent.paste(textarea as HTMLTextAreaElement, {
+      clipboardData: {
+        files: [],
+        items: [
+          {
+            kind: 'string',
+            getAsFile: () => null,
+          },
+        ],
+      },
+    });
+
+    expect(legacyApi.appendTelegramFiles).not.toHaveBeenCalled();
+  });
+
   it('completes the active emoji suggestion before sending on Enter', async () => {
     const target = document.createElement('div');
     document.body.append(target);

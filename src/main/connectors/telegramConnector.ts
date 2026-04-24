@@ -122,6 +122,7 @@ export class TelegramConnector implements Connector {
       partition: this.network.partition,
       webUrl: this.network.homeUrl,
       details: 'Preparing Telegram TDLib connector.',
+      qrLink: null,
     };
   }
 
@@ -205,10 +206,10 @@ export class TelegramConnector implements Connector {
 
     this.status.authState = 'authenticating';
     this.status.details = 'Requesting Telegram QR code from TDLib...';
+    this.status.qrLink = this.latestQrLink;
 
-    const previousQrLink = this.latestQrLink;
     await this.requestQrCodeAuthentication();
-    const qrLink = await this.waitForQrLink(10000, previousQrLink);
+    const qrLink = this.latestQrLink;
 
     if (qrLink) {
       this.status.details =
@@ -227,7 +228,7 @@ export class TelegramConnector implements Connector {
       network: this.network.id,
       mode: 'qr',
       instructions:
-        'Waiting for QR from TDLib. Try again in a moment if QR is not visible yet.',
+        'Waiting for QR from TDLib. It will appear as soon as Telegram returns it.',
       requiresTwoFactor: true,
     };
   }
@@ -1048,38 +1049,6 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  private waitForQrLink(timeoutMs: number, previousLink?: string | null): Promise<string | null> {
-    if (this.latestQrLink && this.latestQrLink !== previousLink) {
-      return Promise.resolve(this.latestQrLink);
-    }
-
-    return new Promise<string | null>((resolve) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        this.qrWaiters = this.qrWaiters.filter((entry) => entry !== wrappedResolve);
-        resolve(null);
-      }, timeoutMs);
-
-      const wrappedResolve = (value: string | null) => {
-        if (settled) {
-          return;
-        }
-        if (value && value === previousLink) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        resolve(value);
-      };
-
-      this.qrWaiters.push(wrappedResolve);
-    });
-  }
-
   private async requestQrCodeAuthentication(): Promise<void> {
     if (!this.tdClient) {
       return;
@@ -1100,6 +1069,7 @@ export class TelegramConnector implements Connector {
       const link = typeof state.link === 'string' ? state.link : null;
       if (link) {
         this.latestQrLink = link;
+        this.status.qrLink = link;
         this.status.authState = 'authenticating';
         this.status.details =
           'QR generated. Scan with Telegram app. Enter password if 2FA is requested.';
@@ -1119,6 +1089,7 @@ export class TelegramConnector implements Connector {
       this.status.mode = 'native';
       this.status.details = 'Telegram authenticated with TDLib.';
       this.status.lastError = undefined;
+      this.status.qrLink = null;
       this.latestQrLink = null;
       return;
     }
@@ -1135,6 +1106,7 @@ export class TelegramConnector implements Connector {
       this.status.details = 'TDLib authorization state is closed. Reinitializing Telegram...';
       this.status.lastError = undefined;
       this.activeChatId = null;
+      this.status.qrLink = null;
       this.latestQrLink = null;
       this.resolveQrWaiters(null);
       void this.recoverTdlib();
@@ -1167,6 +1139,7 @@ export class TelegramConnector implements Connector {
       const client = this.tdClient;
       this.tdClient = null;
       this.tdLibReady = false;
+      this.status.qrLink = null;
       this.latestQrLink = null;
       this.activeChatId = null;
       this.resolveQrWaiters(null);

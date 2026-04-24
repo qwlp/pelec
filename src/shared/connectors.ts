@@ -31,6 +31,7 @@ export interface ConnectorStatus {
   partition: string;
   webUrl: string;
   details: string;
+  qrLink?: string | null;
   lastError?: string;
 }
 

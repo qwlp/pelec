@@ -3359,6 +3359,9 @@ textarea {
 
 #qr-canvas {
   background: #fff;
+  display: block;
+  width: 260px;
+  height: 260px;
   justify-self: center;
   border: 1px solid var(--line-soft);
 }

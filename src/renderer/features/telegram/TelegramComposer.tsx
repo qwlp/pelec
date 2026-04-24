@@ -30,6 +30,23 @@ type TelegramEmojiCompletionState = {
 
 const TELEGRAM_COMPOSER_HEIGHT_PX = 48;
 
+const getClipboardFiles = (clipboardData: DataTransfer | null): File[] => {
+  if (!clipboardData) {
+    return [];
+  }
+
+  const itemFiles = Array.from(clipboardData.items ?? [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file);
+
+  if (itemFiles.length > 0) {
+    return itemFiles;
+  }
+
+  return Array.from(clipboardData.files ?? []);
+};
+
 const formatRecordingDuration = (durationMs: number): string => {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -406,6 +423,15 @@ export const TelegramComposer = ({
               event.currentTarget.selectionStart,
               event.currentTarget.selectionEnd,
             );
+          }}
+          onPaste={(event) => {
+            const files = getClipboardFiles(event.clipboardData);
+            if (files.length < 1) {
+              return;
+            }
+
+            event.preventDefault();
+            legacyApi?.appendTelegramFiles(files);
           }}
           onSelect={(event) => {
             updateEmojiCompletion(
