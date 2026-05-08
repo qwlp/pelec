@@ -5,6 +5,7 @@ import { safeText } from '../../lib/format';
 const MESSAGE_LINK_PATTERN = /\b((?:https?:\/\/|mailto:|tg:\/\/|www\.)[^\s<]+)/giu;
 const INLINE_LINK_PATTERN = /^\[([^\]]+)\]\(([^)\s]+)\)/u;
 const FENCED_CODE_BLOCK_PATTERN = /```([\s\S]*?)```/gu;
+const TELEGRAM_USERNAME_PATTERN = /^@([A-Za-z][A-Za-z0-9_]{4,31})\b/u;
 
 type TelegramInlineNode =
   | { type: 'text'; text: string }
@@ -91,6 +92,18 @@ const normalizeExternalLink = (value: string): string | undefined => {
     return `https://${trimmed}`;
   }
   return undefined;
+};
+
+const normalizeTelegramUsernameLink = (username: string): string =>
+  `https://t.me/${encodeURIComponent(username)}`;
+
+const canStartTelegramUsernameAt = (value: string, cursor: number): boolean => {
+  if (cursor <= 0) {
+    return true;
+  }
+
+  const previous = value[cursor - 1] ?? '';
+  return !/[A-Za-z0-9_.+-]/u.test(previous);
 };
 
 const normalizeCodeLanguage = (
@@ -406,6 +419,18 @@ const parseInlineNodes = (value: string): TelegramInlineNode[] => {
         cursor += urlMatch[0].length;
         continue;
       }
+    }
+
+    const usernameMatch = TELEGRAM_USERNAME_PATTERN.exec(remainder);
+    if (usernameMatch?.index === 0 && canStartTelegramUsernameAt(value, cursor)) {
+      const username = usernameMatch[1] ?? '';
+      nodes.push({
+        type: 'link',
+        text: `@${username}`,
+        href: normalizeTelegramUsernameLink(username),
+      });
+      cursor += usernameMatch[0].length;
+      continue;
     }
 
     const inlineToken = [

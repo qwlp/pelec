@@ -322,16 +322,17 @@ export const createTelegramMessageFooter = ({
       const tickSingle = document.createElement('span');
       tickSingle.className = 'telegram-message-tick';
       tickSingle.textContent = '✓';
-      const tickDouble = document.createElement('span');
-      tickDouble.className = 'telegram-message-tick';
-      tickDouble.textContent = '✓';
       if (message.readByPeer) {
         receipt.classList.add('read');
         receipt.title = 'Read';
-        receipt.append(tickSingle, tickDouble);
+        tickSingle.classList.add('double');
+        tickSingle.setAttribute('aria-label', 'Read');
+        tickSingle.textContent = '✓✓';
+        receipt.append(tickSingle);
       } else {
         receipt.classList.add('sent');
         receipt.title = 'Sent';
+        tickSingle.setAttribute('aria-label', 'Sent');
         receipt.append(tickSingle);
       }
     }

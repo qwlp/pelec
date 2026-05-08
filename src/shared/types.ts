@@ -49,6 +49,7 @@ export interface NetworkDefinition {
 
 export interface TelegramUserConfig {
   ghostMode: boolean;
+  selectableMessageText: boolean;
 }
 
 export interface AppearanceUserConfig {

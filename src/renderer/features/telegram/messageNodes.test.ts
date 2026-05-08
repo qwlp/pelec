@@ -76,5 +76,7 @@ describe('telegram message node helpers', () => {
 
     expect(reactions?.querySelector('.telegram-message-reaction-count')?.textContent).toBe('2');
     expect(footer.querySelector('.telegram-message-receipt.read')).not.toBeNull();
+    expect(footer.querySelectorAll('.telegram-message-tick')).toHaveLength(1);
+    expect(footer.querySelector('.telegram-message-tick.double')?.textContent).toBe('✓✓');
   });
 });

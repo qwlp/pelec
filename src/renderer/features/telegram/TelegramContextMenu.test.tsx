@@ -19,6 +19,7 @@ describe('TelegramContextMenu', () => {
   it('routes menu actions through the provided handlers', () => {
     const onClose = vi.fn();
     const onCopy = vi.fn();
+    const onDelete = vi.fn();
     const onForward = vi.fn();
     const onReply = vi.fn();
     const onSelect = vi.fn();
@@ -28,6 +29,7 @@ describe('TelegramContextMenu', () => {
         messageId="message-1"
         onClose={onClose}
         onCopy={onCopy}
+        onDelete={onDelete}
         onForward={onForward}
         onReply={onReply}
         onSelect={onSelect}
@@ -40,11 +42,13 @@ describe('TelegramContextMenu', () => {
     fireEvent.click(view.getByText('Forward'));
     fireEvent.click(view.getByText('Reply'));
     fireEvent.click(view.getByText('Select'));
+    fireEvent.click(view.getByText('Delete'));
 
     expect(onCopy).toHaveBeenCalledWith('message-1');
     expect(onForward).toHaveBeenCalledWith('message-1');
     expect(onReply).toHaveBeenCalledWith('message-1');
     expect(onSelect).toHaveBeenCalledWith('message-1');
-    expect(onClose).toHaveBeenCalledTimes(4);
+    expect(onDelete).toHaveBeenCalledWith('message-1');
+    expect(onClose).toHaveBeenCalledTimes(5);
   });
 });

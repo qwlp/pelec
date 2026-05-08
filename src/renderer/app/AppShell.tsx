@@ -5,7 +5,7 @@ import type { LegacyAppBridgeApi } from '../legacyBridge';
 import { applyUserTheme } from '../lib/theme';
 import type { CommandPaletteItem } from '../features/commandPalette/CommandPalette';
 import { TelegramChatList } from '../features/telegram/TelegramChatList';
-import { TelegramComposer } from '../features/telegram/TelegramComposer';
+import { TelegramComposer, type TelegramMentionSuggestion } from '../features/telegram/TelegramComposer';
 import { TelegramMessageList } from '../features/telegram/TelegramMessageList';
 import { loadRendererBootstrapData } from '../services/connectors';
 import { beginMeasure } from '../services/performance';
@@ -17,6 +17,95 @@ import { ModalLayer } from './ModalLayer';
 import { WebviewHost } from './WebviewHost';
 
 const TELEGRAM_COMPACT_BREAKPOINT_PX = 820;
+
+const buildMentionFallback = (displayName: string): string | null => {
+  const normalized = displayName
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .replace(/[^A-Za-z0-9_]+/gu, '_')
+    .replace(/^_+|_+$/gu, '');
+
+  return normalized ? `@${normalized}` : null;
+};
+
+const buildTelegramMentionSuggestions = (
+  messages: NonNullable<ReturnType<typeof selectLegacyTelegramSnapshot>>['messages'],
+): TelegramMentionSuggestion[] => {
+  const suggestions = new Map<string, TelegramMentionSuggestion>();
+
+  for (const message of messages) {
+    if (message.outgoing) {
+      continue;
+    }
+
+    const sender = message.sender.trim();
+    if (!sender || sender.toLowerCase() === 'unknown' || sender.toLowerCase() === 'you') {
+      continue;
+    }
+
+    const usernameMatch = /\(@([A-Za-z0-9_]{2,})\)\s*$/u.exec(sender);
+    const username = usernameMatch?.[1];
+    const displayName = usernameMatch ? sender.slice(0, usernameMatch.index).trim() : sender;
+    const mention = username ? `@${username}` : buildMentionFallback(displayName);
+
+    if (!mention || suggestions.has(mention.toLowerCase())) {
+      continue;
+    }
+
+    suggestions.set(mention.toLowerCase(), {
+      displayName: displayName || mention,
+      mention,
+      username,
+    });
+  }
+
+  return [...suggestions.values()].sort((a, b) =>
+    a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' }),
+  );
+};
+
+const getSelectedTelegramMessageText = (): string => {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount < 1) {
+    return '';
+  }
+
+  const messageList = document.querySelector<HTMLElement>('.telegram-message-list');
+  if (!messageList) {
+    return '';
+  }
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    if (selection.getRangeAt(index).intersectsNode(messageList)) {
+      return selection.toString().trim();
+    }
+  }
+
+  return '';
+};
+
+const copyTextToClipboard = async (value: string): Promise<boolean> => {
+  try {
+    if (window.navigator.clipboard?.writeText) {
+      await window.navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Fall back to execCommand below.
+  }
+
+  const helper = document.createElement('textarea');
+  helper.value = value;
+  helper.setAttribute('readonly', 'true');
+  helper.style.position = 'fixed';
+  helper.style.opacity = '0';
+  helper.style.pointerEvents = 'none';
+  document.body.append(helper);
+  helper.select();
+  const copied = document.execCommand('copy');
+  helper.remove();
+  return copied;
+};
 
 const FALLBACK_SHORTCUTS: ShortcutConfig = {
   forceNormalMode: 'CommandOrControl+[',
@@ -121,6 +210,10 @@ export const AppShell = () => {
   );
 
   const telegramSnapshot = selectLegacyTelegramSnapshot(state);
+  const telegramMentionSuggestions = useMemo(
+    () => (telegramSnapshot ? buildTelegramMentionSuggestions(telegramSnapshot.messages) : []),
+    [telegramSnapshot?.messages],
+  );
   const telegramCompactLayout =
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
@@ -469,6 +562,23 @@ export const AppShell = () => {
     legacyApi?.setTelegramSearchQuery('');
   });
 
+  const handleTelegramContextCopy = useEffectEvent((messageId: string) => {
+    if (state.config.userConfig?.telegram.selectableMessageText) {
+      const selectedText = getSelectedTelegramMessageText();
+      if (selectedText) {
+        void copyTextToClipboard(selectedText);
+        return;
+      }
+    }
+
+    legacyApi?.copyTelegramMessage(messageId);
+  });
+
+  const handleTelegramContextDelete = useEffectEvent((messageId: string) => {
+    legacyApi?.selectTelegramMessage(messageId);
+    legacyApi?.deleteSelection();
+  });
+
   return (
     <div className="modern-app-shell">
       <div
@@ -517,6 +627,7 @@ export const AppShell = () => {
             loadingOlderMessages={telegramSnapshot.loadingOlderMessages}
             messages={telegramSnapshot.messages}
             messagesLoading={telegramSnapshot.messagesLoading}
+            messageTextSelectable={state.config.userConfig?.telegram.selectableMessageText ?? false}
             onBackToChats={telegramCompactShowMessages ? () => handleTelegramBackToChats() : undefined}
             selectedMessageId={
               state.appShell.activePane === 'telegram-messages'
@@ -533,6 +644,7 @@ export const AppShell = () => {
             draftText={telegramSnapshot.draftText}
             inputRef={telegramComposerInputRef}
             legacyApi={legacyApi}
+            mentionSuggestions={telegramMentionSuggestions}
             replyPreview={telegramSnapshot.replyPreview}
             sendBehavior={state.config.userConfig?.keyboard.sendBehavior ?? 'enter'}
             target={telegramComposerTarget}
@@ -552,7 +664,8 @@ export const AppShell = () => {
         onCloseTelegramForward={() => legacyApi?.closeTelegramForwardMenu()}
         onCloseTelegramImagePreview={() => legacyApi?.closeTelegramImagePreview()}
         onCommandQueryChange={(query) => dispatch({ type: 'commandPalette/query', query })}
-        onCopyTelegramMessage={(messageId) => legacyApi?.copyTelegramMessage(messageId)}
+        onCopyTelegramMessage={handleTelegramContextCopy}
+        onDeleteTelegramMessage={handleTelegramContextDelete}
         onCopyTelegramImagePreview={() => legacyApi?.copyTelegramImagePreview()}
         onDownloadTelegramImagePreview={() => legacyApi?.downloadTelegramImagePreview()}
         onExecuteCommand={executeCommand}

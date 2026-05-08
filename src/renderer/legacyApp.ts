@@ -6099,8 +6099,16 @@ export const bootLegacyApp = async (
   };
 
   const syncTelegramComposeInputHeight = (): void => {
-    telegramComposeInput.style.height = '0px';
-    telegramComposeInput.style.height = `${telegramComposeInput.scrollHeight}px`;
+    const minHeight = 48;
+    const maxHeight = 160;
+    telegramComposeInput.style.height = `${minHeight}px`;
+    const nextHeight =
+      telegramComposeInput.value.length > 0
+        ? Math.min(maxHeight, Math.max(minHeight, telegramComposeInput.scrollHeight))
+        : minHeight;
+    telegramComposeInput.style.height = `${nextHeight}px`;
+    telegramComposeInput.style.overflowY =
+      telegramComposeInput.scrollHeight > maxHeight ? 'auto' : 'hidden';
   };
 
   updateTelegramVoiceRecorderUi();

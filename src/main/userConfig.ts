@@ -11,6 +11,7 @@ import type {
 type RawUserConfig = {
   telegram?: {
     ghostMode?: unknown;
+    selectableMessageText?: unknown;
   };
   appearance?: {
     windowPadding?: unknown;
@@ -88,6 +89,7 @@ export const DEFAULT_SHORTCUT_CONFIG: ShortcutConfig = {
 export const DEFAULT_USER_CONFIG: UserConfig = {
   telegram: {
     ghostMode: false,
+    selectableMessageText: false,
   },
   appearance: {
     windowPadding: 12,
@@ -120,6 +122,9 @@ const DEFAULT_USER_CONFIG_TOML = `# PELEC user config
 [telegram]
 # When true, Telegram chats are fetched without opening the chat watcher.
 ghost_mode = false
+
+# When true, message text can be selected and copied with the mouse.
+selectable_message_text = false
 
 [appearance]
 # Padding around the main app frame in pixels.
@@ -258,6 +263,8 @@ const parseUserConfigToml = (source: string): ParsedUserConfig => {
       rawConfig.telegram ??= {};
       if (key === 'ghost_mode') {
         rawConfig.telegram.ghostMode = value;
+      } else if (key === 'selectable_message_text') {
+        rawConfig.telegram.selectableMessageText = value;
       } else {
         warnings.push(`Ignoring unknown telegram key "${key}" on line ${lineIndex + 1}.`);
       }
@@ -538,6 +545,12 @@ const resolveUserConfig = (rawConfig: RawUserConfig, warnings: string[]): UserCo
         rawConfig.telegram?.ghostMode,
         DEFAULT_USER_CONFIG.telegram.ghostMode,
         'telegram.ghost_mode',
+        warnings,
+      ),
+      selectableMessageText: coerceBoolean(
+        rawConfig.telegram?.selectableMessageText,
+        DEFAULT_USER_CONFIG.telegram.selectableMessageText,
+        'telegram.selectable_message_text',
         warnings,
       ),
     },

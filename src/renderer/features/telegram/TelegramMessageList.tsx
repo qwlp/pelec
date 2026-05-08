@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import type { ChatMessage } from '../../../shared/connectors';
 import type { LegacyAppBridgeApi, LegacyRenderableTelegramMessage } from '../../legacyBridge';
@@ -36,6 +36,7 @@ interface TelegramMessageListProps {
   loadingOlderMessages?: boolean;
   messages: LegacyRenderableTelegramMessage[];
   messagesLoading: boolean;
+  messageTextSelectable?: boolean;
   onBackToChats?: () => void;
   selectedMessageId: string | null;
   target: HTMLElement | null;
@@ -179,6 +180,8 @@ const cancelTelegramAnimationFrame = (frameId: number): void => {
 
 const TELEGRAM_AUTO_SCROLL_GRACE_MS = 900;
 
+const TELEGRAM_JUMP_LATEST_OFFSET_PX = 16;
+
 const getTelegramMessageScrollContainer = (target: HTMLElement | null): HTMLElement | null => {
   if (!target) {
     return null;
@@ -199,6 +202,67 @@ const getLastTelegramMessageElement = (target: HTMLElement | null): HTMLElement 
 
   const messages = target.querySelectorAll<HTMLElement>('[data-message-id]');
   return messages.item(messages.length - 1) ?? null;
+};
+
+const hasSelectionInsideElement = (element: HTMLElement): boolean => {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount < 1) {
+    return false;
+  }
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    if (range.intersectsNode(element)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const getSelectedTextInsideElement = (element: HTMLElement): string => {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount < 1) {
+    return '';
+  }
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    if (range.intersectsNode(element)) {
+      return selection.toString();
+    }
+  }
+
+  return '';
+};
+
+const isSelectableMessageTextTarget = (target: EventTarget | null): boolean =>
+  target instanceof HTMLElement &&
+  !!target.closest(
+    '.telegram-message-item.selectable-text .telegram-message-text, .telegram-message-item.selectable-text .telegram-message-forwarded, .telegram-message-item.selectable-text .telegram-message-reply-text',
+  );
+
+const writeSelectedTelegramTextToClipboard = async (value: string): Promise<boolean> => {
+  try {
+    if (window.navigator.clipboard?.writeText) {
+      await window.navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Fall back to execCommand below.
+  }
+
+  const helper = document.createElement('textarea');
+  helper.value = value;
+  helper.setAttribute('readonly', 'true');
+  helper.style.position = 'fixed';
+  helper.style.opacity = '0';
+  helper.style.pointerEvents = 'none';
+  document.body.append(helper);
+  helper.select();
+  const copied = document.execCommand('copy');
+  helper.remove();
+  return copied;
 };
 
 const TelegramResolvedVideo = ({
@@ -1160,6 +1224,7 @@ const TelegramMessageRow = memo(
     bundle,
     isSelected,
     legacyApi,
+    messageTextSelectable,
     playbackCoordinator,
     playbackRate,
     onPlaybackRateChange,
@@ -1168,6 +1233,7 @@ const TelegramMessageRow = memo(
     bundle: MessageBundle;
     isSelected: boolean;
     legacyApi: LegacyAppBridgeApi | null;
+    messageTextSelectable: boolean;
     playbackCoordinator: TelegramVoicePlaybackCoordinator;
     playbackRate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number];
     onPlaybackRateChange(value: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): void;
@@ -1242,10 +1308,20 @@ const TelegramMessageRow = memo(
             isDocumentOnlyMessage ? ' document-only' : ''
           }${isPollOnlyMessage ? ' poll-only' : ''}${
             primaryMessage.poll ? ' has-poll' : ''
+          }${
+            messageTextSelectable ? ' selectable-text' : ''
           }`}
           data-message-id={primaryMessage.id}
-          onClick={() => legacyApi?.selectTelegramMessage(primaryMessage.id)}
+          onClick={(event) => {
+            if (messageTextSelectable && hasSelectionInsideElement(event.currentTarget)) {
+              return;
+            }
+            legacyApi?.selectTelegramMessage(primaryMessage.id);
+          }}
           onContextMenu={(event) => {
+            if (messageTextSelectable && hasSelectionInsideElement(event.currentTarget)) {
+              return;
+            }
             event.preventDefault();
             legacyApi?.openTelegramContextMenu(primaryMessage.id, event.clientX, event.clientY);
           }}
@@ -1386,11 +1462,14 @@ const TelegramMessageRow = memo(
               >
                 {primaryMessage.pendingState === 'sending' ? (
                   <span className="telegram-message-spinner" aria-hidden="true" />
+                ) : primaryMessage.readByPeer ? (
+                  <span className="telegram-message-tick double" aria-label="Read">
+                    ✓✓
+                  </span>
                 ) : (
-                  <>
-                    <span className="telegram-message-tick">✓</span>
-                    {primaryMessage.readByPeer ? <span className="telegram-message-tick">✓</span> : null}
-                  </>
+                  <span className="telegram-message-tick" aria-label="Sent">
+                    ✓
+                  </span>
                 )}
               </span>
             ) : null}
@@ -1404,6 +1483,7 @@ const TelegramMessageRow = memo(
     previous.isSelected === next.isSelected &&
     previous.activeChatId === next.activeChatId &&
     previous.legacyApi === next.legacyApi &&
+    previous.messageTextSelectable === next.messageTextSelectable &&
     previous.playbackCoordinator === next.playbackCoordinator &&
     previous.playbackRate === next.playbackRate &&
     previous.onPlaybackRateChange === next.onPlaybackRateChange,
@@ -1419,6 +1499,7 @@ export const TelegramMessageList = ({
   loadingOlderMessages = false,
   messages,
   messagesLoading,
+  messageTextSelectable = false,
   onBackToChats,
   selectedMessageId,
   target,
@@ -1426,6 +1507,7 @@ export const TelegramMessageList = ({
   const [dragDepth, setDragDepth] = useState(0);
   const bundles = useStableMessageBundles(messages);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [jumpToLatestStyle, setJumpToLatestStyle] = useState<CSSProperties | null>(null);
   const [voicePlaybackRate, setVoicePlaybackRate] =
     useState<(typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]>(1);
   const pendingAutoScrollRef = useRef<string | null>(null);
@@ -1588,6 +1670,7 @@ export const TelegramMessageList = ({
     const scrollContainer = getTelegramMessageScrollContainer(target);
     if (!scrollContainer) {
       setShowJumpToLatest(false);
+      setJumpToLatestStyle(null);
       return;
     }
 
@@ -1609,6 +1692,47 @@ export const TelegramMessageList = ({
       scrollContainer.removeEventListener('scroll', updateJumpState);
     };
   }, [target, activeChatId, bundles.length, messagesLoading]);
+
+  useEffect(() => {
+    if (!showJumpToLatest) {
+      setJumpToLatestStyle(null);
+      return;
+    }
+
+    const scrollContainer = getTelegramMessageScrollContainer(target);
+    if (!scrollContainer) {
+      setJumpToLatestStyle(null);
+      return;
+    }
+
+    const updateJumpPosition = () => {
+      const rect = scrollContainer.getBoundingClientRect();
+      setJumpToLatestStyle({
+        bottom: Math.max(
+          TELEGRAM_JUMP_LATEST_OFFSET_PX,
+          window.innerHeight - rect.bottom + TELEGRAM_JUMP_LATEST_OFFSET_PX,
+        ),
+        right: Math.max(
+          TELEGRAM_JUMP_LATEST_OFFSET_PX,
+          window.innerWidth - rect.right + TELEGRAM_JUMP_LATEST_OFFSET_PX,
+        ),
+      });
+    };
+
+    updateJumpPosition();
+    window.addEventListener('resize', updateJumpPosition);
+    window.addEventListener('scroll', updateJumpPosition, true);
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateJumpPosition);
+    resizeObserver?.observe(scrollContainer);
+
+    return () => {
+      window.removeEventListener('resize', updateJumpPosition);
+      window.removeEventListener('scroll', updateJumpPosition, true);
+      resizeObserver?.disconnect();
+    };
+  }, [showJumpToLatest, target]);
 
   useEffect(() => {
     const scrollContainer = getTelegramMessageScrollContainer(target);
@@ -1700,7 +1824,10 @@ export const TelegramMessageList = ({
     }
 
     const scrollContainer = getTelegramMessageScrollContainer(target);
-    const activateMessagesPane = () => {
+    const activateMessagesPane = (event: Event) => {
+      if (messageTextSelectable && isSelectableMessageTextTarget(event.target)) {
+        return;
+      }
       if (scrollContainer && scrollContainer.tabIndex < 0) {
         scrollContainer.focus({ preventScroll: true });
       }
@@ -1721,7 +1848,80 @@ export const TelegramMessageList = ({
         scrollContainer.removeEventListener('focusin', activateMessagesPane);
       }
     };
-  }, [legacyApi, target]);
+  }, [legacyApi, messageTextSelectable, target]);
+
+  useEffect(() => {
+    if (!target || !messageTextSelectable) {
+      return;
+    }
+
+    let lastAutoCopiedText = '';
+    let selectionCopyTimer: number | null = null;
+
+    const copySelectedText = (event: Event): boolean => {
+      const selectedText = getSelectedTextInsideElement(target).trim();
+      if (!selectedText) {
+        return false;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void writeSelectedTelegramTextToClipboard(selectedText);
+      return true;
+    };
+
+    const copySelectedTextAutomatically = () => {
+      const selectedText = getSelectedTextInsideElement(target).trim();
+      if (!selectedText || selectedText === lastAutoCopiedText) {
+        return;
+      }
+
+      lastAutoCopiedText = selectedText;
+      void writeSelectedTelegramTextToClipboard(selectedText);
+    };
+
+    const scheduleAutoCopy = () => {
+      if (selectionCopyTimer !== null) {
+        window.clearTimeout(selectionCopyTimer);
+      }
+      selectionCopyTimer = window.setTimeout(() => {
+        selectionCopyTimer = null;
+        copySelectedTextAutomatically();
+      }, 80);
+    };
+
+    const handleCopy = (event: ClipboardEvent) => {
+      const selectedText = getSelectedTextInsideElement(target).trim();
+      if (!selectedText) {
+        return;
+      }
+
+      event.clipboardData?.setData('text/plain', selectedText);
+      event.preventDefault();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
+        copySelectedText(event);
+      }
+    };
+
+    target.addEventListener('copy', handleCopy);
+    target.addEventListener('mouseup', scheduleAutoCopy);
+    target.addEventListener('keyup', scheduleAutoCopy);
+    document.addEventListener('selectionchange', scheduleAutoCopy);
+    document.addEventListener('keydown', handleKeyDown, true);
+    return () => {
+      if (selectionCopyTimer !== null) {
+        window.clearTimeout(selectionCopyTimer);
+      }
+      target.removeEventListener('copy', handleCopy);
+      target.removeEventListener('mouseup', scheduleAutoCopy);
+      target.removeEventListener('keyup', scheduleAutoCopy);
+      document.removeEventListener('selectionchange', scheduleAutoCopy);
+      document.removeEventListener('keydown', handleKeyDown, true);
+    };
+  }, [messageTextSelectable, target]);
 
   useEffect(() => {
     const scrollContainer = getTelegramMessageScrollContainer(target);
@@ -1826,6 +2026,7 @@ export const TelegramMessageList = ({
                   bundle={bundle}
                   isSelected={selectedMessageId === bundle.primaryMessage.id}
                   legacyApi={legacyApi}
+                  messageTextSelectable={messageTextSelectable}
                   playbackCoordinator={playbackCoordinator}
                   playbackRate={voicePlaybackRate}
                   onPlaybackRateChange={setVoicePlaybackRate}
@@ -1835,11 +2036,12 @@ export const TelegramMessageList = ({
         </>,
         target,
       )}
-      {scrollContainer && showJumpToLatest
+      {showJumpToLatest && jumpToLatestStyle
         ? createPortal(
             <button
               type="button"
               className="telegram-jump-latest-button"
+              style={jumpToLatestStyle}
               onClick={() => {
                 scrollToLatestMessage('smooth');
                 setShowJumpToLatest(false);
@@ -1847,7 +2049,7 @@ export const TelegramMessageList = ({
             >
               Jump to latest
             </button>,
-            scrollContainer,
+            document.body,
           )
         : null}
       {scrollContainer && dragActive

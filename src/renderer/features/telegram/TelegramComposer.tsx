@@ -15,10 +15,17 @@ interface TelegramComposerProps {
   draftText: string;
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   legacyApi: LegacyAppBridgeApi | null;
+  mentionSuggestions?: TelegramMentionSuggestion[];
   replyPreview: LegacyTelegramReplyPreview | null;
   sendBehavior: 'enter' | 'mod-enter';
   target: HTMLElement | null;
   voiceRecorderState: 'idle' | 'preparing' | 'recording' | 'sending' | 'unsupported';
+}
+
+export interface TelegramMentionSuggestion {
+  displayName: string;
+  mention: string;
+  username?: string;
 }
 
 type TelegramEmojiCompletionState = {
@@ -28,7 +35,50 @@ type TelegramEmojiCompletionState = {
   tokenStart: number;
 };
 
-const TELEGRAM_COMPOSER_HEIGHT_PX = 48;
+type TelegramMentionCompletionState = {
+  activeIndex: number;
+  suggestions: TelegramMentionSuggestion[];
+  tokenEnd: number;
+  tokenStart: number;
+};
+
+const TELEGRAM_COMPOSER_MIN_HEIGHT_PX = 48;
+const TELEGRAM_COMPOSER_MAX_HEIGHT_PX = 160;
+
+const getTelegramMentionTokenMatch = (
+  value: string,
+  selectionStart: number | null,
+  selectionEnd: number | null,
+): { query: string; tokenEnd: number; tokenStart: number } | null => {
+  if (
+    typeof selectionStart !== 'number' ||
+    typeof selectionEnd !== 'number' ||
+    selectionStart !== selectionEnd
+  ) {
+    return null;
+  }
+
+  const beforeCursor = value.slice(0, selectionStart);
+  const match = /(^|\s)@([A-Za-z0-9_]*)$/u.exec(beforeCursor);
+  if (!match) {
+    return null;
+  }
+
+  const prefix = match[1] ?? '';
+  const query = match[2] ?? '';
+  const tokenStart = selectionStart - query.length - 1;
+  const tokenEnd = selectionStart;
+
+  if (prefix.length > 0 && value[tokenStart - 1] && !/\s/u.test(value[tokenStart - 1])) {
+    return null;
+  }
+
+  return {
+    query,
+    tokenEnd,
+    tokenStart,
+  };
+};
 
 const getClipboardFiles = (clipboardData: DataTransfer | null): File[] => {
   if (!clipboardData) {
@@ -60,6 +110,7 @@ export const TelegramComposer = ({
   draftText,
   inputRef,
   legacyApi,
+  mentionSuggestions = [],
   replyPreview,
   sendBehavior,
   target,
@@ -67,14 +118,21 @@ export const TelegramComposer = ({
 }: TelegramComposerProps) => {
   const [value, setValue] = useState(draftText);
   const [emojiCompletion, setEmojiCompletion] = useState<TelegramEmojiCompletionState | null>(null);
+  const [mentionCompletion, setMentionCompletion] = useState<TelegramMentionCompletionState | null>(null);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const syncedDraftValueRef = useRef(draftText);
   const pendingSelectionRef = useRef<{ end: number; start: number } | null>(null);
 
   const syncDraftValue = (nextValue: string) => {
+    if (syncedDraftValueRef.current === nextValue) {
+      return;
+    }
+
+    syncedDraftValueRef.current = nextValue;
     setValue(nextValue);
     legacyApi?.setTelegramDraftValue(nextValue);
   };
@@ -85,6 +143,11 @@ export const TelegramComposer = ({
     selectionEnd = textareaRef.current?.selectionEnd ?? null,
   ) => {
     if (document.activeElement !== textareaRef.current) {
+      setEmojiCompletion(null);
+      return;
+    }
+
+    if (getTelegramMentionTokenMatch(nextValue, selectionStart, selectionEnd)) {
       setEmojiCompletion(null);
       return;
     }
@@ -125,6 +188,59 @@ export const TelegramComposer = ({
     });
   };
 
+  const updateMentionCompletion = (
+    nextValue = value,
+    selectionStart = textareaRef.current?.selectionStart ?? null,
+    selectionEnd = textareaRef.current?.selectionEnd ?? null,
+    force = false,
+  ) => {
+    if (!force && document.activeElement !== textareaRef.current) {
+      setMentionCompletion(null);
+      return;
+    }
+
+    const tokenMatch = getTelegramMentionTokenMatch(nextValue, selectionStart, selectionEnd);
+    if (!tokenMatch) {
+      setMentionCompletion(null);
+      return;
+    }
+
+    const query = tokenMatch.query.toLowerCase();
+    const suggestions = mentionSuggestions
+      .filter((suggestion) => {
+        const displayName = suggestion.displayName.toLowerCase();
+        const mention = suggestion.mention.toLowerCase();
+        const username = suggestion.username?.toLowerCase() ?? '';
+        return (
+          query.length < 1 ||
+          displayName.includes(query) ||
+          mention.includes(query) ||
+          username.includes(query)
+        );
+      })
+      .slice(0, 8);
+
+    if (suggestions.length < 1) {
+      setMentionCompletion(null);
+      return;
+    }
+
+    setEmojiCompletion(null);
+    setMentionCompletion((current) => {
+      const currentSuggestion = current?.suggestions[current.activeIndex];
+      const matchedIndex = currentSuggestion
+        ? suggestions.findIndex((suggestion) => suggestion.mention === currentSuggestion.mention)
+        : -1;
+
+      return {
+        activeIndex: matchedIndex >= 0 ? matchedIndex : 0,
+        suggestions,
+        tokenEnd: tokenMatch.tokenEnd,
+        tokenStart: tokenMatch.tokenStart,
+      };
+    });
+  };
+
   const applyEmojiSuggestion = (suggestion?: TelegramEmojiSuggestion): boolean => {
     if (!emojiCompletion) {
       return false;
@@ -151,15 +267,45 @@ export const TelegramComposer = ({
     return true;
   };
 
+  const applyMentionSuggestion = (suggestion?: TelegramMentionSuggestion): boolean => {
+    if (!mentionCompletion) {
+      return false;
+    }
+
+    const activeSuggestion =
+      suggestion ?? mentionCompletion.suggestions[mentionCompletion.activeIndex];
+    if (!activeSuggestion) {
+      setMentionCompletion(null);
+      return false;
+    }
+
+    const before = value.slice(0, mentionCompletion.tokenStart);
+    const after = value.slice(mentionCompletion.tokenEnd);
+    const suffix = after.startsWith(' ') || after.length === 0 ? '' : ' ';
+    const nextValue = `${before}${activeSuggestion.mention}${suffix}${after}`;
+    const nextSelection = before.length + activeSuggestion.mention.length + suffix.length;
+
+    pendingSelectionRef.current = {
+      start: nextSelection,
+      end: nextSelection,
+    };
+    syncDraftValue(nextValue);
+    setMentionCompletion(null);
+    textareaRef.current?.focus();
+    return true;
+  };
+
   const handleSend = () => {
     if (!legacyApi) {
       return;
     }
+    syncedDraftValueRef.current = '';
     setValue('');
     legacyApi.sendTelegramMessage();
   };
 
   useEffect(() => {
+    syncedDraftValueRef.current = draftText;
     setValue(draftText);
   }, [draftText]);
 
@@ -169,8 +315,17 @@ export const TelegramComposer = ({
       return;
     }
 
-    textarea.style.height = `${TELEGRAM_COMPOSER_HEIGHT_PX}px`;
-    textarea.style.overflowY = 'auto';
+    textarea.style.height = `${TELEGRAM_COMPOSER_MIN_HEIGHT_PX}px`;
+    const nextHeight =
+      value.length > 0
+        ? Math.min(
+            TELEGRAM_COMPOSER_MAX_HEIGHT_PX,
+            Math.max(TELEGRAM_COMPOSER_MIN_HEIGHT_PX, textarea.scrollHeight),
+          )
+        : TELEGRAM_COMPOSER_MIN_HEIGHT_PX;
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY =
+      textarea.scrollHeight > TELEGRAM_COMPOSER_MAX_HEIGHT_PX ? 'auto' : 'hidden';
     if (pendingSelectionRef.current) {
       textarea.setSelectionRange(
         pendingSelectionRef.current.start,
@@ -392,22 +547,56 @@ export const TelegramComposer = ({
           disabled={composeLocked}
           value={value}
           aria-autocomplete="list"
-          aria-controls={emojiCompletion ? 'telegram-emoji-completion' : undefined}
-          aria-expanded={emojiCompletion ? 'true' : 'false'}
+          aria-controls={
+            mentionCompletion
+              ? 'telegram-mention-completion'
+              : emojiCompletion
+                ? 'telegram-emoji-completion'
+                : undefined
+          }
+          aria-expanded={mentionCompletion || emojiCompletion ? 'true' : 'false'}
           aria-activedescendant={
-            emojiCompletion
+            mentionCompletion
+              ? `telegram-mention-completion-item-${mentionCompletion.activeIndex}`
+              : emojiCompletion
               ? `telegram-emoji-completion-item-${emojiCompletion.activeIndex}`
               : undefined
           }
           onChange={(event) => {
             syncDraftValue(event.target.value);
+            updateMentionCompletion(
+              event.target.value,
+              event.target.selectionStart,
+              event.target.selectionEnd,
+              true,
+            );
             updateEmojiCompletion(
               event.target.value,
               event.target.selectionStart,
               event.target.selectionEnd,
             );
           }}
+          onInput={(event) => {
+            syncDraftValue(event.currentTarget.value);
+            updateMentionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
+            );
+            updateEmojiCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+            );
+          }}
           onFocus={(event) => {
+            updateMentionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
+            );
             updateEmojiCompletion(
               event.currentTarget.value,
               event.currentTarget.selectionStart,
@@ -416,8 +605,15 @@ export const TelegramComposer = ({
           }}
           onBlur={() => {
             setEmojiCompletion(null);
+            setMentionCompletion(null);
           }}
           onClick={(event) => {
+            updateMentionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
+            );
             updateEmojiCompletion(
               event.currentTarget.value,
               event.currentTarget.selectionStart,
@@ -434,6 +630,12 @@ export const TelegramComposer = ({
             legacyApi?.appendTelegramFiles(files);
           }}
           onSelect={(event) => {
+            updateMentionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
+            );
             updateEmojiCompletion(
               event.currentTarget.value,
               event.currentTarget.selectionStart,
@@ -441,6 +643,55 @@ export const TelegramComposer = ({
             );
           }}
           onKeyDown={(event) => {
+            if (mentionCompletion && event.key === 'ArrowDown') {
+              event.preventDefault();
+              setMentionCompletion((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.min(
+                        current.suggestions.length - 1,
+                        current.activeIndex + 1,
+                      ),
+                    }
+                  : current,
+              );
+              return;
+            }
+
+            if (mentionCompletion && event.key === 'ArrowUp') {
+              event.preventDefault();
+              setMentionCompletion((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.max(0, current.activeIndex - 1),
+                    }
+                  : current,
+              );
+              return;
+            }
+
+            if (
+              mentionCompletion &&
+              ((event.key === 'Enter' &&
+                !event.shiftKey &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey) ||
+                (event.key === 'Tab' && !event.shiftKey))
+            ) {
+              event.preventDefault();
+              applyMentionSuggestion();
+              return;
+            }
+
+            if (mentionCompletion && event.key === 'Escape') {
+              event.preventDefault();
+              setMentionCompletion(null);
+              return;
+            }
+
             if (emojiCompletion && event.key === 'ArrowDown') {
               event.preventDefault();
               setEmojiCompletion((current) =>
@@ -530,6 +781,49 @@ export const TelegramComposer = ({
           ➤
         </button>
       </div>
+      {mentionCompletion ? (
+        <div
+          id="telegram-mention-completion"
+          className="telegram-mention-completion"
+          role="listbox"
+          aria-label="Mention suggestions"
+        >
+          {mentionCompletion.suggestions.map((suggestion, index) => (
+            <button
+              key={suggestion.mention}
+              id={`telegram-mention-completion-item-${index}`}
+              type="button"
+              className={`telegram-mention-completion-item${
+                index === mentionCompletion.activeIndex ? ' active' : ''
+              }`}
+              role="option"
+              aria-selected={index === mentionCompletion.activeIndex ? 'true' : 'false'}
+              onMouseEnter={() => {
+                setMentionCompletion((current) =>
+                  current
+                    ? {
+                        ...current,
+                        activeIndex: index,
+                      }
+                    : current,
+                );
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                applyMentionSuggestion(suggestion);
+              }}
+            >
+              <span className="telegram-mention-completion-avatar">
+                {suggestion.displayName.slice(0, 1).toUpperCase() || '@'}
+              </span>
+              <span className="telegram-mention-completion-copy">
+                <span className="telegram-mention-completion-name">{suggestion.displayName}</span>
+                <span className="telegram-mention-completion-handle">{suggestion.mention}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       {emojiCompletion ? (
         <div
           id="telegram-emoji-completion"

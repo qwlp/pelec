@@ -49,6 +49,17 @@ describe('buildLinkedTextNodes', () => {
     expect(window.pelec.openExternal).toHaveBeenCalledWith('https://pelec.test');
   });
 
+  it('renders Telegram usernames as profile links in DOM nodes', () => {
+    const host = document.createElement('div');
+    host.replaceChildren(...buildLinkedTextNodes('ping @vsithh and test@example.com'));
+
+    const links = host.querySelectorAll('a');
+    expect(links).toHaveLength(1);
+    expect(links[0]?.textContent).toBe('@vsithh');
+    expect(links[0]?.getAttribute('href')).toBe('https://t.me/vsithh');
+    expect(host.textContent).toBe('ping @vsithh and test@example.com');
+  });
+
   it('renders markdown formatting in DOM nodes', () => {
     const host = document.createElement('div');
     host.replaceChildren(...buildLinkedTextNodes('**Bold** and `code`'));
@@ -73,6 +84,23 @@ describe('buildLinkedTextNodes', () => {
 
     fireEvent.click(link as Element);
     expect(window.pelec.openExternal).toHaveBeenCalledWith('https://pelec.test');
+  });
+
+  it('opens Telegram username links through the preload bridge in React output', () => {
+    const view = render(
+      createElement(
+        'div',
+        { className: 'telegram-message-text' },
+        renderTelegramRichText('hello @vsithh'),
+      ),
+    );
+
+    const link = view.container.querySelector('a');
+    expect(link?.textContent).toBe('@vsithh');
+    expect(link?.getAttribute('href')).toBe('https://t.me/vsithh');
+
+    fireEvent.click(link as Element);
+    expect(window.pelec.openExternal).toHaveBeenCalledWith('https://t.me/vsithh');
   });
 
   it('renders highlighted code blocks with a copy button in DOM nodes', async () => {

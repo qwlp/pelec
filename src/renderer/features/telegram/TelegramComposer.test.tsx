@@ -86,7 +86,61 @@ describe('TelegramComposer', () => {
     expect(legacyApi.focusTelegramComposer).not.toHaveBeenCalled();
   });
 
-  it('keeps the visible textarea at a fixed compact height', async () => {
+  it('keeps an empty startup textarea compact even when scrollHeight is large', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    const view = render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText="temporary"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+    Object.defineProperty(textarea as HTMLTextAreaElement, 'scrollHeight', {
+      configurable: true,
+      value: 160,
+    });
+
+    view.rerender(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    await waitFor(() => {
+      expect((textarea as HTMLTextAreaElement).style.height).toBe('48px');
+      expect((textarea as HTMLTextAreaElement).style.overflowY).toBe('hidden');
+    });
+  });
+
+  it('expands the visible textarea to fit multiline drafts', async () => {
     const target = document.createElement('div');
     document.body.append(target);
     const legacyApi = {
@@ -116,6 +170,10 @@ describe('TelegramComposer', () => {
 
     const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
     expect(textarea).toBeTruthy();
+    Object.defineProperty(textarea as HTMLTextAreaElement, 'scrollHeight', {
+      configurable: true,
+      value: 86,
+    });
 
     view.rerender(
       <TelegramComposer
@@ -131,12 +189,12 @@ describe('TelegramComposer', () => {
     );
 
     await waitFor(() => {
-      expect((textarea as HTMLTextAreaElement).style.height).toBe('48px');
-      expect((textarea as HTMLTextAreaElement).style.overflowY).toBe('auto');
+      expect((textarea as HTMLTextAreaElement).style.height).toBe('86px');
+      expect((textarea as HTMLTextAreaElement).style.overflowY).toBe('hidden');
     });
   });
 
-  it('keeps oversized drafts inside the fixed composer textarea', async () => {
+  it('caps oversized drafts and enables textarea scrolling', async () => {
     const target = document.createElement('div');
     document.body.append(target);
     const legacyApi = {
@@ -151,7 +209,7 @@ describe('TelegramComposer', () => {
       stopTelegramVoiceRecording: vi.fn(),
     } as unknown as LegacyAppBridgeApi;
 
-    render(
+    const view = render(
       <TelegramComposer
         attachments={[]}
         canSend
@@ -165,9 +223,26 @@ describe('TelegramComposer', () => {
     );
 
     const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    Object.defineProperty(textarea as HTMLTextAreaElement, 'scrollHeight', {
+      configurable: true,
+      value: 240,
+    });
+
+    view.rerender(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText={'line one\nline two\nline three\nline four\nline five\nline six'}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
 
     await waitFor(() => {
-      expect(textarea?.style.height).toBe('48px');
+      expect(textarea?.style.height).toBe('160px');
       expect(textarea?.style.overflowY).toBe('auto');
     });
   });
@@ -435,5 +510,109 @@ describe('TelegramComposer', () => {
     fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Enter' });
 
     expect(legacyApi.sendTelegramMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('suggests and inserts mention completions from the current chat', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        mentionSuggestions={[
+          { displayName: 'Ada Lovelace', mention: '@ada', username: 'ada' },
+          { displayName: 'Grace Hopper', mention: '@grace', username: 'grace' },
+        ]}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 7, selectionStart: 7, value: 'hey @ad' },
+    });
+
+    await waitFor(() => {
+      expect(target.textContent).toContain('Ada Lovelace');
+      expect(target.textContent).not.toContain('Grace Hopper');
+    });
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hey @ada');
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('hey @ada');
+    expect(legacyApi.sendTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it('cycles mention completions with arrows before inserting', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        mentionSuggestions={[
+          { displayName: 'Ada Lovelace', mention: '@ada', username: 'ada' },
+          { displayName: 'Grace Hopper', mention: '@grace', username: 'grace' },
+        ]}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 1, selectionStart: 1, value: '@' },
+    });
+
+    await waitFor(() => {
+      expect(target.textContent).toContain('Ada Lovelace');
+      expect(target.textContent).toContain('Grace Hopper');
+    });
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'ArrowDown' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Tab' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('@grace');
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('@grace');
   });
 });

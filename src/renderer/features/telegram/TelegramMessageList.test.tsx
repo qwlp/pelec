@@ -27,6 +27,12 @@ describe('TelegramMessageList', () => {
       downloadConnectorDocument: vi.fn(),
       openPath: vi.fn(),
     } as unknown as typeof window.pelec;
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: vi.fn(async () => undefined),
+      },
+    });
   });
 
   afterEach(async () => {
@@ -110,6 +116,126 @@ describe('TelegramMessageList', () => {
 
     const message = target.querySelector<HTMLElement>('[data-message-id="1"]');
     expect(message?.textContent).toContain('Hello');
+
+    fireEvent.click(message as HTMLElement);
+
+    expect(legacyApi.selectTelegramMessage).toHaveBeenCalledWith('1');
+  });
+
+  it('automatically copies selected message text without selecting the message', async () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    scrollContainer.tabIndex = -1;
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+    const legacyApi = {
+      activateTelegramMessagesPane: vi.fn(),
+      openTelegramContextMenu: vi.fn(),
+      selectTelegramMessage: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messageTextSelectable
+        messages={[
+          {
+            id: '1',
+            sender: 'Ada',
+            text: 'copy this part',
+            timestamp: 1,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const message = target.querySelector<HTMLElement>('[data-message-id="1"]');
+    const messageText = target.querySelector<HTMLElement>('.telegram-message-text');
+    expect(message).toBeTruthy();
+    expect(messageText).toBeTruthy();
+    expect(message?.classList.contains('selectable-text')).toBe(true);
+
+    const range = document.createRange();
+    range.selectNodeContents(messageText as HTMLElement);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    fireEvent.mouseDown(messageText as HTMLElement);
+    fireEvent.mouseUp(messageText as HTMLElement);
+
+    await waitFor(() => {
+      expect(window.navigator.clipboard.writeText).toHaveBeenCalledWith('copy this part');
+    });
+
+    const clipboardData = {
+      setData: vi.fn(),
+    };
+    const copyEvent = new window.Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(copyEvent, 'clipboardData', {
+      configurable: true,
+      value: clipboardData,
+    });
+    target.dispatchEvent(copyEvent);
+    fireEvent.keyDown(document, {
+      ctrlKey: true,
+      key: 'c',
+    });
+
+    const contextMenuEvent = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 20,
+      clientY: 30,
+    });
+    message?.dispatchEvent(contextMenuEvent);
+
+    fireEvent.click(message as HTMLElement);
+
+    expect(clipboardData.setData).toHaveBeenCalledWith('text/plain', 'copy this part');
+    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(contextMenuEvent.defaultPrevented).toBe(false);
+    expect(legacyApi.activateTelegramMessagesPane).not.toHaveBeenCalled();
+    expect(legacyApi.openTelegramContextMenu).not.toHaveBeenCalled();
+    expect(legacyApi.selectTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps normal message selection when selectable text mode has no active text selection', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      selectTelegramMessage: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messageTextSelectable
+        messages={[
+          {
+            id: '1',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 1,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const message = target.querySelector<HTMLElement>('[data-message-id="1"]');
+    window.getSelection()?.removeAllRanges();
 
     fireEvent.click(message as HTMLElement);
 
@@ -1028,7 +1154,7 @@ describe('TelegramMessageList', () => {
     });
   });
 
-  it('jumps to the latest rendered message when the jump button is pressed', () => {
+  it('jumps to the latest rendered message when the fixed jump button is pressed', async () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'telegram-message-list';
     const target = document.createElement('div');
@@ -1051,7 +1177,7 @@ describe('TelegramMessageList', () => {
 
     render(
       <TelegramMessageList
-        activeChatId="chat-1"
+        activeChatId={null}
         activeChatTitle="Ops"
         legacyApi={null}
         loadError={null}
@@ -1084,10 +1210,15 @@ describe('TelegramMessageList', () => {
       value: scrollIntoView,
     });
 
-    const jumpButton = scrollContainer.querySelector<HTMLButtonElement>('.telegram-jump-latest-button');
-    expect(jumpButton).toBeTruthy();
+    const jumpButton = await waitFor(() => {
+      const button = document.body.querySelector<HTMLButtonElement>('.telegram-jump-latest-button');
+      expect(button).toBeTruthy();
+      return button as HTMLButtonElement;
+    });
+    expect(scrollContainer.querySelector('.telegram-jump-latest-button')).toBeNull();
 
-    fireEvent.click(jumpButton as HTMLButtonElement);
+    scrollIntoView.mockClear();
+    fireEvent.click(jumpButton);
 
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: 'smooth',
