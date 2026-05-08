@@ -1,4 +1,24 @@
-import type { ChatCall, ChatReaction, ChatTextEntity } from '../../../shared/connectors';
+import type { ChatCall, ChatPoll, ChatReaction, ChatTextEntity } from '../../../shared/connectors';
+
+const readTrimmedString = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value.trim() || undefined : undefined;
+
+const readTelegramInlineText = (value: unknown): string | undefined => {
+  const direct = readTrimmedString(value);
+  if (direct) {
+    return direct;
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const container = value as {
+    text?: string;
+    question?: string;
+  };
+
+  return readTrimmedString(container.text) ?? readTrimmedString(container.question);
+};
 
 const extractFormattedTextContainer = (
   content: unknown,
@@ -152,6 +172,76 @@ export const extractTelegramCallInfo = (content: unknown): ChatCall | undefined 
   };
 };
 
+export const extractTelegramPollInfo = (content: unknown): ChatPoll | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    poll?: {
+      question?: unknown;
+      options?: Array<{
+        text?: unknown;
+        voter_count?: number;
+        vote_percentage?: number;
+        is_chosen?: boolean;
+        is_being_chosen?: boolean;
+      }>;
+      total_voter_count?: number;
+      is_anonymous?: boolean;
+      is_closed?: boolean;
+      type?: {
+        _?: string;
+        allow_multiple_answers?: boolean;
+        correct_option_id?: number;
+      };
+    };
+  };
+
+  if (container._ !== 'messagePoll' || !container.poll) {
+    return undefined;
+  }
+
+  const poll = container.poll;
+  const type = poll.type?._;
+  const rawOptions = Array.isArray(poll.options) ? poll.options : [];
+  const options = rawOptions
+    .map<ChatPoll['options'][number] | undefined>((option, index) => {
+      const text = readTelegramInlineText(option.text) ?? `Option ${index + 1}`;
+      const voterCount = Math.max(0, Math.floor(Number(option.voter_count ?? 0)));
+      const votePercentage = Number(option.vote_percentage);
+
+      return {
+        text,
+        voterCount,
+        votePercentage: Number.isFinite(votePercentage)
+          ? Math.min(100, Math.max(0, Math.round(votePercentage)))
+          : undefined,
+        chosen: option.is_chosen === true || option.is_being_chosen === true || undefined,
+      };
+    })
+    .filter((option): option is ChatPoll['options'][number] => option !== undefined);
+
+  return {
+    question: readTelegramInlineText(poll.question) ?? 'Poll',
+    options,
+    totalVoterCount: Math.max(0, Math.floor(Number(poll.total_voter_count ?? 0))) || undefined,
+    isAnonymous:
+      typeof poll.is_anonymous === 'boolean' ? poll.is_anonymous : undefined,
+    isClosed: typeof poll.is_closed === 'boolean' ? poll.is_closed : undefined,
+    allowsMultipleAnswers:
+      typeof poll.type?.allow_multiple_answers === 'boolean'
+        ? poll.type.allow_multiple_answers
+        : undefined,
+    kind: type === 'pollTypeQuiz' ? 'quiz' : 'regular',
+    correctOptionIndex:
+      type === 'pollTypeQuiz' && typeof poll.type?.correct_option_id === 'number'
+        ? Math.max(0, Math.floor(poll.type.correct_option_id))
+        : undefined,
+  };
+};
+
 export const extractTelegramMessageText = (
   content: unknown,
   options?: {
@@ -167,6 +257,7 @@ export const extractTelegramMessageText = (
     title?: string;
     performer?: string;
     file_name?: string;
+    poll?: { question?: unknown };
     contact?: { first_name?: string; last_name?: string; phone_number?: string };
     location?: { latitude?: number; longitude?: number };
   };
@@ -266,7 +357,8 @@ export const extractTelegramMessageText = (
     return 'Pinned a message';
   }
   if (container._ === 'messagePoll') {
-    return 'Poll';
+    const question = readTelegramInlineText(container.poll?.question) ?? '';
+    return question ? `Poll: ${question}` : 'Poll';
   }
 
   return `[${container._ ?? 'message'}]`;

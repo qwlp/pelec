@@ -3,6 +3,7 @@ import {
   buildTelegramChatPreview,
   extractTelegramCallInfo,
   extractTelegramMessageText,
+  extractTelegramPollInfo,
   extractTelegramReactions,
   formatTelegramCallDuration,
 } from './messages';
@@ -44,6 +45,140 @@ describe('telegram message helpers', () => {
         contact: { first_name: 'Ada', last_name: 'Lovelace' },
       }),
     ).toBe('Contact: Ada Lovelace');
+
+    expect(
+      extractTelegramMessageText({
+        _: 'messagePoll',
+        poll: {
+          question: 'Best editor?',
+        },
+      }),
+    ).toBe('Poll: Best editor?');
+  });
+
+  it('extracts poll metadata from telegram poll messages', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        poll: {
+          question: 'Best editor?',
+          total_voter_count: 12,
+          is_anonymous: false,
+          is_closed: true,
+          type: {
+            _: 'pollTypeQuiz',
+            correct_option_id: 1,
+          },
+          options: [
+            {
+              text: 'Vim',
+              voter_count: 5,
+              vote_percentage: 42,
+            },
+            {
+              text: 'Helix',
+              voter_count: 7,
+              vote_percentage: 58,
+              is_chosen: true,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'Best editor?',
+      options: [
+        { text: 'Vim', voterCount: 5, votePercentage: 42, chosen: undefined },
+        { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: true },
+      ],
+      totalVoterCount: 12,
+      isAnonymous: false,
+      isClosed: true,
+      allowsMultipleAnswers: undefined,
+      kind: 'quiz',
+      correctOptionIndex: 1,
+    });
+  });
+
+  it('extracts poll text from nested formatted-text-like objects', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        poll: {
+          question: { text: 'Best editor?' },
+          options: [
+            {
+              text: { text: 'Vim' },
+              voter_count: 5,
+              vote_percentage: 42,
+            },
+            {
+              text: { text: 'Helix' },
+              voter_count: 7,
+              vote_percentage: 58,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'Best editor?',
+      options: [
+        { text: 'Vim', voterCount: 5, votePercentage: 42, chosen: undefined },
+        { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: undefined },
+      ],
+      totalVoterCount: undefined,
+      isAnonymous: undefined,
+      isClosed: undefined,
+      allowsMultipleAnswers: undefined,
+      kind: 'regular',
+      correctOptionIndex: undefined,
+    });
+
+    expect(
+      extractTelegramMessageText({
+        _: 'messagePoll',
+        poll: {
+          question: { text: 'Best editor?' },
+        },
+      }),
+    ).toBe('Poll: Best editor?');
+  });
+
+  it('tolerates malformed poll fields without throwing', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        poll: {
+          question: 123,
+          options: [
+            {
+              text: { value: 'bad' },
+              voter_count: '7',
+              vote_percentage: '58',
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'Poll',
+      options: [
+        { text: 'Option 1', voterCount: 7, votePercentage: 58, chosen: undefined },
+      ],
+      totalVoterCount: undefined,
+      isAnonymous: undefined,
+      isClosed: undefined,
+      allowsMultipleAnswers: undefined,
+      kind: 'regular',
+      correctOptionIndex: undefined,
+    });
+
+    expect(
+      extractTelegramMessageText({
+        _: 'messagePoll',
+        poll: {
+          question: 123,
+        },
+      }),
+    ).toBe('Poll');
   });
 
   it('extracts supported reactions and drops empty entries', () => {

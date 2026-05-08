@@ -83,6 +83,24 @@ export interface ChatReaction {
   chosen?: boolean;
 }
 
+export interface ChatPollOption {
+  text: string;
+  voterCount: number;
+  votePercentage?: number;
+  chosen?: boolean;
+}
+
+export interface ChatPoll {
+  question: string;
+  options: ChatPollOption[];
+  totalVoterCount?: number;
+  isAnonymous?: boolean;
+  isClosed?: boolean;
+  allowsMultipleAnswers?: boolean;
+  kind: 'regular' | 'quiz';
+  correctOptionIndex?: number;
+}
+
 export type ChatTextEntityType =
   | 'bold'
   | 'italic'
@@ -160,6 +178,7 @@ export interface ChatMessage {
   senderAvatarUrl?: string;
   document?: ChatDocument;
   call?: ChatCall;
+  poll?: ChatPoll;
 }
 
 export type ConnectorInvalidationReason = 'incoming' | 'outgoing' | 'history' | 'read-state';
@@ -200,6 +219,7 @@ export interface Connector {
   resolveAudioUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveVideoUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;
+  answerPoll?(chatId: string, messageId: string, optionIds: number[]): Promise<boolean>;
   sendImageMessage?(
     chatId: string,
     dataUrl: string,

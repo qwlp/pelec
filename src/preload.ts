@@ -68,6 +68,19 @@ const api = {
     ) as Promise<string | undefined>,
   copyConnectorDocument: (network: NetworkId, chatId: string, messageId: string) =>
     ipcRenderer.invoke('connector:copy-document', network, chatId, messageId) as Promise<boolean>,
+  answerConnectorPoll: (
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    optionIds: number[],
+  ) =>
+    ipcRenderer.invoke(
+      'connector:answer-poll',
+      network,
+      chatId,
+      messageId,
+      optionIds,
+    ) as Promise<boolean>,
   sendConnectorMessage: (
     network: NetworkId,
     chatId: string,

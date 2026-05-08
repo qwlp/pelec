@@ -3367,6 +3367,8 @@ export const bootLegacyApp = async (
         ) {
           scheduleBackgroundRefresh('telegram');
         }
+
+        render();
         endMeasure();
       } catch (error) {
         if (!telegramController.isCurrentChatsRequest(requestSeq)) {

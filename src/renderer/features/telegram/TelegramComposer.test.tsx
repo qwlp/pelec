@@ -373,7 +373,7 @@ describe('TelegramComposer', () => {
         items: [
           {
             kind: 'string',
-            getAsFile: () => null,
+            getAsFile: (): File | null => null,
           },
         ],
       },

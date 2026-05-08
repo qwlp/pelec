@@ -14,6 +14,25 @@ const serializeReactions = (message: ChatMessage): string =>
     .map((reaction) => `${reaction.value}:${reaction.count}:${reaction.chosen ? '1' : '0'}`)
     .join('|');
 
+const serializePoll = (message: ChatMessage): string =>
+  !message.poll
+    ? ''
+    : [
+        message.poll.question,
+        message.poll.kind,
+        message.poll.totalVoterCount ?? '',
+        message.poll.isAnonymous ? '1' : '0',
+        message.poll.isClosed ? '1' : '0',
+        message.poll.allowsMultipleAnswers ? '1' : '0',
+        message.poll.correctOptionIndex ?? '',
+        message.poll.options
+          .map(
+            (option) =>
+              `${option.text}:${option.voterCount}:${option.votePercentage ?? ''}:${option.chosen ? '1' : '0'}`,
+          )
+          .join('|'),
+      ].join('::');
+
 const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): string =>
   [
     message.id,
@@ -47,6 +66,7 @@ const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): 
     message.call?.isVideo ? '1' : '0',
     message.call?.durationSeconds ?? '',
     message.call?.discardReason ?? '',
+    serializePoll(message),
     message.pendingState ?? '',
   ].join('::');
 

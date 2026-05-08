@@ -568,13 +568,41 @@ export const TelegramChatList = ({
   searchQuery,
   selectedChatId,
 }: TelegramChatListProps) => {
+  const internalListRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!listRef) {
+      return;
+    }
+    listRef.current = internalListRef.current;
+  }, [listRef]);
+
+  useEffect(() => {
+    const list = internalListRef.current;
+    if (!list) {
+      return;
+    }
+
+    const selected =
+      (selectedChatId
+        ? list.querySelector<HTMLElement>('.telegram-chat-item.selected')
+        : null) ??
+      (activeChatId ? list.querySelector<HTMLElement>('.telegram-chat-item.active') : null);
+
+    selected?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeChatId, chats.length, searchQuery, selectedChatId]);
+
   let content: ReactNode;
   if (loading && chats.length < 1) {
     content = <div className="telegram-empty">Loading chats...</div>;
   } else if (loadError) {
     content = <div className="telegram-empty">{loadError}</div>;
   } else if (chats.length < 1) {
-    content = <div className="telegram-empty">No chats match your search.</div>;
+    content = (
+      <div className="telegram-empty">
+        {searchQuery.trim() ? 'No chats match your search.' : 'No chats yet.'}
+      </div>
+    );
   } else {
     content = (
       <>
@@ -648,7 +676,7 @@ export const TelegramChatList = ({
         />
         <TelegramProfileMenu onLogin={onLogin} onLogout={onLogout} />
       </header>
-      <section ref={listRef} className="telegram-chat-list" tabIndex={-1}>
+      <section ref={internalListRef} className="telegram-chat-list" tabIndex={-1}>
         {content}
       </section>
     </aside>

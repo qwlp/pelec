@@ -20,6 +20,7 @@ describe('TelegramMessageList', () => {
     originalRequestAnimationFrame = window.requestAnimationFrame;
     originalCancelAnimationFrame = window.cancelAnimationFrame;
     window.pelec = {
+      answerConnectorPoll: vi.fn(),
       resolveConnectorAudioUrl: vi.fn(),
       resolveConnectorVideoUrl: vi.fn(),
       copyConnectorDocument: vi.fn(),
@@ -331,6 +332,244 @@ describe('TelegramMessageList', () => {
     const avatarImage = target.querySelector<HTMLImageElement>('.telegram-message-header .telegram-avatar img');
     expect(avatarImage?.getAttribute('src')).toBe('https://example.com/chestnuts.png');
     expect(target.querySelector('.telegram-message-header .telegram-avatar.fallback')).toBeNull();
+  });
+
+  it('renders polls without the default bubble background', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'poll-1',
+            sender: 'Ada',
+            text: 'Poll: Best editor?',
+            timestamp: 1,
+            poll: {
+              question: 'Best editor?',
+              kind: 'regular',
+              totalVoterCount: 12,
+              options: [
+                { text: 'Vim', voterCount: 5, votePercentage: 42 },
+                { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: true },
+              ],
+            },
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(target.querySelector('.telegram-poll-card')).toBeTruthy();
+    expect(target.querySelector('[data-message-id="poll-1"]')?.className).toContain('poll-only');
+    expect(target.querySelector('.telegram-message-text')).toBeNull();
+    expect(target.textContent).toContain('Best editor?');
+    expect(target.textContent).toContain('58%');
+    expect(target.textContent).toContain('12 votes');
+  });
+
+  it('does not render fake zero counts when poll option results are unavailable', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'poll-2',
+            sender: 'Ada',
+            text: 'Poll: Saturday morning run',
+            timestamp: 1,
+            poll: {
+              question: 'Saturday morning run',
+              kind: 'regular',
+              isAnonymous: false,
+              totalVoterCount: 9,
+              options: [
+                { text: 'yes', voterCount: 0 },
+                { text: 'no', voterCount: 0 },
+              ],
+            },
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(target.textContent).toContain('Saturday morning run');
+    expect(target.textContent).toContain('9 votes');
+    expect(target.textContent).toContain('Results hidden until you vote');
+    expect(target.textContent).not.toContain('0% · 0');
+  });
+
+  it('answers a single-choice poll when an option is clicked', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    window.pelec.answerConnectorPoll = vi.fn<typeof window.pelec.answerConnectorPoll>().mockResolvedValue(true);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'poll-3',
+            sender: 'Ada',
+            text: 'Poll: Saturday morning run',
+            timestamp: 1,
+            poll: {
+              question: 'Saturday morning run',
+              kind: 'regular',
+              totalVoterCount: 9,
+              options: [
+                { text: 'yes', voterCount: 0 },
+                { text: 'no', voterCount: 0 },
+              ],
+            },
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const optionButtons = target.querySelectorAll<HTMLButtonElement>('.telegram-poll-option');
+    expect(optionButtons).toHaveLength(2);
+
+    fireEvent.click(optionButtons[0] as HTMLButtonElement);
+
+    await waitFor(() => {
+      expect(window.pelec.answerConnectorPoll).toHaveBeenCalledWith('telegram', 'chat-1', 'poll-3', [0]);
+    });
+  });
+
+  it('renders telegram animations as looping media instead of blank messages', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'anim-1',
+            sender: 'Ada',
+            text: 'GIF/Animation',
+            timestamp: 1,
+            animationUrl: 'https://example.com/anim.mp4',
+            animationMimeType: 'video/mp4',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const animation = target.querySelector<HTMLVideoElement>('.telegram-message-animation');
+    expect(animation).toBeTruthy();
+    expect(animation?.getAttribute('src')).toBe('https://example.com/anim.mp4');
+    expect(animation?.autoplay).toBe(true);
+    expect(animation?.loop).toBe(true);
+    expect(target.querySelector('.telegram-message-text')).toBeNull();
+  });
+
+  it('renders webm animated stickers as looping video', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'sticker-1',
+            sender: 'Ada',
+            text: 'Sticker 😀',
+            timestamp: 1,
+            stickerUrl: 'pelec-media://local/?path=%2Ftmp%2Fsticker.webm',
+            stickerEmoji: '😀',
+            stickerIsAnimated: true,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const sticker = target.querySelector<HTMLVideoElement>('.telegram-message-sticker-video');
+    expect(sticker).toBeTruthy();
+    expect(sticker?.getAttribute('src')).toBe('pelec-media://local/?path=%2Ftmp%2Fsticker.webm');
+    expect(sticker?.autoplay).toBe(true);
+    expect(sticker?.loop).toBe(true);
+  });
+
+  it('stages and submits multiple-choice poll answers', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    window.pelec.answerConnectorPoll = vi.fn<typeof window.pelec.answerConnectorPoll>().mockResolvedValue(true);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'poll-4',
+            sender: 'Ada',
+            text: 'Poll: Snacks',
+            timestamp: 1,
+            poll: {
+              question: 'Snacks',
+              kind: 'regular',
+              allowsMultipleAnswers: true,
+              options: [
+                { text: 'Fruit', voterCount: 0 },
+                { text: 'Chips', voterCount: 0 },
+                { text: 'Nuts', voterCount: 0, chosen: true },
+              ],
+            },
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const optionButtons = target.querySelectorAll<HTMLButtonElement>('.telegram-poll-option');
+    fireEvent.click(optionButtons[0] as HTMLButtonElement);
+    fireEvent.click(optionButtons[1] as HTMLButtonElement);
+    fireEvent.click(target.querySelector('.telegram-poll-action') as HTMLElement);
+
+    await waitFor(() => {
+      expect(window.pelec.answerConnectorPoll).toHaveBeenCalledWith('telegram', 'chat-1', 'poll-4', [0, 1, 2]);
+    });
   });
 
   it('starts voice-note playback on the first click after resolving the audio url', async () => {

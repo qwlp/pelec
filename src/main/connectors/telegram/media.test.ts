@@ -84,6 +84,7 @@ describe('telegram media helpers', () => {
       sticker: { id: 3 },
       thumbnail: { id: 4 },
       animated: true,
+      format: 'stickerFormatTgs',
     });
 
     expect(

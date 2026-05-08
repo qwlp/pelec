@@ -30,6 +30,74 @@ describe('telegram message render signature', () => {
     expect(next).not.toBe(base);
   });
 
+  it('changes when poll results change', () => {
+    const base = getTelegramMessageRenderSignature({
+      albumCaption: '',
+      previousMessage: null,
+      primaryMessage: {
+        ...message,
+        poll: {
+          question: 'Best editor?',
+          kind: 'regular',
+          options: [
+            { text: 'Vim', voterCount: 2, votePercentage: 40 },
+            { text: 'Helix', voterCount: 3, votePercentage: 60 },
+          ],
+          totalVoterCount: 5,
+        },
+      },
+      renderMessages: [
+        {
+          ...message,
+          poll: {
+            question: 'Best editor?',
+            kind: 'regular',
+            options: [
+              { text: 'Vim', voterCount: 2, votePercentage: 40 },
+              { text: 'Helix', voterCount: 3, votePercentage: 60 },
+            ],
+            totalVoterCount: 5,
+          },
+        },
+      ],
+      shouldCollapseAlbum: false,
+    });
+
+    const next = getTelegramMessageRenderSignature({
+      albumCaption: '',
+      previousMessage: null,
+      primaryMessage: {
+        ...message,
+        poll: {
+          question: 'Best editor?',
+          kind: 'regular',
+          options: [
+            { text: 'Vim', voterCount: 4, votePercentage: 50 },
+            { text: 'Helix', voterCount: 4, votePercentage: 50 },
+          ],
+          totalVoterCount: 8,
+        },
+      },
+      renderMessages: [
+        {
+          ...message,
+          poll: {
+            question: 'Best editor?',
+            kind: 'regular',
+            options: [
+              { text: 'Vim', voterCount: 4, votePercentage: 50 },
+              { text: 'Helix', voterCount: 4, votePercentage: 50 },
+            ],
+            totalVoterCount: 8,
+          },
+        },
+      ],
+      shouldCollapseAlbum: false,
+    });
+
+    expect(next).not.toBe(base);
+  });
+
   it('changes when previous-message context changes continuation or divider state', () => {
     const base = getTelegramMessageRenderSignature({
       albumCaption: '',

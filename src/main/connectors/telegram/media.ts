@@ -61,7 +61,7 @@ export const extractTelegramPhotoFiles = (content: unknown): TdFileRef[] => {
 
 export const extractTelegramStickerSource = (
   content: unknown,
-): { sticker?: TdFileRef; thumbnail?: TdFileRef; animated: boolean } | undefined => {
+): { sticker?: TdFileRef; thumbnail?: TdFileRef; animated: boolean; format?: string } | undefined => {
   if (!content || typeof content !== 'object') {
     return undefined;
   }
@@ -86,6 +86,7 @@ export const extractTelegramStickerSource = (
     sticker: container.sticker?.sticker,
     thumbnail: container.sticker?.thumbnail?.file,
     animated,
+    format,
   };
 };
 

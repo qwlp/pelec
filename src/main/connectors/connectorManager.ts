@@ -165,6 +165,19 @@ export class ConnectorManager {
     return connector.resolveDocument(chatId, messageId);
   }
 
+  async answerPoll(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    optionIds: number[],
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.answerPoll) {
+      return false;
+    }
+    return connector.answerPoll(chatId, messageId, optionIds);
+  }
+
   async sendMessage(
     network: NetworkId,
     chatId: string,

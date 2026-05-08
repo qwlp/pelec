@@ -24,6 +24,7 @@ import {
   extractTelegramCallInfo,
   extractTelegramMessageEntities,
   extractTelegramMessageText,
+  extractTelegramPollInfo,
   extractTelegramReactions,
 } from './telegram/messages';
 import {
@@ -433,7 +434,7 @@ export class TelegramConnector implements Connector {
 
       const chatIds = (chatsResult.chat_ids ?? []).slice(0, 80);
       const scopeMuteForByType = new Map<string, number>();
-      const summaries = await Promise.all(
+      const summaryResults = await Promise.allSettled(
         chatIds.map(async (chatId) => {
           const chat = await this.invokeWithTimeout<TdChat>(
             client,
@@ -472,12 +473,38 @@ export class TelegramConnector implements Connector {
         }),
       );
 
+      const summaries: ChatSummary[] = [];
+      let firstError: Error | null = null;
+      for (const result of summaryResults) {
+        if (result.status === 'fulfilled') {
+          summaries.push(result.value);
+          continue;
+        }
+        if (!firstError) {
+          firstError =
+            result.reason instanceof Error
+              ? result.reason
+              : new Error(String(result.reason ?? 'Unknown Telegram chat summary error'));
+        }
+      }
+
+      if (summaries.length < 1 && firstError) {
+        throw firstError;
+      }
+
+      if (firstError) {
+        this.status.lastError = firstError.message;
+        this.status.details = `Some Telegram chats could not be loaded: ${this.status.lastError}`;
+      } else {
+        this.status.lastError = undefined;
+      }
+
       return summaries;
     } catch (error) {
       this.status.lastError =
         error instanceof Error ? error.message : 'Unknown getChats error';
       this.status.details = `Failed loading Telegram chats: ${this.status.lastError}`;
-      return [];
+      throw error instanceof Error ? error : new Error(this.status.lastError);
     }
   }
 
@@ -566,7 +593,7 @@ export class TelegramConnector implements Connector {
         });
       }
 
-      const parsed = await Promise.all(
+      const parsedResults = await Promise.allSettled(
         [...uniqueById.values()].map(async (message) => {
           const replyTargetId = this.extractReplyTargetId(message);
           const replyContext = replyTargetId ? replyContextById.get(replyTargetId) : undefined;
@@ -602,9 +629,34 @@ export class TelegramConnector implements Connector {
             senderAvatarUrl: await this.resolveSenderAvatar(client, message.sender_id),
             document: extractTelegramDocumentMetadata(message.content),
             call: extractTelegramCallInfo(message.content),
+            poll: extractTelegramPollInfo(message.content),
           };
         }),
       );
+
+      const parsed: ChatMessage[] = [];
+      let firstError: Error | null = null;
+      for (const result of parsedResults) {
+        if (result.status === 'fulfilled') {
+          parsed.push(result.value);
+          continue;
+        }
+        if (!firstError) {
+          firstError =
+            result.reason instanceof Error
+              ? result.reason
+              : new Error(String(result.reason ?? 'Unknown Telegram message parse error'));
+        }
+      }
+
+      if (parsed.length < 1 && firstError) {
+        throw firstError;
+      }
+
+      if (firstError) {
+        this.status.lastError = firstError.message;
+        this.status.details = `Some Telegram messages could not be loaded: ${this.status.lastError}`;
+      }
 
       return parsed.sort((a, b) => {
         if (a.timestamp !== b.timestamp) {
@@ -1011,6 +1063,38 @@ export class TelegramConnector implements Connector {
       return this.extractResolvedDocument(this.tdClient, message.content);
     } catch {
       return undefined;
+    }
+  }
+
+  async answerPoll(chatId: string, messageId: string, optionIds: number[]): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return false;
+    }
+
+    try {
+      await this.tdClient.invoke({
+        _: 'setPollAnswer',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        option_ids: optionIds
+          .map((value) => Math.floor(Number(value)))
+          .filter((value) => Number.isFinite(value) && value >= 0),
+      });
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'messages', chatId });
+      this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown poll answer error';
+      this.status.details = `Failed voting in poll: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return false;
     }
   }
 
@@ -1589,6 +1673,21 @@ export class TelegramConnector implements Connector {
     const sticker = extractTelegramStickerSource(content);
     if (!sticker) {
       return undefined;
+    }
+
+    if (sticker.animated && sticker.format === 'stickerFormatWebm') {
+      const localPath = await resolveTdPlayableFilePath({
+        client,
+        file: sticker.sticker,
+        invokeWithTimeout: this.invokeWithTimeout.bind(this),
+        downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+        downloadPollIntervalMs: TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS,
+      });
+      if (!localPath) {
+        return undefined;
+      }
+
+      return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
     }
 
     if (sticker.animated) {

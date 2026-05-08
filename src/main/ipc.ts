@@ -287,6 +287,19 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:answer-poll',
+    async (
+      _event,
+      network: NetworkId,
+      chatId: string,
+      messageId: string,
+      optionIds: number[],
+    ) => {
+      return (await getConnectorManager()?.answerPoll(network, chatId, messageId, optionIds)) ?? false;
+    },
+  );
+
+  ipcMain.handle(
     'connector:forward-message',
     async (
       _event,

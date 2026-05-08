@@ -61,9 +61,12 @@ interface TelegramVoicePlaybackCoordinator {
 }
 
 const TELEGRAM_VOICE_PLAYBACK_RATES = [1, 1.5, 2] as const;
+const TELEGRAM_POLL_COUNT_FORMATTER = new Intl.NumberFormat();
 
 const formatTelegramVoicePlaybackRate = (rate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): string =>
   `${Number.isInteger(rate) ? rate.toFixed(0) : rate}x`;
+
+const formatTelegramPollCount = (count: number): string => TELEGRAM_POLL_COUNT_FORMATTER.format(count);
 
 const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): MessageBundle[] => {
   const bundles: MessageBundle[] = [];
@@ -868,6 +871,289 @@ const TelegramDocumentCard = ({
   );
 };
 
+const TelegramAnimation = ({
+  message,
+}: {
+  message: ChatMessage;
+}) => {
+  if (!message.animationUrl) {
+    return null;
+  }
+
+  if ((message.animationMimeType ?? '').startsWith('image/')) {
+    return (
+      <img
+        className="telegram-message-animation"
+        src={message.animationUrl}
+        alt="Telegram animation"
+        loading="lazy"
+      />
+    );
+  }
+
+  return (
+    <video
+      className="telegram-message-animation"
+      src={message.animationUrl}
+      autoPlay
+      loop
+      muted
+      playsInline
+      controls={false}
+      preload="auto"
+      aria-label="Telegram animation"
+    />
+  );
+};
+
+const isTelegramAnimatedStickerVideoUrl = (url: string): boolean => {
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.startsWith('data:video/')) {
+    return true;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const filePath = parsed.searchParams.get('path')?.trim()?.toLowerCase() ?? parsed.pathname.toLowerCase();
+    return filePath.endsWith('.webm') || filePath.endsWith('.mp4');
+  } catch {
+    return trimmed.toLowerCase().endsWith('.webm') || trimmed.toLowerCase().endsWith('.mp4');
+  }
+};
+
+const TelegramSticker = ({
+  message,
+}: {
+  message: ChatMessage;
+}) => {
+  if (!message.stickerUrl) {
+    return null;
+  }
+
+  const alt = message.stickerEmoji
+    ? `Telegram sticker ${message.stickerEmoji}`
+    : 'Telegram sticker';
+
+  if (message.stickerIsAnimated && isTelegramAnimatedStickerVideoUrl(message.stickerUrl)) {
+    return (
+      <video
+        className="telegram-message-sticker telegram-message-sticker-video"
+        src={message.stickerUrl}
+        autoPlay
+        loop
+        muted
+        playsInline
+        controls={false}
+        preload="auto"
+        aria-label={alt}
+        title="Animated sticker"
+      />
+    );
+  }
+
+  return (
+    <img
+      className="telegram-message-sticker"
+      src={message.stickerUrl}
+      alt={alt}
+      loading="lazy"
+      title={message.stickerIsAnimated ? 'Animated sticker preview' : undefined}
+    />
+  );
+};
+
+const TelegramPollCard = ({
+  activeChatId,
+  message,
+}: {
+  activeChatId: string | null;
+  message: ChatMessage;
+}) => {
+  const poll = message.poll;
+  const chosenOptionIds = (poll?.options ?? []).reduce<number[]>((accumulator, option, index) => {
+    if (option.chosen) {
+      accumulator.push(index);
+    }
+    return accumulator;
+  }, []);
+  const [draftOptionIds, setDraftOptionIds] = useState<number[]>(chosenOptionIds);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraftOptionIds(chosenOptionIds);
+    setSubmitting(false);
+    setSubmitError(null);
+  }, [
+    message.id,
+    poll?.question,
+    poll?.totalVoterCount,
+    poll?.isClosed,
+    poll?.allowsMultipleAnswers,
+    poll?.kind,
+    poll?.options,
+    chosenOptionIds.join(','),
+  ]);
+
+  if (!poll) {
+    return null;
+  }
+
+  const badges = [
+    poll.kind === 'quiz' ? 'Quiz' : 'Poll',
+    poll.isClosed ? 'Closed' : null,
+    poll.isAnonymous === false ? 'Public' : null,
+    poll.allowsMultipleAnswers ? 'Multi-select' : null,
+  ].filter((badge): badge is string => !!badge);
+
+  const totalVoters = poll.totalVoterCount ?? poll.options.reduce((sum, option) => sum + option.voterCount, 0);
+  const hasPerOptionResults = poll.options.some(
+    (option) =>
+      option.chosen === true ||
+      option.voterCount > 0 ||
+      (typeof option.votePercentage === 'number' && option.votePercentage > 0),
+  );
+  const shouldHideOptionResults =
+    totalVoters > 0 && !poll.isClosed && !hasPerOptionResults;
+  const footerParts =
+    totalVoters > 0
+      ? [`${formatTelegramPollCount(totalVoters)} vote${totalVoters === 1 ? '' : 's'}`]
+      : ['No votes yet'];
+
+  if (poll.isAnonymous !== undefined) {
+    footerParts.push(poll.isAnonymous ? 'Anonymous' : 'Public votes');
+  }
+
+  if (poll.allowsMultipleAnswers) {
+    footerParts.push('Multiple answers');
+  }
+
+  if (shouldHideOptionResults) {
+    footerParts.push('Results hidden until you vote');
+  }
+
+  const canVote =
+    !!activeChatId &&
+    !poll.isClosed &&
+    !(poll.kind === 'quiz' && chosenOptionIds.length > 0);
+  const hasDraftChanges =
+    draftOptionIds.length !== chosenOptionIds.length ||
+    draftOptionIds.some((optionId, index) => optionId !== chosenOptionIds[index]);
+
+  const submitVote = async (optionIds: number[]): Promise<void> => {
+    if (!activeChatId || submitting) {
+      return;
+    }
+
+    setSubmitting(true);
+    setSubmitError(null);
+    const normalizedOptionIds = [...new Set(optionIds)].sort((left, right) => left - right);
+    const voted = await window.pelec.answerConnectorPoll('telegram', activeChatId, message.id, normalizedOptionIds);
+    setSubmitting(false);
+    if (!voted) {
+      setSubmitError('Vote failed');
+      return;
+    }
+    setDraftOptionIds(normalizedOptionIds);
+  };
+
+  return (
+    <section className={`telegram-poll-card${poll.kind === 'quiz' ? ' is-quiz' : ''}${poll.isClosed ? ' is-closed' : ''}`}>
+      <div className="telegram-poll-badges" aria-label="Telegram poll details">
+        {badges.map((badge) => (
+          <span key={badge} className="telegram-poll-badge">
+            {badge}
+          </span>
+        ))}
+      </div>
+      <div className="telegram-poll-question">{poll.question}</div>
+      <div className="telegram-poll-options">
+        {poll.options.map((option, index) => {
+          const votePercentage =
+            option.votePercentage ??
+            (totalVoters > 0 ? Math.round((option.voterCount / totalVoters) * 100) : 0);
+          const isCorrect = poll.kind === 'quiz' && poll.correctOptionIndex === index;
+          const showOptionResults = !shouldHideOptionResults;
+          const selected = draftOptionIds.includes(index);
+
+          return (
+            <button
+              key={`${message.id}:poll:${index}`}
+              type="button"
+              className={`telegram-poll-option${option.chosen ? ' is-chosen' : ''}${isCorrect ? ' is-correct' : ''}`}
+              disabled={!canVote || submitting}
+              aria-pressed={selected}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!canVote || submitting) {
+                  return;
+                }
+                if (!poll.allowsMultipleAnswers) {
+                  void submitVote([index]);
+                  return;
+                }
+
+                setDraftOptionIds((current) => {
+                  const next = current.includes(index)
+                    ? current.filter((optionId) => optionId !== index)
+                    : [...current, index].sort((left, right) => left - right);
+                  setSubmitError(null);
+                  return next;
+                });
+              }}
+              title={canVote ? `Vote for ${option.text}` : undefined}
+            >
+              <div
+                className="telegram-poll-option-fill"
+                style={{ width: `${showOptionResults ? Math.min(100, Math.max(0, votePercentage)) : 0}%` }}
+              />
+              <div className="telegram-poll-option-content">
+                <span className="telegram-poll-option-label">{option.text}</span>
+                <span className="telegram-poll-option-meta">
+                  {showOptionResults
+                    ? `${votePercentage}% · ${formatTelegramPollCount(option.voterCount)}`
+                    : 'Results hidden'}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {poll.allowsMultipleAnswers && canVote ? (
+        <div className="telegram-poll-actions">
+          <button
+            type="button"
+            className="telegram-poll-action"
+            disabled={submitting || !hasDraftChanges}
+            onClick={(event) => {
+              event.stopPropagation();
+              void submitVote(draftOptionIds);
+            }}
+          >
+            {submitting ? 'Voting…' : 'Vote'}
+          </button>
+          <button
+            type="button"
+            className="telegram-poll-action secondary"
+            disabled={submitting || draftOptionIds.length < 1}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDraftOptionIds([]);
+              setSubmitError(null);
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      ) : null}
+      {submitError ? <div className="telegram-poll-submit-error">{submitError}</div> : null}
+      <div className="telegram-poll-footer">{footerParts.join(' · ')}</div>
+    </section>
+  );
+};
+
 const TelegramMessageRow = memo(
   ({
     activeChatId,
@@ -905,11 +1191,13 @@ const TelegramMessageRow = memo(
       isTelegramVideoFallbackText(primaryMessage);
     const suppressDocumentFallbackText =
       !shouldCollapseAlbum && isTelegramDocumentFallbackText(primaryMessage);
+    const suppressPollFallbackText = !!primaryMessage.poll;
     const shouldRenderText =
       !!messageTextTrimmed &&
       !primaryMessage.call &&
       !suppressImageFallbackText &&
       !suppressVideoFallbackText &&
+      !suppressPollFallbackText &&
       !(primaryMessage.animationUrl && messageTextLower === 'gif/animation') &&
       !(
         primaryMessage.stickerUrl &&
@@ -926,7 +1214,19 @@ const TelegramMessageRow = memo(
       !primaryMessage.hasVideo &&
       !primaryMessage.animationUrl &&
       !primaryMessage.stickerUrl &&
-      !(primaryMessage.audioUrl || primaryMessage.hasAudio);
+      !(primaryMessage.audioUrl || primaryMessage.hasAudio) &&
+      !primaryMessage.poll;
+    const isPollOnlyMessage =
+      !!primaryMessage.poll &&
+      !shouldRenderText &&
+      !primaryMessage.call &&
+      !primaryMessage.imageUrl &&
+      !primaryMessage.videoUrl &&
+      !primaryMessage.hasVideo &&
+      !primaryMessage.animationUrl &&
+      !primaryMessage.stickerUrl &&
+      !(primaryMessage.audioUrl || primaryMessage.hasAudio) &&
+      !primaryMessage.document;
 
     return (
       <>
@@ -940,6 +1240,8 @@ const TelegramMessageRow = memo(
             shouldCollapseAlbum ? ' album' : ''
           }${isContinuation ? ' continuation' : ''}${isSelected ? ' selected' : ''}${
             isDocumentOnlyMessage ? ' document-only' : ''
+          }${isPollOnlyMessage ? ' poll-only' : ''}${
+            primaryMessage.poll ? ' has-poll' : ''
           }`}
           data-message-id={primaryMessage.id}
           onClick={() => legacyApi?.selectTelegramMessage(primaryMessage.id)}
@@ -1018,6 +1320,9 @@ const TelegramMessageRow = memo(
           {!shouldCollapseAlbum && (primaryMessage.videoUrl || primaryMessage.hasVideo) ? (
             <TelegramResolvedVideo activeChatId={activeChatId} message={primaryMessage} />
           ) : null}
+          {!shouldCollapseAlbum && primaryMessage.animationUrl ? (
+            <TelegramAnimation message={primaryMessage} />
+          ) : null}
           {!shouldCollapseAlbum && (primaryMessage.audioUrl || primaryMessage.hasAudio) ? (
             <TelegramResolvedAudio
               activeChatId={activeChatId}
@@ -1027,18 +1332,8 @@ const TelegramMessageRow = memo(
               onPlaybackRateChange={onPlaybackRateChange}
             />
           ) : null}
-          {primaryMessage.stickerUrl ? (
-            <img
-              className="telegram-message-sticker"
-              src={primaryMessage.stickerUrl}
-              alt={
-                primaryMessage.stickerEmoji
-                  ? `Telegram sticker ${primaryMessage.stickerEmoji}`
-                  : 'Telegram sticker'
-              }
-              loading="lazy"
-            />
-          ) : null}
+          <TelegramSticker message={primaryMessage} />
+          <TelegramPollCard activeChatId={activeChatId} message={primaryMessage} />
           <TelegramDocumentCard activeChatId={activeChatId} message={primaryMessage} />
           {shouldRenderText ? (
             <div className="telegram-message-text">

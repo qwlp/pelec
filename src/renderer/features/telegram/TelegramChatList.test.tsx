@@ -93,6 +93,100 @@ describe('TelegramChatList', () => {
     expect(listRef.current).toBe(chatList);
   });
 
+  it('scrolls the selected chat into view when selection changes', () => {
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      const view = render(
+        <TelegramChatList
+          activeChatId="chat-1"
+          chats={[
+            {
+              id: 'chat-1',
+              title: 'Ops',
+              lastMessagePreview: 'Deploy done',
+              unreadCount: 0,
+              avatarUrl: undefined,
+            },
+            {
+              id: 'chat-2',
+              title: 'Infra',
+              lastMessagePreview: 'Deploy queued',
+              unreadCount: 0,
+              avatarUrl: undefined,
+            },
+          ]}
+          loadError={null}
+          loading={false}
+          onSearchQueryChange={() => undefined}
+          onSelectChat={() => undefined}
+          searchQuery=""
+          selectedChatId="chat-1"
+        />,
+      );
+
+      scrollIntoView.mockClear();
+
+      view.rerender(
+        <TelegramChatList
+          activeChatId="chat-1"
+          chats={[
+            {
+              id: 'chat-1',
+              title: 'Ops',
+              lastMessagePreview: 'Deploy done',
+              unreadCount: 0,
+              avatarUrl: undefined,
+            },
+            {
+              id: 'chat-2',
+              title: 'Infra',
+              lastMessagePreview: 'Deploy queued',
+              unreadCount: 0,
+              avatarUrl: undefined,
+            },
+          ]}
+          loadError={null}
+          loading={false}
+          onSearchQueryChange={() => undefined}
+          onSelectChat={() => undefined}
+          searchQuery=""
+          selectedChatId="chat-2"
+        />,
+      );
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+        configurable: true,
+        value: originalScrollIntoView,
+      });
+    }
+  });
+
+  it('shows a plain empty state when there are no chats and no search query', () => {
+    const view = render(
+      <TelegramChatList
+        activeChatId={null}
+        chats={[]}
+        loadError={null}
+        loading={false}
+        onSearchQueryChange={() => undefined}
+        onSelectChat={() => undefined}
+        searchQuery=""
+        selectedChatId={null}
+      />,
+    );
+
+    expect(view.container.textContent).toContain('No chats yet.');
+    expect(view.container.textContent).not.toContain('No chats match your search.');
+  });
+
   it('does not render a read-status dot for chats with no unread messages', () => {
     const view = render(
       <TelegramChatList

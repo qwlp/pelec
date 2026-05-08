@@ -145,6 +145,16 @@ export const AppShell = () => {
     state.appShell.activeNetwork === 'telegram' &&
     telegramSnapshot !== null &&
     (telegramCompactLayout ? telegramCompactShowChats : !telegramSnapshot.chatListMinimized);
+  const telegramMessagesOnlyView =
+    state.appShell.activeNetwork === 'telegram' &&
+    telegramSnapshot !== null &&
+    telegramMessagesVisible &&
+    !showTelegramChatList;
+  const telegramChatsOnlyView =
+    state.appShell.activeNetwork === 'telegram' &&
+    telegramSnapshot !== null &&
+    showTelegramChatList &&
+    !telegramMessagesVisible;
 
   useEffect(() => {
     if (state.appShell.activeNetwork !== 'telegram') {
@@ -217,24 +227,38 @@ export const AppShell = () => {
       return;
     }
 
-    if (telegramCompactLayout && state.appShell.activePane === 'telegram-composer') {
+    if (
+      telegramCompactLayout &&
+      (telegramCompactShowMessages || state.appShell.activePane === 'telegram-composer')
+    ) {
       setTelegramCompactView('chats');
-      legacyApi.setMode('normal');
+      if (state.appShell.activePane === 'telegram-composer') {
+        legacyApi.setMode('normal');
+      }
       scheduleTelegramPaneFocus('telegram-chats');
-      legacyApi.movePane(-1);
+      if (state.appShell.activePane !== 'telegram-chats') {
+        legacyApi.movePane(-1);
+      }
       return;
     }
 
     if (state.appShell.activePane === 'telegram-messages') {
-      if (telegramCompactLayout) {
-        setTelegramCompactView('chats');
+      if (telegramCompactLayout || telegramMessagesOnlyView) {
+        if (telegramCompactLayout) {
+          setTelegramCompactView('chats');
+        }
+        if (showTelegramChatList) {
+          scheduleTelegramPaneFocus('telegram-chats');
+          legacyApi.movePane(-1);
+        }
+        return;
       }
       scheduleTelegramPaneFocus('telegram-chats');
       legacyApi.movePane(-1);
       return;
     }
 
-    if (state.appShell.activePane === 'telegram-chats') {
+    if (state.appShell.activePane === 'telegram-chats' || telegramChatsOnlyView) {
       scheduleTelegramPaneFocus('telegram-chats');
       return;
     }
@@ -248,10 +272,18 @@ export const AppShell = () => {
       return;
     }
 
-    if (state.appShell.activePane === 'telegram-chats') {
+    if (state.appShell.activePane === 'telegram-chats' || telegramChatsOnlyView) {
+      if (!telegramMessagesVisible && !telegramCompactLayout) {
+        scheduleTelegramPaneFocus('telegram-chats');
+        return;
+      }
       const nextChatId = telegramSnapshot?.selectedChatId;
       if (nextChatId && nextChatId !== telegramSnapshot?.activeChatId) {
         legacyApi.activateTelegramChat(nextChatId);
+      }
+      if (!nextChatId && !telegramSnapshot?.activeChatId) {
+        scheduleTelegramPaneFocus('telegram-chats');
+        return;
       }
       if (telegramCompactLayout) {
         setTelegramCompactView('messages');
@@ -261,7 +293,11 @@ export const AppShell = () => {
       return;
     }
 
-    if (state.appShell.activePane === 'telegram-messages') {
+    if (
+      state.appShell.activePane === 'telegram-messages' ||
+      state.appShell.activePane === 'telegram-composer' ||
+      telegramMessagesOnlyView
+    ) {
       scheduleTelegramPaneFocus('telegram-messages');
       return;
     }
