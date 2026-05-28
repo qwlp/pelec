@@ -8,6 +8,7 @@ export type PendingTelegramAttachment = {
   mimeType?: string;
   sizeBytes?: number;
   dataUrl: string;
+  sendAs?: 'image' | 'document';
 };
 
 export const TELEGRAM_MAX_ATTACHMENTS = 10;

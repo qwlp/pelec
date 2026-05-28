@@ -1,0 +1,16 @@
+{
+  "appId": "com.pelec.app",
+  "productName": "pelec",
+  "files": [
+    "**/*",
+    "!out{,/**/*}",
+    "!dist{,/**/*}"
+  ],
+  "asarUnpack": [
+    "node_modules/tdl/**/*",
+    "node_modules/debug/**/*",
+    "node_modules/ms/**/*",
+    "node_modules/node-gyp-build/**/*",
+    "node_modules/node-addon-api/**/*"
+  ]
+}

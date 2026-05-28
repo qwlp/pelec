@@ -484,11 +484,31 @@ export const TelegramComposer = ({
           {attachments.map((attachment, index) => (
             <div key={attachment.id} className="telegram-compose-thumb-wrap">
               {attachment.kind === 'image' ? (
-                <img
-                  className="telegram-compose-preview"
-                  src={attachment.dataUrl}
-                  alt={attachment.name || `Pasted image ${index + 1}`}
-                />
+                <>
+                  <img
+                    className="telegram-compose-preview"
+                    src={attachment.dataUrl}
+                    alt={attachment.name || `Pasted image ${index + 1}`}
+                  />
+                  <div className="telegram-compose-image-mode" role="group" aria-label="Image send mode">
+                    <button
+                      type="button"
+                      className={attachment.sendAs !== 'document' ? 'active' : ''}
+                      onClick={() => legacyApi?.setTelegramAttachmentSendAs(attachment.id, 'image')}
+                      aria-pressed={attachment.sendAs !== 'document'}
+                    >
+                      Image
+                    </button>
+                    <button
+                      type="button"
+                      className={attachment.sendAs === 'document' ? 'active' : ''}
+                      onClick={() => legacyApi?.setTelegramAttachmentSendAs(attachment.id, 'document')}
+                      aria-pressed={attachment.sendAs === 'document'}
+                    >
+                      File
+                    </button>
+                  </div>
+                </>
               ) : (
                 <div className="telegram-compose-document">
                   <div className="telegram-compose-document-name">{attachment.name}</div>

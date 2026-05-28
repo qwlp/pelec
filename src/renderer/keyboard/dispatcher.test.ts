@@ -80,6 +80,7 @@ const buildContext = () => {
     refresh: vi.fn(),
     refreshQrAuth: vi.fn(),
     removeTelegramAttachment: vi.fn(),
+    setTelegramAttachmentSendAs: vi.fn(),
     revealQrPassword: vi.fn(),
     reply: vi.fn(),
     selectTelegramMessage: vi.fn(),

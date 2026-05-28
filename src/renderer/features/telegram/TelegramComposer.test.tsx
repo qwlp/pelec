@@ -457,6 +457,53 @@ describe('TelegramComposer', () => {
     expect(legacyApi.appendTelegramFiles).not.toHaveBeenCalled();
   });
 
+  it('lets image attachments switch between image and file sends', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramAttachmentSendAs: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[
+          {
+            id: 'image-1',
+            kind: 'image',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,aW1hZ2U=',
+            sendAs: 'image',
+          },
+        ]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const fileButton = target.querySelector<HTMLButtonElement>(
+      '.telegram-compose-image-mode button:nth-child(2)',
+    );
+    expect(fileButton?.textContent).toBe('File');
+
+    fireEvent.click(fileButton as HTMLButtonElement);
+    expect(legacyApi.setTelegramAttachmentSendAs).toHaveBeenCalledWith('image-1', 'document');
+  });
+
   it('completes the active emoji suggestion before sending on Enter', async () => {
     const target = document.createElement('div');
     document.body.append(target);

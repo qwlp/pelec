@@ -3754,13 +3754,15 @@ export const bootLegacyApp = async (
       return { error: `Failed to read ${safeLabel(file.name, 'attachment')}.` };
     }
 
+    const kind = getTelegramAttachmentKind(file.type);
     return {
       id: createTelegramAttachmentId(),
-      kind: getTelegramAttachmentKind(file.type),
+      kind,
       name: safeLabel(file.name, 'attachment'),
       mimeType: file.type || undefined,
       sizeBytes: file.size > 0 ? file.size : undefined,
       dataUrl,
+      sendAs: kind === 'image' ? 'image' : undefined,
     };
   };
 
@@ -4140,7 +4142,7 @@ export const bootLegacyApp = async (
           }
           const caption = !hasVoiceAttachments && index === 0 ? text : '';
           const attachmentSent =
-            attachment.kind === 'image'
+            attachment.kind === 'image' && attachment.sendAs !== 'document'
               ? await window.pelec.sendConnectorImage(
                   'telegram',
                   chatId,
@@ -4910,6 +4912,21 @@ export const bootLegacyApp = async (
   const removeTelegramAttachment = (attachmentId: string): void => {
     state.pendingTelegramAttachments = state.pendingTelegramAttachments.filter(
       (item) => item.id !== attachmentId,
+    );
+    render();
+  };
+
+  const setTelegramAttachmentSendAs = (
+    attachmentId: string,
+    sendAs: 'image' | 'document',
+  ): void => {
+    state.pendingTelegramAttachments = state.pendingTelegramAttachments.map((attachment) =>
+      attachment.id === attachmentId && attachment.kind === 'image'
+        ? {
+            ...attachment,
+            sendAs,
+          }
+        : attachment,
     );
     render();
   };
@@ -6648,6 +6665,7 @@ export const bootLegacyApp = async (
     openTelegramImagePreview,
     refreshQrAuth,
     removeTelegramAttachment,
+    setTelegramAttachmentSendAs,
     revealQrPassword,
     refresh: () => {
       if (state.activeNetwork === 'telegram') {

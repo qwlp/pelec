@@ -23,6 +23,15 @@ const fail = (message) => {
   process.exit(1);
 };
 
+const startStep = (label) => {
+  const startedAt = Date.now();
+  console.log(`[appimage] ${label}...`);
+  return () => {
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.log(`[appimage] ${label} finished in ${elapsedSeconds}s.`);
+  };
+};
+
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
     cwd: rootDir,
@@ -86,13 +95,17 @@ const runBuilder = (prepackagedPath, appName) => {
     '--linux',
     'AppImage',
     '--x64',
-    '--prepackaged',
-    prepackagedPath,
-    '-c.appId=com.pelec.app',
-    `-c.productName=${appName}`,
+    '--publish',
+    'never',
+    '--config',
+    'scripts/electron-builder-linux.json',
     '-c.directories.output=out/appimage',
     '-c.artifactName=${productName}-${version}-${arch}.${ext}',
   ];
+
+  if (prepackagedPath) {
+    builderArgs.splice(3, 0, '--prepackaged', prepackagedPath);
+  }
 
   const env = {
     ...process.env,
@@ -110,21 +123,23 @@ const { name, version } = readPackageMeta();
 let prepackagedPath = findPrepackagedLinuxApp(name);
 
 if (args.has('--fresh') || !prepackagedPath) {
-  console.log('[appimage] Packaging Linux app with Electron Forge...');
+  const finishForge = startStep('Packaging Linux app with Electron Forge');
   run(process.execPath, [path.join('scripts', 'run-forge.js'), 'package', '--platform=linux', '--arch=x64']);
+  finishForge();
   prepackagedPath = findPrepackagedLinuxApp(name);
 } else {
   console.log('[appimage] Reusing existing prepackaged Linux app.');
 }
 
-if (!prepackagedPath) {
-  fail('Could not find a prepackaged Linux app under out/.');
+if (prepackagedPath) {
+  ensureTdlibResource(prepackagedPath);
+  console.log(`[appimage] Using prepackaged app: ${path.relative(rootDir, prepackagedPath)}`);
+} else {
+  console.warn('[appimage] Could not find a prepackaged Linux app under out/. Building directly.');
 }
 
-ensureTdlibResource(prepackagedPath);
-
-console.log(`[appimage] Using prepackaged app: ${path.relative(rootDir, prepackagedPath)}`);
-console.log('[appimage] Building AppImage...');
+const finishBuilder = startStep('Building AppImage');
 runBuilder(prepackagedPath, name);
+finishBuilder();
 
 console.log(`[appimage] Done. Look in out/appimage/ for ${name} ${version}.`);

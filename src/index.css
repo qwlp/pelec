@@ -2723,6 +2723,36 @@ textarea {
   min-height: 92px;
 }
 
+.telegram-compose-image-mode {
+  width: 92px;
+  border: 1px solid var(--line-soft);
+  border-top: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: #181326;
+}
+
+.telegram-compose-image-mode button {
+  min-width: 0;
+  border: 0;
+  border-left: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 5px 4px;
+  font-size: calc(10px * var(--font-scale));
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.telegram-compose-image-mode button:first-child {
+  border-left: 0;
+}
+
+.telegram-compose-image-mode button.active {
+  background: rgba(255, 79, 167, 0.16);
+  color: var(--ink-main);
+}
+
 .telegram-compose-thumb-remove {
   position: absolute;
   top: -8px;

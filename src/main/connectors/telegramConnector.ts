@@ -81,6 +81,7 @@ const TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS = 8000;
 const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
 const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 60000;
 const TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS = 250;
+
 const PELEC_MEDIA_SCHEME = 'pelec-media';
 
 type LegacyConnectorUpdateEvent =
@@ -2121,6 +2122,14 @@ export class TelegramConnector implements Connector {
           'linux-x64-glibc',
           'libtdjson.so',
         ),
+        path.join(
+          process.resourcesPath,
+          'app.asar.unpacked',
+          'node_modules',
+          '@prebuilt-tdlib',
+          'linux-x64-glibc',
+          'libtdjson.so',
+        ),
       ];
       tdjsonPath = packagedCandidates.find((candidate) => existsSync(candidate));
 
@@ -2235,8 +2244,10 @@ export class TelegramConnector implements Connector {
 
       this.tdLibReady = true;
       this.status.mode = 'native';
-      this.status.authState = 'unauthenticated';
-      this.status.details = 'TDLib initialized. Start auth to open QR login.';
+      if (this.status.authState !== 'authenticated' && this.status.authState !== 'authenticating') {
+        this.status.authState = 'unauthenticated';
+        this.status.details = 'TDLib initialized. Start auth to open QR login.';
+      }
       this.status.lastError = undefined;
     } catch (error) {
       this.tdLibReady = false;

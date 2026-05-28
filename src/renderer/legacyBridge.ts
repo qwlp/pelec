@@ -118,6 +118,7 @@ export interface LegacyAppBridgeApi {
   openTelegramForwardMenu(messageId: string): void;
   refreshQrAuth(): void;
   removeTelegramAttachment(attachmentId: string): void;
+  setTelegramAttachmentSendAs(attachmentId: string, sendAs: 'image' | 'document'): void;
   revealQrPassword(): void;
   submitQrPassword(value: string): void;
   submitAuthPrompt(value: string): void;

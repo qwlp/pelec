@@ -13,6 +13,7 @@
     "start": "bun scripts/run-forge.js start",
     "rebuild:start": "bun scripts/rebuild-start.js",
     "package": "bun scripts/run-forge.js package",
+    "linux:native": "CSC_IDENTITY_AUTO_DISCOVERY=false bun scripts/build-linux-native.js",
     "appimage": "bun scripts/build-appimage.js",
     "appimage:fresh": "bun scripts/build-appimage.js --fresh",
     "make": "bun scripts/run-forge.js make",
