@@ -39,18 +39,15 @@ if (process.platform !== 'linux') {
 fs.rmSync(builderOutputPath, { recursive: true, force: true });
 fs.rmSync(finalOutputPath, { recursive: true, force: true });
 
-const forgeStartedAt = Date.now();
-console.log('[linux-native] Building production Vite bundles with Electron Forge...');
-run(process.execPath, [
-  path.join('scripts', 'run-forge.js'),
-  'package',
-  '--platform=linux',
-  '--arch=x64',
-]);
+const viteStartedAt = Date.now();
+console.log('[linux-native] Building production Vite bundles...');
+run(process.execPath, [path.join('scripts', 'build-vite-production.js')]);
 console.log(
-  `[linux-native] Electron Forge production build finished in ${((Date.now() - forgeStartedAt) / 1000).toFixed(1)}s.`,
+  `[linux-native] Production Vite build finished in ${((Date.now() - viteStartedAt) / 1000).toFixed(1)}s.`,
 );
 
+const builderStartedAt = Date.now();
+console.log('[linux-native] Packaging Linux app with electron-builder...');
 run(process.execPath, [
   'x',
   'electron-builder',
@@ -63,10 +60,14 @@ run(process.execPath, [
   'scripts/electron-builder-linux.json',
   '-c.directories.output=out',
 ]);
+console.log(
+  `[linux-native] electron-builder package finished in ${((Date.now() - builderStartedAt) / 1000).toFixed(1)}s.`,
+);
 
 if (!fs.existsSync(path.join(builderOutputPath, 'pelec'))) {
   fail('electron-builder did not produce out/linux-unpacked/pelec.');
 }
 
+fs.rmSync(path.join(builderOutputPath, 'resources', 'default_app.asar'), { force: true });
 fs.renameSync(builderOutputPath, finalOutputPath);
 console.log(`[linux-native] Done. Executable: ${path.relative(rootDir, path.join(finalOutputPath, 'pelec'))}`);

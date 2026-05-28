@@ -86,6 +86,59 @@ describe('TelegramComposer', () => {
     expect(legacyApi.focusTelegramComposer).not.toHaveBeenCalled();
   });
 
+  it('does not replace focused typing with a stale draft prop', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    const view = render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { value: 'abcd' },
+    });
+
+    view.rerender(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText="abc"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('abcd');
+    });
+  });
+
   it('keeps an empty startup textarea compact even when scrollHeight is large', async () => {
     const target = document.createElement('div');
     document.body.append(target);

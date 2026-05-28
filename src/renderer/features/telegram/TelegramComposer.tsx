@@ -125,6 +125,7 @@ export const TelegramComposer = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const syncedDraftValueRef = useRef(draftText);
+  const hasLocalDraftEditRef = useRef(false);
   const pendingSelectionRef = useRef<{ end: number; start: number } | null>(null);
 
   const syncDraftValue = (nextValue: string) => {
@@ -133,6 +134,7 @@ export const TelegramComposer = ({
     }
 
     syncedDraftValueRef.current = nextValue;
+    hasLocalDraftEditRef.current = true;
     setValue(nextValue);
     legacyApi?.setTelegramDraftValue(nextValue);
   };
@@ -300,11 +302,21 @@ export const TelegramComposer = ({
       return;
     }
     syncedDraftValueRef.current = '';
+    hasLocalDraftEditRef.current = false;
     setValue('');
     legacyApi.sendTelegramMessage();
   };
 
   useEffect(() => {
+    if (draftText === syncedDraftValueRef.current) {
+      hasLocalDraftEditRef.current = false;
+      return;
+    }
+
+    if (hasLocalDraftEditRef.current) {
+      return;
+    }
+
     syncedDraftValueRef.current = draftText;
     setValue(draftText);
   }, [draftText]);
