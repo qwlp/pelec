@@ -156,4 +156,19 @@ describe('telegram message render signature', () => {
 
     expect(next).toBe(base);
   });
+
+  it('keeps signature work bounded for unusually large message content', () => {
+    const largeText = 'x'.repeat(100_000_000);
+    const startedAt = performance.now();
+    const signature = getTelegramMessageRenderSignature({
+      albumCaption: largeText,
+      previousMessage: null,
+      primaryMessage: { ...message, text: largeText },
+      renderMessages: [{ ...message, text: largeText }],
+      shouldCollapseAlbum: false,
+    });
+
+    expect(signature.length).toBeLessThan(100);
+    expect(performance.now() - startedAt).toBeLessThan(250);
+  });
 });

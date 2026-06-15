@@ -59,6 +59,19 @@ export const extractTelegramPhotoFiles = (content: unknown): TdFileRef[] => {
     .filter((photo): photo is TdFileRef => photo !== undefined);
 };
 
+export const getTelegramImageFile = (content: unknown): TdFileRef | undefined => {
+  const imageDocument = extractTelegramImageDocumentSource(content);
+  if (imageDocument?.file) {
+    return imageDocument.file;
+  }
+  return extractTelegramPhotoFiles(content).at(-1);
+};
+
+export const getTelegramFileSizeBytes = (file: TdFileRef | undefined): number | undefined => {
+  const size = Number(file?.size ?? file?.expected_size ?? 0);
+  return Number.isFinite(size) && size > 0 ? size : undefined;
+};
+
 export const extractTelegramStickerSource = (
   content: unknown,
 ): { sticker?: TdFileRef; thumbnail?: TdFileRef; animated: boolean; format?: string } | undefined => {

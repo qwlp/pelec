@@ -17,6 +17,7 @@ import {
 } from './media';
 import {
   formatDuration,
+  formatFileSize,
   formatFullDateTime,
   formatMessageDayLabel,
   formatMessageTimestamp,
@@ -63,11 +64,25 @@ interface TelegramVoicePlaybackCoordinator {
 
 const TELEGRAM_VOICE_PLAYBACK_RATES = [1, 1.5, 2] as const;
 const TELEGRAM_POLL_COUNT_FORMATTER = new Intl.NumberFormat();
+const TELEGRAM_MAX_RENDERED_TEXT_LENGTH = 5_000;
 
 const formatTelegramVoicePlaybackRate = (rate: (typeof TELEGRAM_VOICE_PLAYBACK_RATES)[number]): string =>
   `${Number.isInteger(rate) ? rate.toFixed(0) : rate}x`;
 
 const formatTelegramPollCount = (count: number): string => TELEGRAM_POLL_COUNT_FORMATTER.format(count);
+
+const limitTelegramRenderedText = (
+  value: string,
+): { text: string; truncated: boolean; originalLength: number } => {
+  if (value.length <= TELEGRAM_MAX_RENDERED_TEXT_LENGTH) {
+    return { text: value, truncated: false, originalLength: value.length };
+  }
+  return {
+    text: `${value.slice(0, TELEGRAM_MAX_RENDERED_TEXT_LENGTH)}\n\n[Message truncated by Pelec]`,
+    truncated: true,
+    originalLength: value.length,
+  };
+};
 
 const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): MessageBundle[] => {
   const bundles: MessageBundle[] = [];
@@ -1218,6 +1233,72 @@ const TelegramPollCard = ({
   );
 };
 
+function TelegramDeferredImage({
+  activeChatId,
+  legacyApi,
+  message,
+}: {
+  activeChatId: string | null;
+  legacyApi: LegacyAppBridgeApi | null;
+  message: LegacyRenderableTelegramMessage;
+}) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (imageUrl) {
+    return (
+      <img
+        className="telegram-message-image"
+        src={imageUrl}
+        alt="Telegram image"
+        loading="lazy"
+        onClick={(event) => {
+          event.stopPropagation();
+          legacyApi?.openTelegramImagePreview(imageUrl);
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="telegram-deferred-image">
+      <strong>Large image</strong>
+      <span>{formatFileSize(message.imageSizeBytes) || 'Over 10 MB'}</span>
+      <button
+        type="button"
+        disabled={loading || !activeChatId}
+        onClick={async (event) => {
+          event.stopPropagation();
+          if (!activeChatId || loading) {
+            return;
+          }
+          setLoading(true);
+          setError(null);
+          try {
+            const resolved = await window.pelec.resolveConnectorImageUrl(
+              'telegram',
+              activeChatId,
+              message.id,
+            );
+            if (!resolved) {
+              throw new Error('Telegram did not return the image.');
+            }
+            setImageUrl(resolved);
+          } catch (resolveError) {
+            setError(resolveError instanceof Error ? resolveError.message : 'Image download failed.');
+          } finally {
+            setLoading(false);
+          }
+        }}
+      >
+        {loading ? 'Downloading…' : 'Download and view'}
+      </button>
+      {error ? <span className="telegram-deferred-image-error">{error}</span> : null}
+    </div>
+  );
+}
+
 const TelegramMessageRow = memo(
   ({
     activeChatId,
@@ -1240,7 +1321,9 @@ const TelegramMessageRow = memo(
   }) => {
     const { albumCaption, previousMessage, primaryMessage, renderMessages, shouldCollapseAlbum, showDayDivider } =
       bundle;
-    const messageTextValue = shouldCollapseAlbum ? albumCaption : safeText(primaryMessage.text);
+    const rawMessageTextValue = shouldCollapseAlbum ? albumCaption : safeText(primaryMessage.text);
+    const limitedMessageText = limitTelegramRenderedText(rawMessageTextValue);
+    const messageTextValue = limitedMessageText.text;
     const messageTextTrimmed = messageTextValue.trim();
     const messageTextLower = messageTextTrimmed.toLowerCase();
     const senderLabel = safeLabel(primaryMessage.sender, primaryMessage.outgoing ? 'You' : 'Unknown');
@@ -1381,6 +1464,12 @@ const TelegramMessageRow = memo(
                 ),
               )}
             </div>
+          ) : primaryMessage.imageDeferred ? (
+            <TelegramDeferredImage
+              activeChatId={activeChatId}
+              legacyApi={legacyApi}
+              message={primaryMessage}
+            />
           ) : primaryMessage.imageUrl ? (
             <img
               className="telegram-message-image"
@@ -1415,10 +1504,19 @@ const TelegramMessageRow = memo(
             <div className="telegram-message-text">
               {renderTelegramRichText(
                 messageTextTrimmed,
-                !shouldCollapseAlbum && messageTextTrimmed === safeText(primaryMessage.text).trim()
+                !limitedMessageText.truncated &&
+                  !shouldCollapseAlbum &&
+                  messageTextTrimmed === safeText(primaryMessage.text).trim()
                   ? primaryMessage.textEntities
                   : undefined,
               )}
+              {limitedMessageText.truncated ? (
+                <div className="telegram-message-truncated" role="note">
+                  Oversized message {primaryMessage.id}: showing{' '}
+                  {TELEGRAM_MAX_RENDERED_TEXT_LENGTH.toLocaleString()} of{' '}
+                  {limitedMessageText.originalLength.toLocaleString()} characters.
+                </div>
+              ) : null}
             </div>
           ) : null}
           {primaryMessage.reactions && primaryMessage.reactions.length > 0 ? (
@@ -1553,6 +1651,19 @@ export const TelegramMessageList = ({
       },
     };
   }, []);
+
+  useEffect(() => {
+    if (!loadError) {
+      return;
+    }
+    console.error('[telegram][conversation-load] Failed to load conversation messages', {
+      activeChatId,
+      activeChatTitle,
+      error: loadError,
+      messageCount: messages.length,
+      timestamp: new Date().toISOString(),
+    });
+  }, [activeChatId, activeChatTitle, loadError, messages.length]);
 
   useEffect(() => {
     return () => {
@@ -2014,7 +2125,15 @@ export const TelegramMessageList = ({
             </div>
           ) : null}
           {messagesLoading ? <div className="telegram-empty">Loading messages...</div> : null}
-          {!messagesLoading && loadError ? <div className="telegram-empty">{loadError}</div> : null}
+          {!messagesLoading && loadError ? (
+            <div className="telegram-empty telegram-load-error" role="alert">
+              <strong>Messages could not be loaded.</strong>
+              <span>{loadError}</span>
+              <small>
+                Chat: {activeChatTitle || 'Telegram chat'} ({activeChatId || 'unknown ID'})
+              </small>
+            </div>
+          ) : null}
           {!messagesLoading && !loadError && bundles.length < 1 ? (
             <div className="telegram-empty">No messages in {activeChatTitle || 'this chat'}.</div>
           ) : null}

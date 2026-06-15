@@ -141,6 +141,18 @@ export class ConnectorManager {
     return connector.resolveAudioUrl(chatId, messageId);
   }
 
+  async resolveImageUrl(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+  ): Promise<string | undefined> {
+    const connector = this.getConnector(network);
+    if (!connector.resolveImageUrl) {
+      return undefined;
+    }
+    return connector.resolveImageUrl(chatId, messageId);
+  }
+
   async resolveVideoUrl(
     network: NetworkId,
     chatId: string,

@@ -9,31 +9,40 @@ interface TelegramMessageRenderSignatureInput {
   shouldCollapseAlbum: boolean;
 }
 
-const serializeReactions = (message: ChatMessage): string =>
-  (message.reactions ?? [])
-    .map((reaction) => `${reaction.value}:${reaction.count}:${reaction.chosen ? '1' : '0'}`)
-    .join('|');
+const SIGNATURE_SAMPLE_SIZE = 2048;
 
-const serializePoll = (message: ChatMessage): string =>
-  !message.poll
-    ? ''
-    : [
-        message.poll.question,
-        message.poll.kind,
-        message.poll.totalVoterCount ?? '',
-        message.poll.isAnonymous ? '1' : '0',
-        message.poll.isClosed ? '1' : '0',
-        message.poll.allowsMultipleAnswers ? '1' : '0',
-        message.poll.correctOptionIndex ?? '',
-        message.poll.options
-          .map(
-            (option) =>
-              `${option.text}:${option.voterCount}:${option.votePercentage ?? ''}:${option.chosen ? '1' : '0'}`,
-          )
-          .join('|'),
-      ].join('::');
+const createSignatureHasher = () => {
+  let hashA = 0x811c9dc5;
+  let hashB = 0x9e3779b9;
+  let valueCount = 0;
 
-const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): string =>
+  const add = (value: unknown): void => {
+    const text = value === null || value === undefined ? '' : String(value);
+    valueCount += 1;
+    const sample =
+      text.length > SIGNATURE_SAMPLE_SIZE * 2
+        ? `${text.slice(0, SIGNATURE_SAMPLE_SIZE)}${text.slice(-SIGNATURE_SAMPLE_SIZE)}`
+        : text;
+    for (let index = 0; index < sample.length; index += 1) {
+      const code = sample.charCodeAt(index);
+      hashA = Math.imul(hashA ^ code, 0x01000193) >>> 0;
+      hashB = Math.imul(hashB ^ code, 0x85ebca6b) >>> 0;
+    }
+    hashA = Math.imul(hashA ^ 0xff, 0x01000193) >>> 0;
+    hashB = Math.imul(hashB ^ text.length, 0xc2b2ae35) >>> 0;
+  };
+
+  return {
+    add,
+    digest: (): string =>
+      `${hashA.toString(36)}-${hashB.toString(36)}-${valueCount.toString(36)}`,
+  };
+};
+
+const addMessageToSignature = (
+  add: (value: unknown) => void,
+  message: ChatMessage & { pendingState?: 'sending' },
+): void => {
   [
     message.id,
     message.mediaAlbumId ?? '',
@@ -47,6 +56,8 @@ const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): 
     message.replyToSender ?? '',
     message.replyToText ?? '',
     message.imageUrl ?? '',
+    message.imageSizeBytes ?? '',
+    message.imageDeferred ? '1' : '0',
     message.videoUrl ?? '',
     message.videoMimeType ?? '',
     message.animationUrl ?? '',
@@ -54,7 +65,6 @@ const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): 
     message.stickerUrl ?? '',
     message.stickerEmoji ?? '',
     message.stickerIsAnimated ? '1' : '0',
-    serializeReactions(message),
     message.hasAudio ? '1' : '0',
     message.hasVideo ? '1' : '0',
     message.audioUrl ?? '',
@@ -66,20 +76,30 @@ const serializeMessage = (message: ChatMessage & { pendingState?: 'sending' }): 
     message.call?.isVideo ? '1' : '0',
     message.call?.durationSeconds ?? '',
     message.call?.discardReason ?? '',
-    serializePoll(message),
     message.pendingState ?? '',
-  ].join('::');
+  ].forEach(add);
 
-const serializePreviousMessageContext = (message: ChatMessage | null): string => {
-  if (!message) {
-    return 'root';
+  for (const reaction of message.reactions ?? []) {
+    add(reaction.value);
+    add(reaction.count);
+    add(reaction.chosen ? '1' : '0');
   }
 
-  return [
-    message.sender,
-    message.outgoing ? '1' : '0',
-    hasValidTimestamp(message.timestamp) ? formatMessageDayLabel(message.timestamp) : '',
-  ].join('::');
+  if (message.poll) {
+    add(message.poll.question);
+    add(message.poll.kind);
+    add(message.poll.totalVoterCount ?? '');
+    add(message.poll.isAnonymous ? '1' : '0');
+    add(message.poll.isClosed ? '1' : '0');
+    add(message.poll.allowsMultipleAnswers ? '1' : '0');
+    add(message.poll.correctOptionIndex ?? '');
+    for (const option of message.poll.options) {
+      add(option.text);
+      add(option.voterCount);
+      add(option.votePercentage ?? '');
+      add(option.chosen ? '1' : '0');
+    }
+  }
 };
 
 export const getTelegramMessageRenderSignature = ({
@@ -88,11 +108,24 @@ export const getTelegramMessageRenderSignature = ({
   primaryMessage,
   renderMessages,
   shouldCollapseAlbum,
-}: TelegramMessageRenderSignatureInput): string =>
-  [
-    shouldCollapseAlbum ? 'album' : 'single',
-    albumCaption,
-    serializeMessage(primaryMessage),
-    serializePreviousMessageContext(previousMessage),
-    renderMessages.map((message) => serializeMessage(message)).join('||'),
-  ].join('###');
+}: TelegramMessageRenderSignatureInput): string => {
+  const hasher = createSignatureHasher();
+  hasher.add(shouldCollapseAlbum ? 'album' : 'single');
+  hasher.add(albumCaption);
+  addMessageToSignature(hasher.add, primaryMessage);
+  if (previousMessage) {
+    hasher.add(previousMessage.sender);
+    hasher.add(previousMessage.outgoing ? '1' : '0');
+    hasher.add(
+      hasValidTimestamp(previousMessage.timestamp)
+        ? formatMessageDayLabel(previousMessage.timestamp)
+        : '',
+    );
+  } else {
+    hasher.add('root');
+  }
+  for (const message of renderMessages) {
+    addMessageToSignature(hasher.add, message);
+  }
+  return hasher.digest();
+};

@@ -28,7 +28,6 @@ import {
   extractTelegramReactions,
 } from './telegram/messages';
 import {
-  localPathToDataUrl,
   resolveTdFilePath,
   resolveTdFileUrl,
   resolveTdPlayableFilePath,
@@ -39,6 +38,8 @@ import {
   extractTelegramAnimationSource,
   extractTelegramDocumentMetadata,
   extractTelegramImageDocumentSource,
+  getTelegramFileSizeBytes,
+  getTelegramImageFile,
   extractTelegramPhotoFiles,
   extractTelegramStickerEmoji,
   extractTelegramStickerSource,
@@ -618,7 +619,15 @@ export class TelegramConnector implements Connector {
             replyToText: replyContext?.text,
             hasAudio: hasTelegramVoiceNote(message.content),
             hasVideo: hasTelegramVideo(message.content),
-            imageUrl: await this.extractImageUrl(client, message.content),
+            imageUrl:
+              (getTelegramFileSizeBytes(getTelegramImageFile(message.content)) ?? 0) >
+              10 * 1024 * 1024
+                ? undefined
+                : await this.extractImageUrl(client, message.content),
+            imageSizeBytes: getTelegramFileSizeBytes(getTelegramImageFile(message.content)),
+            imageDeferred:
+              (getTelegramFileSizeBytes(getTelegramImageFile(message.content)) ?? 0) >
+              10 * 1024 * 1024,
             videoMimeType: extractTelegramVideoMimeType(message.content),
             animationUrl: await this.extractAnimationUrl(client, message.content),
             animationMimeType: extractTelegramAnimationMimeType(message.content),
@@ -1018,6 +1027,26 @@ export class TelegramConnector implements Connector {
         message_id: tdMessageId,
       })) as { content?: unknown };
       return this.extractVoiceNoteUrl(this.tdClient, message.content);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async resolveImageUrl(chatId: string, messageId: string): Promise<string | undefined> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return undefined;
+    }
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return undefined;
+    }
+    try {
+      const message = (await this.tdClient.invoke({
+        _: 'getMessage',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+      })) as { content?: unknown };
+      return this.extractImageUrl(this.tdClient, message.content);
     } catch {
       return undefined;
     }
@@ -1633,14 +1662,13 @@ export class TelegramConnector implements Connector {
   private async extractImageUrl(client: TdClient, content: unknown): Promise<string | undefined> {
     const imageDocument = extractTelegramImageDocumentSource(content);
     if (imageDocument) {
-      return resolveTdFileUrl({
+      const localPath = await resolveTdFilePath({
         client,
         file: imageDocument.file,
-        preferredMimeType: imageDocument.mimeType,
         invokeWithTimeout: this.invokeWithTimeout.bind(this),
         downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
-        mediaDataUrlCache: this.mediaDataUrlCache,
       });
+      return localPath ? buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME) : undefined;
     }
 
     const photos = extractTelegramPhotoFiles(content);
@@ -1651,7 +1679,7 @@ export class TelegramConnector implements Connector {
     for (let i = photos.length - 1; i >= 0; i -= 1) {
       const localPath = photos[i]?.local?.path?.trim();
       if (localPath) {
-        return localPathToDataUrl(localPath, this.mediaDataUrlCache);
+        return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
       }
     }
 
@@ -1664,7 +1692,7 @@ export class TelegramConnector implements Connector {
     if (!localPath) {
       return undefined;
     }
-    return localPathToDataUrl(localPath, this.mediaDataUrlCache);
+    return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
   }
 
   private async extractStickerUrl(

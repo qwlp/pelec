@@ -52,6 +52,13 @@ const api = {
       chatId,
       messageId,
     ) as Promise<string | undefined>,
+  resolveConnectorImageUrl: (network: NetworkId, chatId: string, messageId: string) =>
+    ipcRenderer.invoke(
+      'connector:resolve-image-url',
+      network,
+      chatId,
+      messageId,
+    ) as Promise<string | undefined>,
   resolveConnectorVideoUrl: (network: NetworkId, chatId: string, messageId: string) =>
     ipcRenderer.invoke(
       'connector:resolve-video-url',

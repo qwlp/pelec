@@ -203,6 +203,13 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:resolve-image-url',
+    async (_event, network: NetworkId, chatId: string, messageId: string) => {
+      return getConnectorManager()?.resolveImageUrl(network, chatId, messageId);
+    },
+  );
+
+  ipcMain.handle(
     'connector:resolve-video-url',
     async (_event, network: NetworkId, chatId: string, messageId: string) => {
       return getConnectorManager()?.resolveVideoUrl(network, chatId, messageId);

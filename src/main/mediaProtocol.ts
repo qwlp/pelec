@@ -6,6 +6,15 @@ import { PELEC_MEDIA_SCHEME } from './config';
 const mediaContentTypeForPath = (localPath: string): string => {
   const ext = localPath.slice(localPath.lastIndexOf('.')).toLowerCase();
   switch (ext) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.png':
+      return 'image/png';
+    case '.webp':
+      return 'image/webp';
+    case '.gif':
+      return 'image/gif';
     case '.mp4':
       return 'video/mp4';
     case '.mov':

@@ -6,6 +6,7 @@ import { applyUserTheme } from '../lib/theme';
 import type { CommandPaletteItem } from '../features/commandPalette/CommandPalette';
 import { TelegramChatList } from '../features/telegram/TelegramChatList';
 import { TelegramComposer, type TelegramMentionSuggestion } from '../features/telegram/TelegramComposer';
+import { TelegramConversationErrorBoundary } from '../features/telegram/TelegramConversationErrorBoundary';
 import { TelegramMessageList } from '../features/telegram/TelegramMessageList';
 import { loadRendererBootstrapData } from '../services/connectors';
 import { beginMeasure } from '../services/performance';
@@ -399,6 +400,13 @@ export const AppShell = () => {
   });
 
   const handleTelegramChatSelect = useEffectEvent((chatId: string) => {
+    const selectedChat = telegramSnapshot?.filteredChats.find((chat) => chat.id === chatId);
+    console.info('[telegram][conversation-open] Opening conversation', {
+      chatId,
+      chatTitle: selectedChat?.title ?? 'Unknown chat',
+      previousChatId: telegramSnapshot?.activeChatId ?? null,
+      timestamp: new Date().toISOString(),
+    });
     if (telegramCompactLayout) {
       setTelegramCompactView('messages');
     }
@@ -617,25 +625,33 @@ export const AppShell = () => {
           />
         ) : null}
         {state.appShell.activeNetwork === 'telegram' && telegramSnapshot && !telegramCompactShowChats ? (
-          <TelegramMessageList
+          <TelegramConversationErrorBoundary
             activeChatId={telegramSnapshot.activeChatId}
             activeChatTitle={telegramSnapshot.activeChatTitle}
-            canDropFiles={telegramSnapshot.activeChatCanSend}
-            hasOlderMessages={telegramSnapshot.hasOlderMessages}
-            legacyApi={legacyApi}
-            loadError={telegramSnapshot.messageLoadError}
-            loadingOlderMessages={telegramSnapshot.loadingOlderMessages}
-            messages={telegramSnapshot.messages}
-            messagesLoading={telegramSnapshot.messagesLoading}
-            messageTextSelectable={state.config.userConfig?.telegram.selectableMessageText ?? false}
+            messageIds={telegramSnapshot.messages.map((message) => message.id)}
             onBackToChats={telegramCompactShowMessages ? () => handleTelegramBackToChats() : undefined}
-            selectedMessageId={
-              state.appShell.activePane === 'telegram-messages'
-                ? telegramSnapshot.selectedMessageId
-                : null
-            }
             target={telegramMessageTarget}
-          />
+          >
+            <TelegramMessageList
+              activeChatId={telegramSnapshot.activeChatId}
+              activeChatTitle={telegramSnapshot.activeChatTitle}
+              canDropFiles={telegramSnapshot.activeChatCanSend}
+              hasOlderMessages={telegramSnapshot.hasOlderMessages}
+              legacyApi={legacyApi}
+              loadError={telegramSnapshot.messageLoadError}
+              loadingOlderMessages={telegramSnapshot.loadingOlderMessages}
+              messages={telegramSnapshot.messages}
+              messagesLoading={telegramSnapshot.messagesLoading}
+              messageTextSelectable={state.config.userConfig?.telegram.selectableMessageText ?? false}
+              onBackToChats={telegramCompactShowMessages ? () => handleTelegramBackToChats() : undefined}
+              selectedMessageId={
+                state.appShell.activePane === 'telegram-messages'
+                  ? telegramSnapshot.selectedMessageId
+                  : null
+              }
+              target={telegramMessageTarget}
+            />
+          </TelegramConversationErrorBoundary>
         ) : null}
         {showTelegramComposer ? (
           <TelegramComposer

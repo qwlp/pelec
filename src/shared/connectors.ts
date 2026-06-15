@@ -165,6 +165,8 @@ export interface ChatMessage {
   hasAudio?: boolean;
   hasVideo?: boolean;
   imageUrl?: string;
+  imageSizeBytes?: number;
+  imageDeferred?: boolean;
   videoUrl?: string;
   videoMimeType?: string;
   animationUrl?: string;
@@ -217,6 +219,7 @@ export interface Connector {
   listMessages?(chatId: string, options?: ListMessagesOptions): Promise<ChatMessage[]>;
   markChatRead?(chatId: string, messageIds?: string[]): Promise<void>;
   resolveAudioUrl?(chatId: string, messageId: string): Promise<string | undefined>;
+  resolveImageUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveVideoUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;
   answerPoll?(chatId: string, messageId: string, optionIds: number[]): Promise<boolean>;

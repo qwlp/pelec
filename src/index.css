@@ -2495,6 +2495,56 @@ textarea {
   padding: 12px;
 }
 
+.telegram-load-error,
+.telegram-conversation-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 24px;
+  padding: 16px;
+  border: 1px solid rgba(255, 107, 107, 0.45);
+  border-radius: 10px;
+  background: rgba(80, 20, 24, 0.92);
+  color: #ffe9e9;
+  white-space: normal;
+}
+
+.telegram-conversation-error code {
+  overflow-wrap: anywhere;
+  color: #ffc9c9;
+}
+
+.telegram-conversation-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.telegram-message-truncated {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.telegram-deferred-image {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 220px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.telegram-deferred-image-error {
+  color: #ff9f9f;
+  font-size: 0.8rem;
+}
+
 .telegram-composer {
   border-top: 1px solid var(--line-soft);
   display: grid;

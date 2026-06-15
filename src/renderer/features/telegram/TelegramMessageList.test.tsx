@@ -22,6 +22,7 @@ describe('TelegramMessageList', () => {
     window.pelec = {
       answerConnectorPoll: vi.fn(),
       resolveConnectorAudioUrl: vi.fn(),
+      resolveConnectorImageUrl: vi.fn(),
       resolveConnectorVideoUrl: vi.fn(),
       copyConnectorDocument: vi.fn(),
       downloadConnectorDocument: vi.fn(),
@@ -120,6 +121,75 @@ describe('TelegramMessageList', () => {
     fireEvent.click(message as HTMLElement);
 
     expect(legacyApi.selectTelegramMessage).toHaveBeenCalledWith('1');
+  });
+
+  it('truncates pathological message text instead of blocking the renderer', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="group-42"
+        activeChatTitle="Operations"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'oversized-message',
+            sender: 'Ada',
+            text: 'x'.repeat(100_000),
+            timestamp: 100,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(target.querySelector('.telegram-message-text')?.textContent?.length).toBeLessThan(6_000);
+    expect(target.querySelector('.telegram-message-truncated')).toHaveTextContent(
+      'Oversized message oversized-message',
+    );
+  });
+
+  it('downloads oversized images only after the user requests them', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const resolveImage = window.pelec.resolveConnectorImageUrl as ReturnType<typeof vi.fn>;
+    resolveImage.mockResolvedValue('pelec-media://local/large-image');
+
+    render(
+      <TelegramMessageList
+        activeChatId="group-42"
+        activeChatTitle="Operations"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'large-image',
+            sender: 'Ada',
+            text: 'Photo',
+            timestamp: 100,
+            imageDeferred: true,
+            imageSizeBytes: 12 * 1024 * 1024,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(resolveImage).not.toHaveBeenCalled();
+    fireEvent.click(target.querySelector('.telegram-deferred-image button') as HTMLButtonElement);
+    await waitFor(() => {
+      expect(resolveImage).toHaveBeenCalledWith('telegram', 'group-42', 'large-image');
+      expect(target.querySelector('img.telegram-message-image')).toHaveAttribute(
+        'src',
+        'pelec-media://local/large-image',
+      );
+    });
   });
 
   it('automatically copies selected message text without selecting the message', async () => {
