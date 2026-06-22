@@ -37,6 +37,7 @@ describe('appReducer', () => {
         visible: false,
       },
       hasOlderMessages: false,
+      imagePreviewMeta: null,
       imagePreviewUrl: null,
       loadError: null,
       loadingOlderMessages: false,

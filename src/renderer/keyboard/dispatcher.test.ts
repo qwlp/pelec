@@ -18,6 +18,7 @@ const buildContext = () => {
     closeTelegramImagePreview: vi.fn(),
     closeQrAuth: vi.fn(),
     copyTelegramMessage: vi.fn(),
+    copyTelegramMessageImage: vi.fn(),
     copyTelegramImagePreview: vi.fn(),
     deleteSelection: vi.fn(),
     downloadTelegramImagePreview: vi.fn(),

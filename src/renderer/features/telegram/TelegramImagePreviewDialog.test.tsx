@@ -38,4 +38,29 @@ describe('TelegramImagePreviewDialog', () => {
     expect(onDownload).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('rotates the preview with buttons and the r key', () => {
+    const view = render(
+      <TelegramImagePreviewDialog
+        imageUrl="data:image/png;base64,abc"
+        onClose={vi.fn()}
+        onCopy={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+    const image = view.getByAltText('Telegram image preview');
+
+    fireEvent.click(view.getByText('Rotate Right'));
+    expect(image.getAttribute('style')).toBe(
+      'transform: translate(0px, 0px) rotate(90deg) scale(1);',
+    );
+
+    fireEvent.click(view.getByText('Rotate Left'));
+    expect(image.getAttribute('style')).toBe('');
+
+    fireEvent.keyDown(window, { key: 'r' });
+    expect(image.getAttribute('style')).toBe(
+      'transform: translate(0px, 0px) rotate(90deg) scale(1);',
+    );
+  });
 });

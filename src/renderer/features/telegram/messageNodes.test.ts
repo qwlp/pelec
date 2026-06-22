@@ -18,11 +18,13 @@ describe('telegram message node helpers', () => {
     cleanupDom = undefined;
   });
 
-  it('renders document actions and wires copy/save handlers', () => {
+  it('renders document actions and wires open/copy/save handlers', () => {
+    const openTelegramDocument = vi.fn(async () => undefined);
     const copyTelegramDocument = vi.fn(async () => undefined);
     const downloadTelegramDocument = vi.fn(async () => undefined);
     const card = createTelegramDocumentCard({
       chatId: 'chat-1',
+      openTelegramDocument,
       copyTelegramDocument,
       downloadTelegramDocument,
       formatTelegramDocumentKind: () => 'PDF',
@@ -40,8 +42,10 @@ describe('telegram message node helpers', () => {
     const buttons = card.querySelectorAll('button');
     (buttons[0] as HTMLButtonElement).click();
     (buttons[1] as HTMLButtonElement).click();
+    (buttons[2] as HTMLButtonElement).click();
 
     expect(card.querySelector('.telegram-message-document-title')?.textContent).toBe('report.pdf');
+    expect(openTelegramDocument).toHaveBeenCalledTimes(1);
     expect(copyTelegramDocument).toHaveBeenCalledTimes(1);
     expect(downloadTelegramDocument).toHaveBeenCalledTimes(1);
   });

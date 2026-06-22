@@ -23,6 +23,11 @@ interface TelegramDocumentCardDeps {
     message: RenderableTelegramMessage,
     button: HTMLButtonElement,
   ) => Promise<void>;
+  openTelegramDocument: (
+    chatId: string,
+    message: RenderableTelegramMessage,
+    button: HTMLButtonElement,
+  ) => Promise<void>;
   formatTelegramDocumentKind: (fileName: string, mimeType?: string) => string;
   formatTelegramDocumentSubtitle: (
     fileName: string,
@@ -191,6 +196,7 @@ export const createTelegramDocumentCard = ({
   chatId,
   copyTelegramDocument,
   downloadTelegramDocument,
+  openTelegramDocument,
   formatTelegramDocumentKind,
   formatTelegramDocumentSubtitle,
   message,
@@ -229,6 +235,19 @@ export const createTelegramDocumentCard = ({
   info.replaceChildren(name, documentMeta);
   const actions = document.createElement('div');
   actions.className = 'telegram-message-document-actions';
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'telegram-message-document-action';
+  openButton.textContent = 'Open';
+  openButton.setAttribute('aria-label', `Open ${fileName}`);
+  openButton.title = `Open ${fileName}`;
+  openButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!chatId) {
+      return;
+    }
+    void openTelegramDocument(chatId, message, openButton);
+  });
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
   copyButton.className = 'telegram-message-document-action';
@@ -255,7 +274,7 @@ export const createTelegramDocumentCard = ({
     }
     void downloadTelegramDocument(chatId, message, downloadButton);
   });
-  actions.replaceChildren(copyButton, downloadButton);
+  actions.replaceChildren(openButton, copyButton, downloadButton);
   main.replaceChildren(icon, info);
   documentCard.replaceChildren(main, actions);
   return documentCard;

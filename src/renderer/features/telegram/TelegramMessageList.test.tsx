@@ -25,7 +25,9 @@ describe('TelegramMessageList', () => {
       resolveConnectorImageUrl: vi.fn(),
       resolveConnectorVideoUrl: vi.fn(),
       copyConnectorDocument: vi.fn(),
+      copyTextToClipboard: vi.fn().mockResolvedValue(true),
       downloadConnectorDocument: vi.fn(),
+      openConnectorDocument: vi.fn(),
       openPath: vi.fn(),
     } as unknown as typeof window.pelec;
     Object.defineProperty(window.navigator, 'clipboard', {
@@ -241,7 +243,7 @@ describe('TelegramMessageList', () => {
     fireEvent.mouseUp(messageText as HTMLElement);
 
     await waitFor(() => {
-      expect(window.navigator.clipboard.writeText).toHaveBeenCalledWith('copy this part');
+      expect(window.pelec.copyTextToClipboard).toHaveBeenCalledWith('copy this part');
     });
 
     const clipboardData = {
@@ -253,10 +255,6 @@ describe('TelegramMessageList', () => {
       value: clipboardData,
     });
     target.dispatchEvent(copyEvent);
-    fireEvent.keyDown(document, {
-      ctrlKey: true,
-      key: 'c',
-    });
 
     const contextMenuEvent = new MouseEvent('contextmenu', {
       bubbles: true,
@@ -1296,6 +1294,99 @@ describe('TelegramMessageList', () => {
       inline: 'nearest',
     });
     expect(scrollContainer.scrollTop).toBe(600);
+  });
+
+  it('does not auto-scroll when a new message arrives while reading older messages', async () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+
+    let scrollHeight = 600;
+    Object.defineProperty(scrollContainer, 'clientHeight', {
+      configurable: true,
+      value: 200,
+    });
+    Object.defineProperty(scrollContainer, 'scrollHeight', {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 0,
+    });
+
+    const { rerender } = render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: '1',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 1,
+          },
+          {
+            id: '2',
+            sender: 'Linus',
+            text: 'Latest',
+            timestamp: 2,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(scrollContainer.scrollTop).toBe(600);
+    });
+
+    scrollContainer.scrollTop = 100;
+    fireEvent.scroll(scrollContainer);
+    scrollHeight = 760;
+
+    rerender(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: '1',
+            sender: 'Ada',
+            text: 'Hello',
+            timestamp: 1,
+          },
+          {
+            id: '2',
+            sender: 'Linus',
+            text: 'Latest',
+            timestamp: 2,
+          },
+          {
+            id: '3',
+            sender: 'Grace',
+            text: 'New message',
+            timestamp: 3,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(scrollContainer.scrollTop).toBe(100);
   });
 
   it('loads older messages at the top and preserves scroll position after prepending history', async () => {

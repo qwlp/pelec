@@ -69,6 +69,7 @@ export type TdChat = {
   permissions?: TdChatPermissions;
   unread_count?: number;
   last_message?: {
+    id?: number | string | bigint;
     content?: unknown;
     is_outgoing?: boolean;
     date?: number;

@@ -152,6 +152,53 @@ export const extractTelegramVideoFile = (content: unknown): TdFileRef | undefine
   return undefined;
 };
 
+export const extractTelegramVideoThumbnailFile = (content: unknown): TdFileRef | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    video?: { thumbnail?: { file?: TdFileRef } };
+    video_note?: { thumbnail?: { file?: TdFileRef } };
+  };
+
+  if (container._ === 'messageVideo') {
+    return container.video?.thumbnail?.file;
+  }
+  if (container._ === 'messageVideoNote') {
+    return container.video_note?.thumbnail?.file;
+  }
+  return undefined;
+};
+
+export const extractTelegramVideoDimensions = (
+  content: unknown,
+): { width: number; height: number } | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    video?: { width?: number; height?: number };
+  };
+
+  if (container._ === 'messageVideoNote') {
+    return { width: 1, height: 1 };
+  }
+  if (container._ !== 'messageVideo') {
+    return undefined;
+  }
+
+  const width = Math.floor(Number(container.video?.width ?? 0));
+  const height = Math.floor(Number(container.video?.height ?? 0));
+  if (width < 1 || height < 1) {
+    return undefined;
+  }
+  return { width, height };
+};
+
 export const extractTelegramVoiceNoteFile = (content: unknown): TdFileRef | undefined => {
   if (!content || typeof content !== 'object') {
     return undefined;

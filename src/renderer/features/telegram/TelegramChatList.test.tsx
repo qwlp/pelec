@@ -213,6 +213,34 @@ describe('TelegramChatList', () => {
     expect(view.container.querySelector('.telegram-chat-unread-badge')).toBeNull();
   });
 
+  it('renders outgoing read receipts when the latest message is from me', () => {
+    const view = render(
+      <TelegramChatList
+        activeChatId="chat-1"
+        chats={[
+          {
+            id: 'chat-1',
+            title: 'Ops',
+            lastMessagePreview: 'Deploy done',
+            lastMessageOutgoing: true,
+            lastMessageReadByPeer: true,
+            unreadCount: 0,
+            avatarUrl: undefined,
+          },
+        ]}
+        loadError={null}
+        loading={false}
+        onSearchQueryChange={() => undefined}
+        onSelectChat={() => undefined}
+        searchQuery=""
+        selectedChatId="chat-1"
+      />,
+    );
+
+    expect(view.container.querySelector('.telegram-chat-receipt.read')?.getAttribute('title')).toBe('Read');
+    expect(view.container.querySelector('.telegram-chat-tick.double')?.textContent).toBe('✓✓');
+  });
+
   it('renders a settings panel next to search and triggers its actions', async () => {
     const onClearCache = vi.fn(async () => undefined);
     const onClearSearch = vi.fn();

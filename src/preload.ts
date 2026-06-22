@@ -25,6 +25,8 @@ const api = {
   getAppCacheSize: () => ipcRenderer.invoke('app:get-cache-size') as Promise<number>,
   copyImageToClipboard: (dataUrl: string) =>
     ipcRenderer.invoke('app:copy-image', dataUrl) as Promise<boolean>,
+  copyTextToClipboard: (text: string) =>
+    ipcRenderer.invoke('app:copy-text', text) as Promise<boolean>,
   getConnectorStatuses: () =>
     ipcRenderer.invoke('connector:get-statuses') as Promise<ConnectorStatus[]>,
   getConnectorProfile: (network: NetworkId) =>
@@ -75,6 +77,8 @@ const api = {
     ) as Promise<string | undefined>,
   copyConnectorDocument: (network: NetworkId, chatId: string, messageId: string) =>
     ipcRenderer.invoke('connector:copy-document', network, chatId, messageId) as Promise<boolean>,
+  openConnectorDocument: (network: NetworkId, chatId: string, messageId: string) =>
+    ipcRenderer.invoke('connector:open-document', network, chatId, messageId) as Promise<boolean>,
   answerConnectorPoll: (
     network: NetworkId,
     chatId: string,

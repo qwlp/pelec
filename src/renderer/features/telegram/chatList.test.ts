@@ -25,11 +25,16 @@ describe('telegram chat list helpers', () => {
       unreadCount: 2,
       avatarUrl: 'https://example.com/a.png',
       isMuted: false,
+      lastMessageOutgoing: true,
+      lastMessageReadByPeer: true,
     };
 
     expect(getTelegramChatRenderSignature(chat)).toContain('Ops');
     expect(getTelegramChatRenderSignature(chat)).toContain('Ada');
     expect(getTelegramChatRenderSignature({ ...chat, unreadCount: 3 })).not.toBe(
+      getTelegramChatRenderSignature(chat),
+    );
+    expect(getTelegramChatRenderSignature({ ...chat, lastMessageReadByPeer: false })).not.toBe(
       getTelegramChatRenderSignature(chat),
     );
   });
@@ -99,5 +104,69 @@ describe('telegram chat list helpers', () => {
 
     expect(row.querySelector('.telegram-chat-read-dot')).toBeNull();
     expect(row.querySelector('.telegram-chat-unread-badge')).toBeNull();
+  });
+
+  it('renders a sent receipt for the latest outgoing unread-by-peer message', () => {
+    const row = createTelegramChatListItem(
+      {
+        id: '1',
+        title: 'Ops',
+        lastMessagePreview: 'hello',
+        lastMessageTimestamp: 123,
+        lastMessageOutgoing: true,
+        lastMessageReadByPeer: false,
+        unreadCount: 0,
+        avatarUrl: undefined,
+      },
+      {
+        createAvatarNode: (label) => {
+          const node = document.createElement('div');
+          node.textContent = label;
+          return node;
+        },
+        formatChatTimestamp: () => '10:00',
+        formatFullDateTime: () => 'yesterday',
+        formatTelegramUnreadBadge: (count) => String(count),
+        hasValidTimestamp: () => true,
+        onClick: vi.fn(),
+        safeLabel: (value, fallback) => value ?? fallback,
+        safeText: (value) => value ?? '',
+      },
+    );
+
+    expect(row.querySelector('.telegram-chat-receipt.sent')?.getAttribute('title')).toBe('Sent');
+    expect(row.querySelector('.telegram-chat-tick')?.textContent).toBe('✓');
+  });
+
+  it('renders a read receipt for the latest outgoing read-by-peer message', () => {
+    const row = createTelegramChatListItem(
+      {
+        id: '1',
+        title: 'Ops',
+        lastMessagePreview: 'hello',
+        lastMessageTimestamp: 123,
+        lastMessageOutgoing: true,
+        lastMessageReadByPeer: true,
+        unreadCount: 0,
+        avatarUrl: undefined,
+      },
+      {
+        createAvatarNode: (label) => {
+          const node = document.createElement('div');
+          node.textContent = label;
+          return node;
+        },
+        formatChatTimestamp: () => '10:00',
+        formatFullDateTime: () => 'yesterday',
+        formatTelegramUnreadBadge: (count) => String(count),
+        hasValidTimestamp: () => true,
+        onClick: vi.fn(),
+        safeLabel: (value, fallback) => value ?? fallback,
+        safeText: (value) => value ?? '',
+      },
+    );
+
+    expect(row.querySelector('.telegram-chat-receipt.read')?.getAttribute('title')).toBe('Read');
+    expect(row.querySelector('.telegram-chat-tick.double')?.textContent).toBe('✓✓');
   });
 });

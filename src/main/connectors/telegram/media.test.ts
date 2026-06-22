@@ -8,8 +8,10 @@ import {
   extractTelegramPhotoFiles,
   extractTelegramStickerEmoji,
   extractTelegramStickerSource,
+  extractTelegramVideoDimensions,
   extractTelegramVideoFile,
   extractTelegramVideoMimeType,
+  extractTelegramVideoThumbnailFile,
   extractTelegramVoiceDurationSeconds,
   extractTelegramVoiceNoteFile,
   getTelegramDocument,
@@ -103,6 +105,32 @@ describe('telegram media helpers', () => {
         video_note: { video: { id: 6 } },
       }),
     ).toEqual({ id: 6 });
+
+    expect(
+      extractTelegramVideoThumbnailFile({
+        _: 'messageVideo',
+        video: { video: { id: 6 }, thumbnail: { file: { id: 7 } } },
+      }),
+    ).toEqual({ id: 7 });
+
+    expect(
+      extractTelegramVideoThumbnailFile({
+        _: 'messageVideoNote',
+        video_note: { video: { id: 8 }, thumbnail: { file: { id: 9 } } },
+      }),
+    ).toEqual({ id: 9 });
+
+    expect(
+      extractTelegramVideoDimensions({
+        _: 'messageVideo',
+        video: { width: 720, height: 1280 },
+      }),
+    ).toEqual({ width: 720, height: 1280 });
+
+    expect(extractTelegramVideoDimensions({ _: 'messageVideoNote' })).toEqual({
+      width: 1,
+      height: 1,
+    });
 
     expect(
       extractTelegramVoiceNoteFile({

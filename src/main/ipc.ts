@@ -7,6 +7,7 @@ import {
   shell,
   type BrowserWindow,
 } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import type {
   AuthSubmission,
@@ -18,8 +19,10 @@ import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from '../s
 import type { ConnectorManager } from './connectors/connectorManager';
 import {
   copyResolvedDocumentToClipboard,
+  openResolvedDocumentInDefaultApp,
   saveResolvedDocumentToDownloads,
 } from './documents';
+import { PELEC_MEDIA_SCHEME } from './config';
 import { showLinuxNotification } from './platform';
 
 type IpcRegistrationContext = {
@@ -27,6 +30,35 @@ type IpcRegistrationContext = {
   getConnectorManager: () => ConnectorManager | null;
   getMainWindow: () => BrowserWindow | null;
   emitAppActivity: (activity: AppActivity) => void;
+};
+
+const createClipboardImageFromSource = (source: string): Electron.NativeImage | null => {
+  const value = source.trim();
+  if (!value) {
+    return null;
+  }
+
+  if (value.startsWith('data:image/')) {
+    const image = nativeImage.createFromDataURL(value);
+    return image.isEmpty() ? null : image;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.protocol !== `${PELEC_MEDIA_SCHEME}:`) {
+      return null;
+    }
+
+    const localPath = url.searchParams.get('path')?.trim();
+    if (!localPath || !fs.existsSync(localPath) || !fs.statSync(localPath).isFile()) {
+      return null;
+    }
+
+    const image = nativeImage.createFromPath(localPath);
+    return image.isEmpty() ? null : image;
+  } catch {
+    return null;
+  }
 };
 
 export const registerIpcHandlers = ({
@@ -369,6 +401,48 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:open-document',
+    async (_event, network: NetworkId, chatId: string, messageId: string) => {
+      const connectorManager = getConnectorManager();
+      if (!connectorManager) {
+        return false;
+      }
+
+      const activityId = `document-open:${network}:${chatId}:${messageId}:${Date.now()}`;
+      emitAppActivity({
+        id: activityId,
+        label: 'Preparing document',
+        detail: 'Resolving the document file…',
+        indeterminate: true,
+        state: 'running',
+      });
+
+      const document = await connectorManager.resolveDocument(network, chatId, messageId);
+      if (!document) {
+        emitAppActivity({
+          id: activityId,
+          label: 'Open failed',
+          detail: 'Telegram did not return a document file.',
+          state: 'error',
+        });
+        return false;
+      }
+
+      const opened = await openResolvedDocumentInDefaultApp(document);
+      emitAppActivity({
+        id: activityId,
+        label: opened ? `Opened ${document.fileName}` : 'Open failed',
+        detail: opened
+          ? 'Opened in the default system app.'
+          : `Could not open ${document.fileName}.`,
+        progress: opened ? 1 : undefined,
+        state: opened ? 'success' : 'error',
+      });
+      return opened;
+    },
+  );
+
+  ipcMain.handle(
     'connector:send-message',
     async (
       _event,
@@ -479,18 +553,26 @@ export const registerIpcHandlers = ({
     }
   });
 
-  ipcMain.handle('app:copy-image', async (_event, dataUrl: string): Promise<boolean> => {
-    const value = dataUrl.trim();
-    if (!value.startsWith('data:image/')) {
+  ipcMain.handle('app:copy-image', async (_event, source: string): Promise<boolean> => {
+    try {
+      const image = createClipboardImageFromSource(source);
+      if (!image) {
+        return false;
+      }
+      clipboard.writeImage(image);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  ipcMain.handle('app:copy-text', async (_event, text: string): Promise<boolean> => {
+    if (typeof text !== 'string' || !text) {
       return false;
     }
 
     try {
-      const image = nativeImage.createFromDataURL(value);
-      if (image.isEmpty()) {
-        return false;
-      }
-      clipboard.writeImage(image);
+      clipboard.writeText(text);
       return true;
     } catch {
       return false;

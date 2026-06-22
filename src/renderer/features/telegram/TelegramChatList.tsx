@@ -645,6 +645,18 @@ export const TelegramChatList = ({
                   <div className="telegram-chat-status">
                     {unreadCount > 0 ? (
                       <span className="telegram-chat-unread-badge">{formatUnreadBadge(unreadCount)}</span>
+                    ) : chat.lastMessageOutgoing ? (
+                      <span
+                        className={`telegram-chat-receipt ${chat.lastMessageReadByPeer ? 'read' : 'sent'}`}
+                        title={chat.lastMessageReadByPeer ? 'Read' : 'Sent'}
+                      >
+                        <span
+                          className={`telegram-chat-tick${chat.lastMessageReadByPeer ? ' double' : ''}`}
+                          aria-label={chat.lastMessageReadByPeer ? 'Read' : 'Sent'}
+                        >
+                          {chat.lastMessageReadByPeer ? '✓✓' : '✓'}
+                        </span>
+                      </span>
                     ) : null}
                   </div>
                 </div>

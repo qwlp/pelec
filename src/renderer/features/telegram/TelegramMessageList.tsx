@@ -197,6 +197,8 @@ const TELEGRAM_AUTO_SCROLL_GRACE_MS = 900;
 
 const TELEGRAM_JUMP_LATEST_OFFSET_PX = 16;
 
+const TELEGRAM_LATEST_PROXIMITY_PX = 120;
+
 const getTelegramMessageScrollContainer = (target: HTMLElement | null): HTMLElement | null => {
   if (!target) {
     return null;
@@ -218,6 +220,9 @@ const getLastTelegramMessageElement = (target: HTMLElement | null): HTMLElement 
   const messages = target.querySelectorAll<HTMLElement>('[data-message-id]');
   return messages.item(messages.length - 1) ?? null;
 };
+
+const getTelegramMessageDistanceFromBottom = (scrollContainer: HTMLElement): number =>
+  scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
 
 const hasSelectionInsideElement = (element: HTMLElement): boolean => {
   const selection = window.getSelection();
@@ -251,34 +256,37 @@ const getSelectedTextInsideElement = (element: HTMLElement): string => {
   return '';
 };
 
-const isSelectableMessageTextTarget = (target: EventTarget | null): boolean =>
-  target instanceof HTMLElement &&
-  !!target.closest(
-    '.telegram-message-item.selectable-text .telegram-message-text, .telegram-message-item.selectable-text .telegram-message-forwarded, .telegram-message-item.selectable-text .telegram-message-reply-text',
-  );
+const copySelectedTextInsideElement = async (element: HTMLElement): Promise<boolean> => {
+  const selectedText = getSelectedTextInsideElement(element).trim();
+  if (!selectedText) {
+    return false;
+  }
 
-const writeSelectedTelegramTextToClipboard = async (value: string): Promise<boolean> => {
   try {
-    if (window.navigator.clipboard?.writeText) {
-      await window.navigator.clipboard.writeText(value);
+    if (await window.pelec.copyTextToClipboard(selectedText)) {
       return true;
     }
   } catch {
-    // Fall back to execCommand below.
+    // Fall through to the browser clipboard API for test and browser-like contexts.
   }
 
-  const helper = document.createElement('textarea');
-  helper.value = value;
-  helper.setAttribute('readonly', 'true');
-  helper.style.position = 'fixed';
-  helper.style.opacity = '0';
-  helper.style.pointerEvents = 'none';
-  document.body.append(helper);
-  helper.select();
-  const copied = document.execCommand('copy');
-  helper.remove();
-  return copied;
+  if (!window.navigator?.clipboard?.writeText) {
+    return false;
+  }
+
+  try {
+    await window.navigator.clipboard.writeText(selectedText);
+    return true;
+  } catch {
+    return false;
+  }
 };
+
+const isSelectableMessageTextTarget = (target: EventTarget | null): boolean =>
+  target instanceof HTMLElement &&
+  !!target.closest(
+    '.telegram-message-text, .telegram-message-forwarded, .telegram-message-reply-text',
+  );
 
 const TelegramResolvedVideo = ({
   activeChatId,
@@ -308,6 +316,10 @@ const TelegramResolvedVideo = ({
     variant === 'album' ? 'telegram-message-album-video-shell' : 'telegram-message-video-shell';
   const videoClassName = variant === 'album' ? 'telegram-message-album-video' : 'telegram-message-video';
   const label = 'Telegram video';
+  const videoAspectRatio =
+    message.videoWidth && message.videoHeight && message.videoWidth > 0 && message.videoHeight > 0
+      ? `${message.videoWidth} / ${message.videoHeight}`
+      : undefined;
 
   const setNextPlaybackState = (nextState: TelegramVideoPlaybackState): void => {
     playbackStateRef.current = nextState;
@@ -414,10 +426,13 @@ const TelegramResolvedVideo = ({
           : 'Load video';
 
   return (
-    <div className={`${shellClassName}${shellStateClassName}`}>
+    <div
+      className={`${shellClassName}${shellStateClassName}`}
+      style={variant === 'single' && videoAspectRatio ? { aspectRatio: videoAspectRatio } : undefined}
+    >
       <button
         type="button"
-        className="telegram-message-video-trigger"
+        className={`telegram-message-video-trigger${message.videoThumbnailUrl ? ' has-thumbnail' : ''}`}
         disabled={playbackState === 'loading' || !activeChatId}
         onClick={async (event) => {
           event.stopPropagation();
@@ -449,6 +464,16 @@ const TelegramResolvedVideo = ({
           setNextPlaybackState('ready');
         }}
       >
+        {message.videoThumbnailUrl ? (
+          <img
+            className="telegram-message-video-thumbnail"
+            src={message.videoThumbnailUrl}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+          />
+        ) : null}
+        <span className="telegram-message-video-trigger-overlay" aria-hidden="true" />
         <span className="telegram-message-video-trigger-icon">
           {playbackState === 'failed-decode' ? '!' : '▶'}
         </span>
@@ -926,6 +951,20 @@ const TelegramDocumentCard = ({
             if (!activeChatId) {
               return;
             }
+            await window.pelec.openConnectorDocument('telegram', activeChatId, message.id);
+          }}
+        >
+          Open
+        </button>
+        <button
+          type="button"
+          className="telegram-message-document-action"
+          disabled={!activeChatId}
+          onClick={async (event) => {
+            event.stopPropagation();
+            if (!activeChatId) {
+              return;
+            }
             await window.pelec.copyConnectorDocument('telegram', activeChatId, message.id);
           }}
         >
@@ -1255,7 +1294,12 @@ function TelegramDeferredImage({
         loading="lazy"
         onClick={(event) => {
           event.stopPropagation();
-          legacyApi?.openTelegramImagePreview(imageUrl);
+          legacyApi?.openTelegramImagePreview(imageUrl, {
+            imageSizeBytes: message.imageSizeBytes,
+            sender: message.sender,
+            senderAvatarUrl: message.senderAvatarUrl,
+            timestamp: message.timestamp,
+          });
         }}
       />
     );
@@ -1396,13 +1440,13 @@ const TelegramMessageRow = memo(
           }`}
           data-message-id={primaryMessage.id}
           onClick={(event) => {
-            if (messageTextSelectable && hasSelectionInsideElement(event.currentTarget)) {
+            if (hasSelectionInsideElement(event.currentTarget)) {
               return;
             }
             legacyApi?.selectTelegramMessage(primaryMessage.id);
           }}
           onContextMenu={(event) => {
-            if (messageTextSelectable && hasSelectionInsideElement(event.currentTarget)) {
+            if (hasSelectionInsideElement(event.currentTarget)) {
               return;
             }
             event.preventDefault();
@@ -1448,7 +1492,12 @@ const TelegramMessageRow = memo(
                     onClick={(event) => {
                       event.stopPropagation();
                       if (albumMessage.imageUrl) {
-                        legacyApi?.openTelegramImagePreview(albumMessage.imageUrl);
+                        legacyApi?.openTelegramImagePreview(albumMessage.imageUrl, {
+                          imageSizeBytes: albumMessage.imageSizeBytes,
+                          sender: albumMessage.sender,
+                          senderAvatarUrl: albumMessage.senderAvatarUrl,
+                          timestamp: albumMessage.timestamp,
+                        });
                       }
                     }}
                   >
@@ -1478,7 +1527,12 @@ const TelegramMessageRow = memo(
               loading="lazy"
               onClick={(event) => {
                 event.stopPropagation();
-                legacyApi?.openTelegramImagePreview(primaryMessage.imageUrl as string);
+                legacyApi?.openTelegramImagePreview(primaryMessage.imageUrl as string, {
+                  imageSizeBytes: primaryMessage.imageSizeBytes,
+                  sender: primaryMessage.sender,
+                  senderAvatarUrl: primaryMessage.senderAvatarUrl,
+                  timestamp: primaryMessage.timestamp,
+                });
               }}
             />
           ) : null}
@@ -1786,15 +1840,14 @@ export const TelegramMessageList = ({
     }
 
     const updateJumpState = () => {
-      const distanceFromBottom =
-        scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
-      if (distanceFromBottom > 120 && !programmaticScrollRef.current) {
+      const distanceFromBottom = getTelegramMessageDistanceFromBottom(scrollContainer);
+      if (distanceFromBottom > TELEGRAM_LATEST_PROXIMITY_PX && !programmaticScrollRef.current) {
         autoScrollGraceRef.current = {
           chatId: null,
           expiresAt: 0,
         };
       }
-      setShowJumpToLatest(distanceFromBottom > 120);
+      setShowJumpToLatest(distanceFromBottom > TELEGRAM_LATEST_PROXIMITY_PX);
     };
 
     updateJumpState();
@@ -1918,12 +1971,24 @@ export const TelegramMessageList = ({
     if (!scrollContainer || !activeChatId || messagesLoading) {
       return;
     }
-    if (pendingAutoScrollRef.current !== activeChatId && !shouldKeepAutoScrolling(activeChatId)) {
+    const hasPendingAutoScroll = pendingAutoScrollRef.current === activeChatId;
+    const shouldContinueAutoScroll =
+      !hasPendingAutoScroll &&
+      shouldKeepAutoScrolling(activeChatId) &&
+      getTelegramMessageDistanceFromBottom(scrollContainer) <= TELEGRAM_LATEST_PROXIMITY_PX;
+
+    if (!hasPendingAutoScroll && !shouldContinueAutoScroll) {
       return;
     }
 
     pendingAutoScrollRef.current = null;
     runAfterPaint(() => {
+      if (
+        !hasPendingAutoScroll &&
+        getTelegramMessageDistanceFromBottom(scrollContainer) > TELEGRAM_LATEST_PROXIMITY_PX
+      ) {
+        return;
+      }
       scrollToLatestMessage('auto');
       setShowJumpToLatest(false);
     });
@@ -1936,7 +2001,7 @@ export const TelegramMessageList = ({
 
     const scrollContainer = getTelegramMessageScrollContainer(target);
     const activateMessagesPane = (event: Event) => {
-      if (messageTextSelectable && isSelectableMessageTextTarget(event.target)) {
+      if (isSelectableMessageTextTarget(event.target)) {
         return;
       }
       if (scrollContainer && scrollContainer.tabIndex < 0) {
@@ -1959,47 +2024,12 @@ export const TelegramMessageList = ({
         scrollContainer.removeEventListener('focusin', activateMessagesPane);
       }
     };
-  }, [legacyApi, messageTextSelectable, target]);
+  }, [legacyApi, target]);
 
   useEffect(() => {
     if (!target || !messageTextSelectable) {
       return;
     }
-
-    let lastAutoCopiedText = '';
-    let selectionCopyTimer: number | null = null;
-
-    const copySelectedText = (event: Event): boolean => {
-      const selectedText = getSelectedTextInsideElement(target).trim();
-      if (!selectedText) {
-        return false;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      void writeSelectedTelegramTextToClipboard(selectedText);
-      return true;
-    };
-
-    const copySelectedTextAutomatically = () => {
-      const selectedText = getSelectedTextInsideElement(target).trim();
-      if (!selectedText || selectedText === lastAutoCopiedText) {
-        return;
-      }
-
-      lastAutoCopiedText = selectedText;
-      void writeSelectedTelegramTextToClipboard(selectedText);
-    };
-
-    const scheduleAutoCopy = () => {
-      if (selectionCopyTimer !== null) {
-        window.clearTimeout(selectionCopyTimer);
-      }
-      selectionCopyTimer = window.setTimeout(() => {
-        selectionCopyTimer = null;
-        copySelectedTextAutomatically();
-      }, 80);
-    };
 
     const handleCopy = (event: ClipboardEvent) => {
       const selectedText = getSelectedTextInsideElement(target).trim();
@@ -2011,26 +2041,28 @@ export const TelegramMessageList = ({
       event.preventDefault();
     };
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
-        copySelectedText(event);
+    target.addEventListener('copy', handleCopy);
+    return () => {
+      target.removeEventListener('copy', handleCopy);
+    };
+  }, [messageTextSelectable, target]);
+
+  useEffect(() => {
+    if (!target || !messageTextSelectable) {
+      return;
+    }
+
+    const handleMouseUp = (event: MouseEvent) => {
+      if (!isSelectableMessageTextTarget(event.target)) {
+        return;
       }
+
+      void copySelectedTextInsideElement(target);
     };
 
-    target.addEventListener('copy', handleCopy);
-    target.addEventListener('mouseup', scheduleAutoCopy);
-    target.addEventListener('keyup', scheduleAutoCopy);
-    document.addEventListener('selectionchange', scheduleAutoCopy);
-    document.addEventListener('keydown', handleKeyDown, true);
+    target.addEventListener('mouseup', handleMouseUp);
     return () => {
-      if (selectionCopyTimer !== null) {
-        window.clearTimeout(selectionCopyTimer);
-      }
-      target.removeEventListener('copy', handleCopy);
-      target.removeEventListener('mouseup', scheduleAutoCopy);
-      target.removeEventListener('keyup', scheduleAutoCopy);
-      document.removeEventListener('selectionchange', scheduleAutoCopy);
-      document.removeEventListener('keydown', handleKeyDown, true);
+      target.removeEventListener('mouseup', handleMouseUp);
     };
   }, [messageTextSelectable, target]);
 

@@ -10,6 +10,7 @@ import type {
   LegacyQrAuthState,
   LegacyTelegramContextMenuState,
   LegacyTelegramForwardState,
+  LegacyTelegramImagePreviewMeta,
 } from '../legacyBridge';
 
 interface ModalLayerProps {
@@ -28,6 +29,7 @@ interface ModalLayerProps {
   selectedIndex: number;
   telegramContextMenu: LegacyTelegramContextMenuState | null;
   telegramForward: LegacyTelegramForwardState | null;
+  telegramImagePreviewMeta: LegacyTelegramImagePreviewMeta | null;
   telegramImagePreviewUrl: string | null;
   onCloseTelegramContextMenu(): void;
   onCloseTelegramForward(): void;
@@ -62,6 +64,7 @@ export const ModalLayer = ({
   selectedIndex,
   telegramContextMenu,
   telegramForward,
+  telegramImagePreviewMeta,
   telegramImagePreviewUrl,
   onCloseTelegramContextMenu,
   onCloseTelegramForward,
@@ -135,6 +138,7 @@ export const ModalLayer = ({
       {telegramImagePreviewUrl ? (
         <TelegramImagePreviewDialog
           imageUrl={telegramImagePreviewUrl}
+          meta={telegramImagePreviewMeta}
           onClose={onCloseTelegramImagePreview}
           onCopy={onCopyTelegramImagePreview}
           onDownload={onDownloadTelegramImagePreview}

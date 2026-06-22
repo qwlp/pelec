@@ -27,6 +27,13 @@ export interface LegacyTelegramContextMenuState {
   y: number;
 }
 
+export interface LegacyTelegramImagePreviewMeta {
+  imageSizeBytes?: number;
+  senderAvatarUrl?: string;
+  sender: string;
+  timestamp: number;
+}
+
 export interface LegacyAuthPromptState {
   label: string;
   message: string;
@@ -56,6 +63,7 @@ export interface LegacyTelegramSnapshot {
   filteredChats: ChatSummary[];
   forward: LegacyTelegramForwardState;
   hasOlderMessages: boolean;
+  imagePreviewMeta: LegacyTelegramImagePreviewMeta | null;
   imagePreviewUrl: string | null;
   loadError: string | null;
   loadingOlderMessages: boolean;
@@ -105,13 +113,14 @@ export interface LegacyAppBridgeApi {
   refresh(): void;
   reply(): void;
   openTelegramContextMenu(messageId: string, x: number, y: number): void;
-  openTelegramImagePreview(url: string): void;
+  openTelegramImagePreview(url: string, meta?: LegacyTelegramImagePreviewMeta): void;
   appendTelegramFiles(files: File[]): void;
   clearTelegramReply(): void;
   closeTelegramContextMenu(): void;
   closeTelegramForwardMenu(): void;
   closeTelegramImagePreview(): void;
   copyTelegramMessage(messageId: string): void;
+  copyTelegramMessageImage(messageId: string): void;
   copyTelegramImagePreview(): void;
   downloadTelegramImagePreview(): void;
   focusTelegramComposer(): void;

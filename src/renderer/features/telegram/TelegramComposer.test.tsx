@@ -13,6 +13,7 @@ describe('TelegramComposer', () => {
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
     cleanupDom?.();
     cleanupDom = undefined;
   });
@@ -318,6 +319,99 @@ describe('TelegramComposer', () => {
     );
 
     expect(target.querySelector('#telegram-compose-input')).toBeNull();
+  });
+
+  it('warns and blocks text messages above Telegram character limits', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+    const longMessage = 'a'.repeat(4097);
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText={longMessage}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    expect(target.querySelector('.telegram-compose-limit-warning')?.textContent).toContain(
+      '4,097 / 4,096',
+    );
+
+    fireEvent.click(target.querySelector('.telegram-send-button') as Element);
+
+    expect(legacyApi.sendTelegramMessage).not.toHaveBeenCalled();
+    expect(target.querySelector('.telegram-limit-dialog')?.textContent).toContain(
+      'above the 4,096 character limit',
+    );
+    expect(target.querySelector<HTMLTextAreaElement>('#telegram-compose-input')?.value).toBe(longMessage);
+
+    fireEvent.click(target.querySelector('.telegram-limit-dialog-button') as Element);
+    expect(target.querySelector('.telegram-limit-dialog')).toBeNull();
+  });
+
+  it('uses Telegram media caption limits when non-voice attachments are present', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramAttachmentSendAs: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[
+          {
+            id: 'image-1',
+            kind: 'image',
+            name: 'photo.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,aW1hZ2U=',
+            sendAs: 'image',
+          },
+        ]}
+        canSend
+        draftText={'a'.repeat(1025)}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    expect(target.querySelector('.telegram-compose-limit-warning')?.textContent).toContain(
+      '1,025 / 1,024',
+    );
+
+    fireEvent.click(target.querySelector('.telegram-send-button') as Element);
+
+    expect(legacyApi.sendTelegramMessage).not.toHaveBeenCalled();
+    expect(target.querySelector('.telegram-limit-dialog')?.textContent).toContain('Telegram caption');
   });
 
   it('starts recording on click and shows explicit stop and cancel controls while recording', () => {

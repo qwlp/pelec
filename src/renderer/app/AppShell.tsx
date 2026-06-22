@@ -571,6 +571,12 @@ export const AppShell = () => {
   });
 
   const handleTelegramContextCopy = useEffectEvent((messageId: string) => {
+    const message = telegramSnapshot?.messages.find((candidate) => candidate.id === messageId);
+    if (message?.imageUrl || message?.imageDeferred) {
+      legacyApi?.copyTelegramMessageImage(messageId);
+      return;
+    }
+
     if (state.config.userConfig?.telegram.selectableMessageText) {
       const selectedText = getSelectedTelegramMessageText();
       if (selectedText) {
@@ -702,6 +708,7 @@ export const AppShell = () => {
         selectedIndex={state.commandPalette.selectedIndex}
         telegramContextMenu={telegramSnapshot?.contextMenu ?? null}
         telegramForward={telegramSnapshot?.forward ?? null}
+        telegramImagePreviewMeta={telegramSnapshot?.imagePreviewMeta ?? null}
         telegramImagePreviewUrl={telegramSnapshot?.imagePreviewUrl ?? null}
       />
     </div>

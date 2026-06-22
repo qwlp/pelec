@@ -18,6 +18,8 @@ export const getTelegramChatRenderSignature = (chat: ChatSummary): string =>
     chat.lastMessageSender ?? '',
     chat.lastMessagePreview,
     chat.lastMessageTimestamp ?? '',
+    chat.lastMessageOutgoing ? '1' : '0',
+    chat.lastMessageReadByPeer ? '1' : '0',
     chat.unreadCount,
     chat.avatarUrl ?? '',
     chat.isMuted ? '1' : '0',
@@ -75,6 +77,16 @@ export const createTelegramChatListItem = (
     badge.textContent = deps.formatTelegramUnreadBadge(unreadCount);
     badge.title = `${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`;
     status.append(badge);
+  } else if (chat.lastMessageOutgoing) {
+    const receipt = document.createElement('span');
+    receipt.className = `telegram-chat-receipt ${chat.lastMessageReadByPeer ? 'read' : 'sent'}`;
+    receipt.title = chat.lastMessageReadByPeer ? 'Read' : 'Sent';
+    const tick = document.createElement('span');
+    tick.className = `telegram-chat-tick${chat.lastMessageReadByPeer ? ' double' : ''}`;
+    tick.setAttribute('aria-label', chat.lastMessageReadByPeer ? 'Read' : 'Sent');
+    tick.textContent = chat.lastMessageReadByPeer ? '✓✓' : '✓';
+    receipt.append(tick);
+    status.append(receipt);
   }
 
   top.replaceChildren(name, date);

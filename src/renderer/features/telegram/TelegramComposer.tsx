@@ -44,6 +44,10 @@ type TelegramMentionCompletionState = {
 
 const TELEGRAM_COMPOSER_MIN_HEIGHT_PX = 48;
 const TELEGRAM_COMPOSER_MAX_HEIGHT_PX = 160;
+const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096;
+const TELEGRAM_MEDIA_CAPTION_LIMIT = 1024;
+
+const getTelegramCharacterCount = (value: string): number => Array.from(value).length;
 
 const getTelegramMentionTokenMatch = (
   value: string,
@@ -122,6 +126,7 @@ export const TelegramComposer = ({
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
+  const [limitDialogMessage, setLimitDialogMessage] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const syncedDraftValueRef = useRef(draftText);
@@ -301,6 +306,13 @@ export const TelegramComposer = ({
     if (!legacyApi) {
       return;
     }
+    if (isOverTextLimit) {
+      const limitMessage = nonVoiceAttachmentCount > 0
+        ? `Telegram caption is ${characterCount.toLocaleString()} characters, above the ${activeTextLimit.toLocaleString()} character limit. Shorten it before sending.`
+        : `Telegram message is ${characterCount.toLocaleString()} characters, above the ${activeTextLimit.toLocaleString()} character limit. Shorten it before sending.`;
+      setLimitDialogMessage(limitMessage);
+      return;
+    }
     syncedDraftValueRef.current = '';
     hasLocalDraftEditRef.current = false;
     setValue('');
@@ -376,6 +388,23 @@ export const TelegramComposer = ({
     };
   }, [recordingStartedAt]);
 
+  useEffect(() => {
+    if (!limitDialogMessage) {
+      return;
+    }
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setLimitDialogMessage(null);
+      }
+    };
+
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [limitDialogMessage]);
+
   const placeholder = useMemo(() => {
     if (replyPreview) {
       return `Reply to ${replyPreview.sender}`;
@@ -417,6 +446,12 @@ export const TelegramComposer = ({
     }
     return null;
   }, [isPreparing, isRecording, isSending, recordingElapsedMs, voiceRecorderState]);
+  const nonVoiceAttachmentCount = attachments.filter((attachment) => attachment.kind !== 'voice').length;
+  const activeTextLimit = nonVoiceAttachmentCount > 0
+    ? TELEGRAM_MEDIA_CAPTION_LIMIT
+    : TELEGRAM_TEXT_MESSAGE_LIMIT;
+  const characterCount = getTelegramCharacterCount(value.trim());
+  const isOverTextLimit = characterCount > activeTextLimit;
 
   if (!target || !canSend) {
     return null;
@@ -587,6 +622,8 @@ export const TelegramComposer = ({
                 : undefined
           }
           aria-expanded={mentionCompletion || emojiCompletion ? 'true' : 'false'}
+          aria-invalid={isOverTextLimit ? 'true' : undefined}
+          aria-describedby={isOverTextLimit ? 'telegram-compose-limit-warning' : undefined}
           aria-activedescendant={
             mentionCompletion
               ? `telegram-mention-completion-item-${mentionCompletion.activeIndex}`
@@ -806,13 +843,61 @@ export const TelegramComposer = ({
         </button>
         <button
           type="button"
-          className="telegram-send-button"
+          className={`telegram-send-button${isOverTextLimit ? ' limit-exceeded' : ''}`}
           disabled={composeLocked}
           onClick={handleSend}
         >
           ➤
         </button>
       </div>
+      {isOverTextLimit ? (
+        <div
+          id="telegram-compose-limit-warning"
+          className="telegram-compose-limit-warning"
+          role="alert"
+        >
+          {nonVoiceAttachmentCount > 0
+            ? `Caption is ${characterCount.toLocaleString()} / ${activeTextLimit.toLocaleString()} characters. Regular Telegram captions are limited to ${activeTextLimit.toLocaleString()}.`
+            : `Message is ${characterCount.toLocaleString()} / ${activeTextLimit.toLocaleString()} characters.`}
+        </div>
+      ) : null}
+      {limitDialogMessage ? (
+        <div
+          className="telegram-limit-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setLimitDialogMessage(null);
+            }
+          }}
+        >
+          <div
+            className="telegram-limit-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="telegram-limit-dialog-title"
+            aria-describedby="telegram-limit-dialog-message"
+          >
+            <div className="telegram-limit-dialog-eyebrow">Telegram limit</div>
+            <div id="telegram-limit-dialog-title" className="telegram-limit-dialog-title">
+              Message too long
+            </div>
+            <div id="telegram-limit-dialog-message" className="telegram-limit-dialog-message">
+              {limitDialogMessage}
+            </div>
+            <div className="telegram-limit-dialog-actions">
+              <button
+                type="button"
+                className="telegram-limit-dialog-button"
+                autoFocus
+                onClick={() => setLimitDialogMessage(null)}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {mentionCompletion ? (
         <div
           id="telegram-mention-completion"

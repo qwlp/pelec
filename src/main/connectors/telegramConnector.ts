@@ -43,8 +43,10 @@ import {
   extractTelegramPhotoFiles,
   extractTelegramStickerEmoji,
   extractTelegramStickerSource,
+  extractTelegramVideoDimensions,
   extractTelegramVideoFile,
   extractTelegramVideoMimeType,
+  extractTelegramVideoThumbnailFile,
   extractTelegramVoiceDurationSeconds,
   extractTelegramVoiceNoteFile,
   getTelegramDocument,
@@ -468,6 +470,11 @@ export class TelegramConnector implements Connector {
             lastMessagePreview: preview.previewText,
             lastMessageSender: preview.senderLabel,
             lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
+            lastMessageOutgoing: chat.last_message?.is_outgoing === true,
+            lastMessageReadByPeer:
+              chat.last_message?.is_outgoing === true
+                ? this.isMessageReadByPeer(chat.last_message.id, chat.last_read_outbox_message_id)
+                : undefined,
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
             isMuted,
             canSend: await this.canSendToChat(client, chat),
@@ -599,6 +606,7 @@ export class TelegramConnector implements Connector {
         [...uniqueById.values()].map(async (message) => {
           const replyTargetId = this.extractReplyTargetId(message);
           const replyContext = replyTargetId ? replyContextById.get(replyTargetId) : undefined;
+          const videoDimensions = extractTelegramVideoDimensions(message.content);
           return {
             id: String(message.id ?? ''),
             mediaAlbumId: message.media_album_id ? String(message.media_album_id) : undefined,
@@ -628,6 +636,9 @@ export class TelegramConnector implements Connector {
             imageDeferred:
               (getTelegramFileSizeBytes(getTelegramImageFile(message.content)) ?? 0) >
               10 * 1024 * 1024,
+            videoThumbnailUrl: await this.extractVideoThumbnailUrl(client, message.content),
+            videoWidth: videoDimensions?.width,
+            videoHeight: videoDimensions?.height,
             videoMimeType: extractTelegramVideoMimeType(message.content),
             animationUrl: await this.extractAnimationUrl(client, message.content),
             animationMimeType: extractTelegramAnimationMimeType(message.content),
@@ -1693,6 +1704,24 @@ export class TelegramConnector implements Connector {
       return undefined;
     }
     return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
+  }
+
+  private async extractVideoThumbnailUrl(
+    client: TdClient,
+    content: unknown,
+  ): Promise<string | undefined> {
+    const thumbnail = extractTelegramVideoThumbnailFile(content);
+    if (!thumbnail) {
+      return undefined;
+    }
+
+    const localPath = await resolveTdFilePath({
+      client,
+      file: thumbnail,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+    });
+    return localPath ? buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME) : undefined;
   }
 
   private async extractStickerUrl(

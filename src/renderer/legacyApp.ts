@@ -74,6 +74,7 @@ import type {
   LegacyAppBridgeApi,
   LegacyAppSnapshot,
   LegacyCommandItem,
+  LegacyTelegramImagePreviewMeta,
 } from './legacyBridge';
 import { AsyncLruCache } from './services/mediaCache';
 import { beginMeasure } from './services/performance';
@@ -181,7 +182,17 @@ type QrAuthState = {
 
 const TELEGRAM_CONTEXT_MENU_GUARD_MS = 400;
 const TELEGRAM_MESSAGES_PAGE_SIZE = 80;
+const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096;
+const TELEGRAM_MEDIA_CAPTION_LIMIT = 1024;
 const NETWORK_RAIL_VISIBLE = false;
+
+const getTelegramCharacterCount = (value: string): number => Array.from(value).length;
+
+const getTelegramTextLimitMessage = (characterCount: number, limit: number, kind: 'caption' | 'message'): string => {
+  const label = kind === 'caption' ? 'caption' : 'message';
+  return `Telegram ${label} is ${characterCount.toLocaleString()} characters, above the ${limit.toLocaleString()} character limit. Shorten it before sending.`;
+};
+
 export const bootLegacyApp = async (
   mountRoot?: HTMLDivElement,
   options: BootLegacyAppOptions = {},
@@ -320,6 +331,7 @@ export const bootLegacyApp = async (
         visible: telegramForwardState.visible,
       },
       hasOlderMessages: telegramHasOlderMessages,
+      imagePreviewMeta: activeTelegramImageMeta,
       imagePreviewUrl: activeTelegramImageUrl,
       loadError: state.telegramLoadError,
       loadingOlderMessages: telegramLoadingOlderMessages,
@@ -389,6 +401,61 @@ export const bootLegacyApp = async (
   const statusToastHost = document.createElement('div');
   statusToastHost.className = 'status-toast-host hidden';
   appEl.append(statusToastHost);
+  const telegramLimitDialogHost = document.createElement('div');
+  telegramLimitDialogHost.className = 'telegram-limit-dialog-host hidden';
+  appEl.append(telegramLimitDialogHost);
+
+  const closeTelegramLimitDialog = (): void => {
+    telegramLimitDialogHost.classList.add('hidden');
+    telegramLimitDialogHost.replaceChildren();
+  };
+
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !telegramLimitDialogHost.classList.contains('hidden')) {
+      closeTelegramLimitDialog();
+    }
+  });
+
+  const openTelegramLimitDialog = (message: string): void => {
+    telegramLimitDialogHost.classList.remove('hidden');
+    telegramLimitDialogHost.innerHTML = `
+      <div class="telegram-limit-dialog-backdrop" role="presentation">
+        <div
+          class="telegram-limit-dialog"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="telegram-limit-dialog-title"
+          aria-describedby="telegram-limit-dialog-message"
+        >
+          <div class="telegram-limit-dialog-eyebrow">Telegram limit</div>
+          <div id="telegram-limit-dialog-title" class="telegram-limit-dialog-title">Message too long</div>
+          <div id="telegram-limit-dialog-message" class="telegram-limit-dialog-message"></div>
+          <div class="telegram-limit-dialog-actions">
+            <button type="button" class="telegram-limit-dialog-button" autofocus>OK</button>
+          </div>
+        </div>
+      </div>
+    `;
+    const messageEl = telegramLimitDialogHost.querySelector<HTMLDivElement>(
+      '#telegram-limit-dialog-message',
+    );
+    const button = telegramLimitDialogHost.querySelector<HTMLButtonElement>(
+      '.telegram-limit-dialog-button',
+    );
+    const backdrop = telegramLimitDialogHost.querySelector<HTMLDivElement>(
+      '.telegram-limit-dialog-backdrop',
+    );
+    if (messageEl) {
+      messageEl.textContent = message;
+    }
+    button?.addEventListener('click', closeTelegramLimitDialog);
+    backdrop?.addEventListener('mousedown', (event) => {
+      if (event.target === backdrop) {
+        closeTelegramLimitDialog();
+      }
+    });
+    window.setTimeout(() => button?.focus(), 0);
+  };
 
   const networkList = document.querySelector<HTMLElement>('#network-list');
   const shellEl = document.querySelector<HTMLElement>('.shell');
@@ -1614,7 +1681,6 @@ export const bootLegacyApp = async (
   telegramImageModal.innerHTML = `
     <div class="telegram-image-modal-card">
       <header class="telegram-image-modal-header">
-        <div class="telegram-image-modal-title">Preview</div>
         <div class="telegram-image-modal-actions">
           <button id="telegram-image-copy" class="ghost-button" type="button">Copy</button>
           <button id="telegram-image-download" class="ghost-button" type="button">Download</button>
@@ -1685,6 +1751,7 @@ export const bootLegacyApp = async (
   let instagramBrowserSessionPollTimer: number | null = null;
   let instagramBrowserSessionPollBusy = false;
   let activeTelegramImageUrl: string | null = null;
+  let activeTelegramImageMeta: LegacyTelegramImagePreviewMeta | null = null;
   let authPromptResolver: ((value: string | null) => void) | null = null;
   let authPromptState: AuthPromptState | null = null;
   let qrAuthState: QrAuthState | null = null;
@@ -1705,6 +1772,7 @@ export const bootLegacyApp = async (
 
   const closeTelegramImagePreview = (): void => {
     activeTelegramImageUrl = null;
+    activeTelegramImageMeta = null;
     render();
   };
 
@@ -1946,6 +2014,9 @@ export const bootLegacyApp = async (
       imageUrl: message.imageUrl,
       hasVideo: message.hasVideo,
       videoUrl: message.videoUrl,
+      videoThumbnailUrl: message.videoThumbnailUrl,
+      videoWidth: message.videoWidth,
+      videoHeight: message.videoHeight,
       videoMimeType: message.videoMimeType,
       animationUrl: message.animationUrl,
       animationMimeType: message.animationMimeType,
@@ -2303,11 +2374,11 @@ export const bootLegacyApp = async (
 
   const copyTelegramImage = async (url: string): Promise<void> => {
     try {
-      const dataUrl = url.trim();
-      if (!dataUrl.startsWith('data:image/')) {
+      const imageUrl = url.trim();
+      if (!imageUrl) {
         throw new Error('Unsupported image URL.');
       }
-      const copied = await window.pelec.copyImageToClipboard(dataUrl);
+      const copied = await window.pelec.copyImageToClipboard(imageUrl);
       if (copied) {
         statusBar.textContent = 'Image copied.';
         return;
@@ -2317,6 +2388,41 @@ export const bootLegacyApp = async (
     }
 
     statusBar.textContent = 'Failed to copy image.';
+  };
+
+  const copyTelegramMessageImageById = (messageId: string): void => {
+    const message = findTelegramMessageById(messageId);
+    if (!message || isPendingTelegramMessage(message)) {
+      statusBar.textContent = 'Message unavailable.';
+      render();
+      return;
+    }
+
+    if (message.imageUrl) {
+      void copyTelegramImage(message.imageUrl);
+      return;
+    }
+
+    if (message.imageDeferred && state.activeTelegramChatId) {
+      void (async () => {
+        try {
+          const resolved = await window.pelec.resolveConnectorImageUrl(
+            'telegram',
+            state.activeTelegramChatId as string,
+            message.id,
+          );
+          if (!resolved) {
+            throw new Error('Telegram did not return the image.');
+          }
+          await copyTelegramImage(resolved);
+        } catch {
+          statusBar.textContent = 'Failed to copy image.';
+        }
+      })();
+      return;
+    }
+
+    statusBar.textContent = 'No image to copy.';
   };
 
   const downloadTelegramDocument = async (
@@ -2385,6 +2491,39 @@ export const bootLegacyApp = async (
     }
   };
 
+  const openTelegramDocument = async (
+    chatId: string,
+    message: ChatMessage,
+    button: HTMLButtonElement,
+  ): Promise<void> => {
+    if (!message.document) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      setStatusActivity({
+        id: `pending-open:${message.id}`,
+        label: `Preparing ${message.document.fileName}`,
+        detail: 'Resolving the document for opening…',
+        indeterminate: true,
+        state: 'running',
+      });
+      render();
+      await window.pelec.openConnectorDocument('telegram', chatId, message.id);
+    } catch (error) {
+      setStatusActivity({
+        id: `open-error:${message.id}`,
+        label: 'Open failed',
+        detail: error instanceof Error ? error.message : `Could not open ${message.document.fileName}.`,
+        state: 'error',
+      });
+      render();
+    } finally {
+      button.disabled = false;
+    }
+  };
+
   const resolveTelegramAudioUrl = async (
     chatId: string,
     messageId: string,
@@ -2403,8 +2542,9 @@ export const bootLegacyApp = async (
     );
   };
 
-  const openTelegramImagePreview = (url: string): void => {
+  const openTelegramImagePreview = (url: string, meta?: LegacyTelegramImagePreviewMeta): void => {
     activeTelegramImageUrl = url;
+    activeTelegramImageMeta = meta ?? null;
     render();
   };
 
@@ -2824,6 +2964,9 @@ export const bootLegacyApp = async (
         a[i].audioUrl !== b[i].audioUrl ||
         a[i].hasVideo !== b[i].hasVideo ||
         a[i].videoUrl !== b[i].videoUrl ||
+        a[i].videoThumbnailUrl !== b[i].videoThumbnailUrl ||
+        a[i].videoWidth !== b[i].videoWidth ||
+        a[i].videoHeight !== b[i].videoHeight ||
         a[i].videoMimeType !== b[i].videoMimeType ||
         a[i].senderAvatarUrl !== b[i].senderAvatarUrl ||
         a[i].document?.fileName !== b[i].document?.fileName ||
@@ -3138,15 +3281,18 @@ export const bootLegacyApp = async (
         const shouldPreserveSelectedMessage =
           previousActiveTelegramChatId === chatId && !forceScroll;
         state.selectedTelegramMessageId =
-          shouldPreserveSelectedMessage &&
-          currentSelectedMessageId &&
-          visibleMessages.some((message) => message.id === currentSelectedMessageId)
-            ? currentSelectedMessageId
+          shouldPreserveSelectedMessage
+            ? currentSelectedMessageId &&
+              visibleMessages.some((message) => message.id === currentSelectedMessageId)
+              ? currentSelectedMessageId
+              : null
             : messages[messages.length - 1]?.id ?? null;
         syncTelegramActiveChatExposure();
         state.telegramMessagesLoading = false;
         if (changed || pendingChanged || forceScroll || showLoadingState) {
-          telegramForceScrollBottom = true;
+          if (forceScroll || showLoadingState) {
+            telegramForceScrollBottom = true;
+          }
           render();
         }
         endMeasure();
@@ -4089,6 +4235,21 @@ export const bootLegacyApp = async (
     const hasAttachments = attachments.length > 0;
     const hasVoiceAttachments = attachments.some((attachment) => attachment.kind === 'voice');
     if (!text && !hasAttachments) {
+      return;
+    }
+
+    const hasCaptionAttachments = attachments.some((attachment) => attachment.kind !== 'voice');
+    const textLimit = hasCaptionAttachments ? TELEGRAM_MEDIA_CAPTION_LIMIT : TELEGRAM_TEXT_MESSAGE_LIMIT;
+    const textCharacterCount = getTelegramCharacterCount(text);
+    if (textCharacterCount > textLimit) {
+      const limitMessage = getTelegramTextLimitMessage(
+        textCharacterCount,
+        textLimit,
+        hasCaptionAttachments ? 'caption' : 'message',
+      );
+      statusBar.textContent = limitMessage;
+      openTelegramLimitDialog(limitMessage);
+      render();
       return;
     }
 
@@ -5102,19 +5263,35 @@ export const bootLegacyApp = async (
 
     const container = document.createElement('div');
     container.className = inAlbum ? 'telegram-message-album-video-shell' : 'telegram-message-video-shell';
+    if (!inAlbum && message.videoWidth && message.videoHeight) {
+      container.style.aspectRatio = `${message.videoWidth} / ${message.videoHeight}`;
+    }
 
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'telegram-message-video-trigger';
+    if (message.videoThumbnailUrl) {
+      button.classList.add('has-thumbnail');
+      const thumbnail = document.createElement('img');
+      thumbnail.className = 'telegram-message-video-thumbnail';
+      thumbnail.src = message.videoThumbnailUrl;
+      thumbnail.alt = '';
+      thumbnail.setAttribute('aria-hidden', 'true');
+      thumbnail.loading = 'lazy';
+      button.append(thumbnail);
+    }
     button.setAttribute('aria-label', label);
 
+    const overlay = document.createElement('span');
+    overlay.className = 'telegram-message-video-trigger-overlay';
+    overlay.setAttribute('aria-hidden', 'true');
     const icon = document.createElement('span');
     icon.className = 'telegram-message-video-trigger-icon';
     icon.textContent = '▶';
     const text = document.createElement('span');
     text.className = 'telegram-message-video-trigger-text';
     text.textContent = 'Play video';
-    button.replaceChildren(icon, text);
+    button.append(overlay, icon, text);
     container.replaceChildren(button);
 
     let loading = false;
@@ -5755,7 +5932,12 @@ export const bootLegacyApp = async (
                   albumItem.addEventListener('click', (event) => {
                     event.stopPropagation();
                     if (albumMessage.imageUrl) {
-                      openTelegramImagePreview(albumMessage.imageUrl);
+                      openTelegramImagePreview(albumMessage.imageUrl, {
+                        imageSizeBytes: albumMessage.imageSizeBytes,
+                        sender: albumMessage.sender,
+                        senderAvatarUrl: albumMessage.senderAvatarUrl,
+                        timestamp: albumMessage.timestamp,
+                      });
                     }
                   });
                   return albumItem;
@@ -5769,7 +5951,12 @@ export const bootLegacyApp = async (
               image.alt = 'Telegram image';
               image.loading = 'lazy';
               image.addEventListener('click', () => {
-                openTelegramImagePreview(primaryMessage.imageUrl as string);
+                openTelegramImagePreview(primaryMessage.imageUrl as string, {
+                  imageSizeBytes: primaryMessage.imageSizeBytes,
+                  sender: primaryMessage.sender,
+                  senderAvatarUrl: primaryMessage.senderAvatarUrl,
+                  timestamp: primaryMessage.timestamp,
+                });
               });
               bodyNodes.push(image);
             } else if (primaryMessage.videoUrl || primaryMessage.hasVideo) {
@@ -5823,6 +6010,7 @@ export const bootLegacyApp = async (
                   chatId: renderChatId,
                   copyTelegramDocument,
                   downloadTelegramDocument,
+                  openTelegramDocument,
                   formatTelegramDocumentKind,
                   formatTelegramDocumentSubtitle,
                   message: primaryMessage,
@@ -6657,6 +6845,7 @@ export const bootLegacyApp = async (
     },
     closeTelegramImagePreview,
     copyTelegramMessage: copyTelegramMessageById,
+    copyTelegramMessageImage: copyTelegramMessageImageById,
     copyTelegramImagePreview: copyActiveTelegramImagePreview,
     downloadTelegramImagePreview: downloadActiveTelegramImagePreview,
     focusTelegramComposer,

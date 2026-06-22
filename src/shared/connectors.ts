@@ -71,6 +71,8 @@ export interface ChatSummary {
   lastMessagePreview: string;
   lastMessageSender?: string;
   lastMessageTimestamp?: number;
+  lastMessageOutgoing?: boolean;
+  lastMessageReadByPeer?: boolean;
   unreadCount: number;
   avatarUrl?: string;
   isMuted?: boolean;
@@ -168,6 +170,9 @@ export interface ChatMessage {
   imageSizeBytes?: number;
   imageDeferred?: boolean;
   videoUrl?: string;
+  videoThumbnailUrl?: string;
+  videoWidth?: number;
+  videoHeight?: number;
   videoMimeType?: string;
   animationUrl?: string;
   animationMimeType?: string;
