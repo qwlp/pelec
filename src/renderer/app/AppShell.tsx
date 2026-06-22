@@ -661,12 +661,14 @@ export const AppShell = () => {
         ) : null}
         {showTelegramComposer ? (
           <TelegramComposer
+            appMode={state.appShell.mode}
             attachments={telegramSnapshot.pendingAttachments}
             canSend={telegramSnapshot.activeChatCanSend}
             draftText={telegramSnapshot.draftText}
             inputRef={telegramComposerInputRef}
             legacyApi={legacyApi}
             mentionSuggestions={telegramMentionSuggestions}
+            onModeChange={(mode) => legacyApi?.setMode(mode)}
             replyPreview={telegramSnapshot.replyPreview}
             sendBehavior={state.config.userConfig?.keyboard.sendBehavior ?? 'enter'}
             target={telegramComposerTarget}

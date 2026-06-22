@@ -809,4 +809,461 @@ describe('TelegramComposer', () => {
     });
     expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('@grace');
   });
+
+  it('supports normal-mode cursor movement and character deletion in the composer', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText="hello world"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(5, 5);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(textarea?.dataset.vimMode).toBe('normal');
+    });
+    expect(legacyApi.setMode).toHaveBeenLastCalledWith('normal');
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'h' });
+    expect(textarea?.selectionStart).toBe(4);
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'x' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hell world');
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('hell world');
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'i' });
+
+    await waitFor(() => {
+      expect(textarea?.dataset.vimMode).toBe('insert');
+    });
+    expect(legacyApi.setMode).toHaveBeenLastCalledWith('insert');
+  });
+
+  it('prevents printable text input while the composer is in normal mode', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText="hello"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(2, 2);
+
+    expect(fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'z' })).toBe(false);
+    expect(textarea?.value).toBe('hello');
+    expect(legacyApi.setTelegramDraftValue).not.toHaveBeenCalled();
+  });
+
+  it('supports normal-mode line deletion and ctrl-enter send', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText={'one\ntwo\nthree'}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(5, 5);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'd' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'd' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('one\nthree');
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('one\nthree');
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { ctrlKey: true, key: 'Enter' });
+    expect(legacyApi.sendTelegramMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports inner-word and around-word delete/change operators', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    const view = render(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText="hello world again"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(6, 6);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'd' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'i' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'w' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hello  again');
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('hello  again');
+
+    view.rerender(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText="hello world again"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 6, selectionStart: 6, value: 'hello world again' },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(6, 6);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'd' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'a' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'w' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hello again');
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('hello again');
+
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 6, selectionStart: 6, value: 'hello world again' },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(6, 6);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'c' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'i' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'w' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hello  again');
+      expect(textarea?.dataset.vimMode).toBe('insert');
+    });
+    expect(legacyApi.setMode).toHaveBeenLastCalledWith('insert');
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Escape' });
+    await waitFor(() => {
+      expect(textarea?.dataset.vimMode).toBe('normal');
+    });
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 6, selectionStart: 6, value: 'hello world again' },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(6, 6);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'c' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'a' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'w' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hello again');
+      expect(textarea?.dataset.vimMode).toBe('insert');
+    });
+  });
+
+  it('supports visual mode selection, delete, and change', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText="hello world"
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(1, 1);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'v' });
+
+    await waitFor(() => {
+      expect(textarea?.dataset.vimMode).toBe('visual');
+    });
+    expect(textarea?.selectionStart).toBe(1);
+    expect(textarea?.selectionEnd).toBe(2);
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'l' });
+    expect(textarea?.selectionStart).toBe(1);
+    expect(textarea?.selectionEnd).toBe(3);
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'x' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hlo world');
+      expect(textarea?.dataset.vimMode).toBe('normal');
+    });
+
+    (textarea as HTMLTextAreaElement).setSelectionRange(4, 4);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'v' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'e' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'c' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('hlo ');
+      expect(textarea?.dataset.vimMode).toBe('insert');
+    });
+  });
+
+  it('supports visual block mode delete and change across lines', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText={'abcde\nabcde\nabcde'}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(1, 1);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { ctrlKey: true, key: 'v' });
+
+    await waitFor(() => {
+      expect(textarea?.dataset.vimMode).toBe('visual-block');
+    });
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'j' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'l' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'd' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('ade\nade\nabcde');
+      expect(textarea?.dataset.vimMode).toBe('normal');
+    });
+
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: {
+        selectionEnd: 1,
+        selectionStart: 1,
+        value: 'abcde\nabcde\nabcde',
+      },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(1, 1);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { ctrlKey: true, key: 'v' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'j' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'l' });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'c' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('ade\nade\nabcde');
+      expect(textarea?.dataset.vimMode).toBe('insert');
+    });
+  });
+
+  it('supports visual line mode selection, delete, and change', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      setMode: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        appMode="normal"
+        attachments={[]}
+        canSend
+        draftText={'one\ntwo\nthree'}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    (textarea as HTMLTextAreaElement).setSelectionRange(5, 5);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'V', shiftKey: true });
+
+    await waitFor(() => {
+      expect(textarea?.dataset.vimMode).toBe('visual-line');
+    });
+    expect(textarea?.selectionStart).toBe(4);
+    expect(textarea?.selectionEnd).toBe(8);
+
+    expect(fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'z' })).toBe(false);
+    expect(textarea?.value).toBe('one\ntwo\nthree');
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'j' });
+    expect(textarea?.selectionStart).toBe(4);
+    expect(textarea?.selectionEnd).toBe(13);
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'd' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('one\n');
+      expect(textarea?.dataset.vimMode).toBe('normal');
+    });
+
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: {
+        selectionEnd: 5,
+        selectionStart: 5,
+        value: 'one\ntwo\nthree',
+      },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(5, 5);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'V', shiftKey: true });
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'c' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toBe('one\nthree');
+      expect(textarea?.dataset.vimMode).toBe('insert');
+    });
+  });
 });

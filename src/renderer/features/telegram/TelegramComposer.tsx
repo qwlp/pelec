@@ -1,5 +1,14 @@
 import { createPortal } from 'react-dom';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from 'react';
+import type { AppMode } from '../../../shared/types';
 import type { PendingTelegramAttachment } from './media';
 import type { LegacyAppBridgeApi, LegacyTelegramReplyPreview } from '../../legacyBridge';
 import {
@@ -10,12 +19,14 @@ import {
 import { formatTelegramAttachmentMeta } from './media';
 
 interface TelegramComposerProps {
+  appMode?: AppMode;
   attachments: PendingTelegramAttachment[];
   canSend: boolean;
   draftText: string;
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   legacyApi: LegacyAppBridgeApi | null;
   mentionSuggestions?: TelegramMentionSuggestion[];
+  onModeChange?: (mode: AppMode) => void;
   replyPreview: LegacyTelegramReplyPreview | null;
   sendBehavior: 'enter' | 'mod-enter';
   target: HTMLElement | null;
@@ -42,12 +53,262 @@ type TelegramMentionCompletionState = {
   tokenStart: number;
 };
 
+type TelegramVimMode = 'insert' | 'normal' | 'visual' | 'visual-block' | 'visual-line';
+type TelegramVimSequence = 'c' | 'ca' | 'ci' | 'd' | 'da' | 'di' | 'g' | null;
+
 const TELEGRAM_COMPOSER_MIN_HEIGHT_PX = 48;
 const TELEGRAM_COMPOSER_MAX_HEIGHT_PX = 160;
 const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096;
 const TELEGRAM_MEDIA_CAPTION_LIMIT = 1024;
+const TELEGRAM_VIM_SEQUENCE_TIMEOUT_MS = 900;
+
+const WORD_CHARACTER_PATTERN = /[\p{L}\p{N}_]/u;
+const HORIZONTAL_WHITESPACE_PATTERN = /[^\S\n]/u;
 
 const getTelegramCharacterCount = (value: string): number => Array.from(value).length;
+
+const clampIndex = (index: number, value: string): number => Math.max(0, Math.min(value.length, index));
+
+const getLineStart = (value: string, index: number): number => {
+  const cursor = clampIndex(index, value);
+  return value.lastIndexOf('\n', Math.max(0, cursor - 1)) + 1;
+};
+
+const getLineEnd = (value: string, index: number): number => {
+  const cursor = clampIndex(index, value);
+  const newlineIndex = value.indexOf('\n', cursor);
+  return newlineIndex === -1 ? value.length : newlineIndex;
+};
+
+const getLineSelectionRange = (
+  value: string,
+  anchorIndex: number,
+  activeIndex: number,
+): { end: number; start: number } => {
+  const anchor = getLineColumnAtIndex(value, anchorIndex);
+  const active = getLineColumnAtIndex(value, activeIndex);
+  const startLine = Math.min(anchor.line, active.line);
+  const endLine = Math.max(anchor.line, active.line);
+  const start = getLineStartByNumber(value, startLine);
+  const endLineStart = getLineStartByNumber(value, endLine);
+  const lineEnd = getLineEnd(value, endLineStart);
+  const end = lineEnd < value.length ? lineEnd + 1 : lineEnd;
+
+  return { start, end };
+};
+
+const getLineColumnAtIndex = (value: string, index: number): { column: number; line: number } => {
+  const cursor = clampIndex(index, value);
+  let line = 0;
+  let lineStart = 0;
+
+  for (let i = 0; i < cursor; i += 1) {
+    if (value[i] === '\n') {
+      line += 1;
+      lineStart = i + 1;
+    }
+  }
+
+  return {
+    column: cursor - lineStart,
+    line,
+  };
+};
+
+const getLineStartByNumber = (value: string, targetLine: number): number => {
+  if (targetLine <= 0) {
+    return 0;
+  }
+
+  let line = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] === '\n') {
+      line += 1;
+      if (line === targetLine) {
+        return i + 1;
+      }
+    }
+  }
+
+  return value.length;
+};
+
+const getLineCount = (value: string): number => value.split('\n').length;
+
+const getIndexAtLineColumn = (value: string, line: number, column: number): number => {
+  const clampedLine = Math.max(0, Math.min(getLineCount(value) - 1, line));
+  const lineStart = getLineStartByNumber(value, clampedLine);
+  const lineEnd = getLineEnd(value, lineStart);
+  return Math.min(lineEnd, lineStart + Math.max(0, column));
+};
+
+const getFirstNonWhitespaceInLine = (value: string, index: number): number => {
+  const lineStart = getLineStart(value, index);
+  const lineEnd = getLineEnd(value, index);
+  const match = /\S/u.exec(value.slice(lineStart, lineEnd));
+  return match ? lineStart + match.index : lineStart;
+};
+
+const moveCursorVertically = (value: string, index: number, direction: -1 | 1): number => {
+  const cursor = clampIndex(index, value);
+  const currentLineStart = getLineStart(value, cursor);
+  const column = cursor - currentLineStart;
+
+  if (direction < 0) {
+    if (currentLineStart === 0) {
+      return cursor;
+    }
+
+    const previousLineEnd = currentLineStart - 1;
+    const previousLineStart = getLineStart(value, previousLineEnd);
+    return Math.min(previousLineStart + column, previousLineEnd);
+  }
+
+  const currentLineEnd = getLineEnd(value, cursor);
+  if (currentLineEnd >= value.length) {
+    return cursor;
+  }
+
+  const nextLineStart = currentLineEnd + 1;
+  const nextLineEnd = getLineEnd(value, nextLineStart);
+  return Math.min(nextLineStart + column, nextLineEnd);
+};
+
+const findNextWordStart = (value: string, index: number): number => {
+  let cursor = clampIndex(index, value);
+
+  if (WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+    while (cursor < value.length && WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+      cursor += 1;
+    }
+  }
+
+  while (cursor < value.length && !WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+    cursor += 1;
+  }
+
+  return cursor;
+};
+
+const findPreviousWordStart = (value: string, index: number): number => {
+  let cursor = clampIndex(index, value) - 1;
+
+  while (cursor > 0 && !WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+    cursor -= 1;
+  }
+
+  while (cursor > 0 && WORD_CHARACTER_PATTERN.test(value[cursor - 1] ?? '')) {
+    cursor -= 1;
+  }
+
+  return Math.max(0, cursor);
+};
+
+const findWordEnd = (value: string, index: number): number => {
+  let cursor = clampIndex(index, value);
+
+  if (!WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+    while (cursor < value.length && !WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+      cursor += 1;
+    }
+  } else if (WORD_CHARACTER_PATTERN.test(value[cursor + 1] ?? '')) {
+    cursor += 1;
+  }
+
+  while (cursor < value.length - 1 && WORD_CHARACTER_PATTERN.test(value[cursor + 1] ?? '')) {
+    cursor += 1;
+  }
+
+  return cursor;
+};
+
+const getWordTextObject = (
+  value: string,
+  index: number,
+  around: boolean,
+): { end: number; start: number } | null => {
+  if (value.length < 1) {
+    return null;
+  }
+
+  let cursor = clampIndex(index, value);
+  if (!WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+    if (cursor > 0 && WORD_CHARACTER_PATTERN.test(value[cursor - 1] ?? '')) {
+      cursor -= 1;
+    } else {
+      while (cursor < value.length && !WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+        cursor += 1;
+      }
+    }
+  }
+
+  if (!WORD_CHARACTER_PATTERN.test(value[cursor] ?? '')) {
+    return null;
+  }
+
+  let start = cursor;
+  let end = cursor + 1;
+
+  while (start > 0 && WORD_CHARACTER_PATTERN.test(value[start - 1] ?? '')) {
+    start -= 1;
+  }
+  while (end < value.length && WORD_CHARACTER_PATTERN.test(value[end] ?? '')) {
+    end += 1;
+  }
+
+  if (!around) {
+    return { start, end };
+  }
+
+  let aroundEnd = end;
+  while (aroundEnd < value.length && HORIZONTAL_WHITESPACE_PATTERN.test(value[aroundEnd] ?? '')) {
+    aroundEnd += 1;
+  }
+
+  if (aroundEnd > end) {
+    return { start, end: aroundEnd };
+  }
+
+  let aroundStart = start;
+  while (
+    aroundStart > 0 &&
+    HORIZONTAL_WHITESPACE_PATTERN.test(value[aroundStart - 1] ?? '')
+  ) {
+    aroundStart -= 1;
+  }
+
+  return { start: aroundStart, end };
+};
+
+const getBlockTextObject = (
+  value: string,
+  anchorIndex: number,
+  activeIndex: number,
+): Array<{ end: number; start: number }> => {
+  const anchor = getLineColumnAtIndex(value, anchorIndex);
+  const active = getLineColumnAtIndex(value, activeIndex);
+  const startLine = Math.min(anchor.line, active.line);
+  const endLine = Math.max(anchor.line, active.line);
+  const startColumn = Math.min(anchor.column, active.column);
+  const endColumn = Math.max(anchor.column, active.column);
+  const ranges: Array<{ end: number; start: number }> = [];
+
+  for (let line = startLine; line <= endLine; line += 1) {
+    const start = getIndexAtLineColumn(value, line, startColumn);
+    const end = getIndexAtLineColumn(value, line, endColumn + 1);
+    if (end > start) {
+      ranges.push({ start, end });
+    }
+  }
+
+  return ranges;
+};
+
+const isPlainPrintableKey = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean =>
+  event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+
+const isTrustedInputEvent = (event: { nativeEvent: Event }): boolean =>
+  event.nativeEvent.isTrusted !== false;
 
 const getTelegramMentionTokenMatch = (
   value: string,
@@ -109,18 +370,23 @@ const formatRecordingDuration = (durationMs: number): string => {
 };
 
 export const TelegramComposer = ({
+  appMode = 'insert',
   attachments,
   canSend,
   draftText,
   inputRef,
   legacyApi,
   mentionSuggestions = [],
+  onModeChange,
   replyPreview,
   sendBehavior,
   target,
   voiceRecorderState,
 }: TelegramComposerProps) => {
   const [value, setValue] = useState(draftText);
+  const [composerMode, setComposerMode] = useState<TelegramVimMode>(
+    appMode === 'insert' ? 'insert' : 'normal',
+  );
   const [emojiCompletion, setEmojiCompletion] = useState<TelegramEmojiCompletionState | null>(null);
   const [mentionCompletion, setMentionCompletion] = useState<TelegramMentionCompletionState | null>(null);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
@@ -132,6 +398,32 @@ export const TelegramComposer = ({
   const syncedDraftValueRef = useRef(draftText);
   const hasLocalDraftEditRef = useRef(false);
   const pendingSelectionRef = useRef<{ end: number; start: number } | null>(null);
+  const visualAnchorRef = useRef<number | null>(null);
+  const visualBlockActiveRef = useRef<number | null>(null);
+  const visualLineActiveRef = useRef<number | null>(null);
+  const vimSequenceRef = useRef<{ key: TelegramVimSequence; timestamp: number }>({
+    key: null,
+    timestamp: 0,
+  });
+
+  const requestComposerMode = (mode: TelegramVimMode) => {
+    vimSequenceRef.current = { key: null, timestamp: 0 };
+    if (mode !== 'visual' && mode !== 'visual-block' && mode !== 'visual-line') {
+      visualAnchorRef.current = null;
+      visualBlockActiveRef.current = null;
+      visualLineActiveRef.current = null;
+    }
+    setComposerMode(mode);
+    if (mode === 'visual' || mode === 'visual-block' || mode === 'visual-line') {
+      legacyApi?.setMode('normal');
+      return;
+    }
+    if (onModeChange) {
+      onModeChange(mode);
+      return;
+    }
+    legacyApi?.setMode(mode);
+  };
 
   const syncDraftValue = (nextValue: string) => {
     if (syncedDraftValueRef.current === nextValue) {
@@ -142,6 +434,96 @@ export const TelegramComposer = ({
     hasLocalDraftEditRef.current = true;
     setValue(nextValue);
     legacyApi?.setTelegramDraftValue(nextValue);
+  };
+
+  const syncDraftValueWithSelection = (
+    nextValue: string,
+    selectionStart: number,
+    selectionEnd = selectionStart,
+  ) => {
+    const nextSelection = {
+      start: clampIndex(selectionStart, nextValue),
+      end: clampIndex(selectionEnd, nextValue),
+    };
+    pendingSelectionRef.current = nextSelection;
+    syncDraftValue(nextValue);
+  };
+
+  const moveTextareaCursor = (nextSelectionStart: number, nextSelectionEnd = nextSelectionStart) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const start = clampIndex(nextSelectionStart, value);
+    const end = clampIndex(nextSelectionEnd, value);
+    textarea.setSelectionRange(start, end);
+    updateMentionCompletion(value, start, end, true);
+    updateEmojiCompletion(value, start, end);
+  };
+
+  const setVisualSelection = (anchor: number, active: number) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const clampedAnchor = clampIndex(anchor, value);
+    const clampedActive = clampIndex(active, value);
+    const start = Math.min(clampedAnchor, clampedActive);
+    const end =
+      clampedActive >= clampedAnchor
+        ? Math.min(value.length, clampedActive + 1)
+        : Math.min(value.length, clampedAnchor + 1);
+
+    visualAnchorRef.current = clampedAnchor;
+    textarea.setSelectionRange(start, Math.max(start, end));
+  };
+
+  const setVisualBlockSelection = (anchor: number, active: number) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const clampedAnchor = clampIndex(anchor, value);
+    const clampedActive = clampIndex(active, value);
+    const ranges = getBlockTextObject(value, clampedAnchor, clampedActive);
+
+    visualAnchorRef.current = clampedAnchor;
+    visualBlockActiveRef.current = clampedActive;
+    if (ranges.length < 1) {
+      textarea.setSelectionRange(clampedActive, clampedActive);
+      return;
+    }
+
+    textarea.setSelectionRange(ranges[0].start, ranges[ranges.length - 1].end);
+  };
+
+  const setVisualLineSelection = (anchor: number, active: number) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const clampedAnchor = clampIndex(anchor, value);
+    const clampedActive = clampIndex(active, value);
+    const range = getLineSelectionRange(value, clampedAnchor, clampedActive);
+
+    visualAnchorRef.current = clampedAnchor;
+    visualLineActiveRef.current = clampedActive;
+    textarea.setSelectionRange(range.start, range.end);
+  };
+
+  const getVisualActiveIndex = (textarea: HTMLTextAreaElement): number => {
+    const anchor = visualAnchorRef.current ?? textarea.selectionStart ?? 0;
+    if (textarea.selectionStart === textarea.selectionEnd) {
+      return anchor;
+    }
+
+    return anchor <= textarea.selectionStart
+      ? Math.max(textarea.selectionStart, textarea.selectionEnd - 1)
+      : textarea.selectionStart;
   };
 
   const updateEmojiCompletion = (
@@ -319,6 +701,618 @@ export const TelegramComposer = ({
     legacyApi.sendTelegramMessage();
   };
 
+  const deleteSelectionOrRange = (
+    selectionStart: number,
+    selectionEnd: number,
+    fallbackEnd: number,
+  ): number => {
+    const start = Math.min(selectionStart, selectionEnd);
+    const end = Math.max(selectionStart, selectionEnd);
+    const deleteEnd = end > start ? end : fallbackEnd;
+
+    if (deleteEnd <= start) {
+      return start;
+    }
+
+    const nextValue = `${value.slice(0, start)}${value.slice(deleteEnd)}`;
+    syncDraftValueWithSelection(nextValue, start);
+    return start;
+  };
+
+  const deleteCurrentLine = (enterInsertMode = false) => {
+    const textarea = textareaRef.current;
+    const cursor = textarea?.selectionStart ?? 0;
+    const lineStart = getLineStart(value, cursor);
+    const lineEnd = getLineEnd(value, cursor);
+    const deleteEnd = lineEnd < value.length ? lineEnd + 1 : lineEnd;
+    const deleteStart = lineStart > 0 && deleteEnd === value.length ? lineStart - 1 : lineStart;
+    const nextCursor = deleteStart === lineStart ? lineStart : deleteStart;
+    const nextValue = `${value.slice(0, deleteStart)}${value.slice(deleteEnd)}`;
+
+    syncDraftValueWithSelection(nextValue, nextCursor);
+    if (enterInsertMode) {
+      requestComposerMode('insert');
+    }
+  };
+
+  const changeCurrentLine = () => {
+    const textarea = textareaRef.current;
+    const cursor = textarea?.selectionStart ?? 0;
+    const lineStart = getLineStart(value, cursor);
+    const lineEnd = getLineEnd(value, cursor);
+    const nextValue = `${value.slice(0, lineStart)}${value.slice(lineEnd)}`;
+
+    syncDraftValueWithSelection(nextValue, lineStart);
+    requestComposerMode('insert');
+  };
+
+  const deleteCurrentSelection = (enterInsertMode = false): boolean => {
+    const textarea = textareaRef.current;
+    if (!textarea || textarea.selectionStart === textarea.selectionEnd) {
+      requestComposerMode(enterInsertMode ? 'insert' : 'normal');
+      return false;
+    }
+
+    deleteSelectionOrRange(textarea.selectionStart, textarea.selectionEnd, textarea.selectionEnd);
+    requestComposerMode(enterInsertMode ? 'insert' : 'normal');
+    return true;
+  };
+
+  const deleteCurrentBlockSelection = (enterInsertMode = false): boolean => {
+    const anchor = visualAnchorRef.current;
+    const active = visualBlockActiveRef.current;
+    if (anchor === null || active === null) {
+      requestComposerMode(enterInsertMode ? 'insert' : 'normal');
+      return false;
+    }
+
+    const ranges = getBlockTextObject(value, anchor, active);
+    if (ranges.length < 1) {
+      requestComposerMode(enterInsertMode ? 'insert' : 'normal');
+      return false;
+    }
+
+    let nextValue = value;
+    for (const range of [...ranges].reverse()) {
+      nextValue = `${nextValue.slice(0, range.start)}${nextValue.slice(range.end)}`;
+    }
+
+    syncDraftValueWithSelection(nextValue, ranges[0].start);
+    requestComposerMode(enterInsertMode ? 'insert' : 'normal');
+    return true;
+  };
+
+  const applyWordTextObject = (
+    operator: 'c' | 'd',
+    around: boolean,
+    selectionStart: number,
+    selectionEnd: number,
+  ): boolean => {
+    const target = getWordTextObject(value, selectionStart, around);
+    if (!target) {
+      return false;
+    }
+
+    deleteSelectionOrRange(target.start, target.end, target.end);
+    requestComposerMode(operator === 'c' ? 'insert' : 'normal');
+    if (selectionStart !== selectionEnd) {
+      textareaRef.current?.setSelectionRange(target.start, target.start);
+    }
+    return true;
+  };
+
+  const handleVisualModeKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (event.altKey || (event.metaKey && event.key !== 'Enter')) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    const anchor = visualAnchorRef.current ?? textarea.selectionStart ?? 0;
+    const active = getVisualActiveIndex(textarea);
+
+    const handled = () => {
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    };
+
+    if (event.key === 'Escape') {
+      const cursor = Math.min(textarea.selectionStart, textarea.selectionEnd);
+      requestComposerMode('normal');
+      textarea.setSelectionRange(cursor, cursor);
+      return handled();
+    }
+
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      handleSend();
+      return handled();
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === 'v') {
+      requestComposerMode('visual-block');
+      visualAnchorRef.current = anchor;
+      setVisualBlockSelection(anchor, active);
+      return handled();
+    }
+
+    if (event.ctrlKey) {
+      return false;
+    }
+
+    switch (event.key) {
+      case 'v':
+        requestComposerMode('normal');
+        textarea.setSelectionRange(textarea.selectionStart, textarea.selectionStart);
+        return handled();
+      case 'V':
+        requestComposerMode('visual-line');
+        visualAnchorRef.current = anchor;
+        setVisualLineSelection(anchor, active);
+        return handled();
+      case 'h':
+      case 'ArrowLeft':
+        setVisualSelection(anchor, Math.max(0, active - 1));
+        return handled();
+      case 'l':
+      case 'ArrowRight':
+        setVisualSelection(anchor, Math.min(value.length, active + 1));
+        return handled();
+      case 'j':
+      case 'ArrowDown':
+        setVisualSelection(anchor, moveCursorVertically(value, active, 1));
+        return handled();
+      case 'k':
+      case 'ArrowUp':
+        setVisualSelection(anchor, moveCursorVertically(value, active, -1));
+        return handled();
+      case '0':
+      case 'Home':
+        setVisualSelection(anchor, getLineStart(value, active));
+        return handled();
+      case '^':
+        setVisualSelection(anchor, getFirstNonWhitespaceInLine(value, active));
+        return handled();
+      case '$':
+      case 'End':
+        setVisualSelection(anchor, getLineEnd(value, active));
+        return handled();
+      case 'G':
+        setVisualSelection(anchor, value.length);
+        return handled();
+      case 'w':
+        setVisualSelection(anchor, findNextWordStart(value, active));
+        return handled();
+      case 'b':
+        setVisualSelection(anchor, findPreviousWordStart(value, active));
+        return handled();
+      case 'e':
+        setVisualSelection(anchor, findWordEnd(value, active));
+        return handled();
+      case 'x':
+      case 'd':
+      case 'Delete':
+        deleteCurrentSelection(false);
+        return handled();
+      case 'c':
+      case 's':
+        deleteCurrentSelection(true);
+        return handled();
+      case 'i':
+        requestComposerMode('insert');
+        textarea.setSelectionRange(textarea.selectionStart, textarea.selectionStart);
+        return handled();
+      default:
+        if (isPlainPrintableKey(event)) {
+          return handled();
+        }
+        return false;
+    }
+  };
+
+  const handleVisualBlockModeKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (event.altKey || (event.metaKey && event.key !== 'Enter')) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    const anchor = visualAnchorRef.current ?? textarea.selectionStart ?? 0;
+    const active = visualBlockActiveRef.current ?? anchor;
+
+    const handled = () => {
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    };
+
+    if (event.key === 'Escape') {
+      requestComposerMode('normal');
+      textarea.setSelectionRange(active, active);
+      return handled();
+    }
+
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      handleSend();
+      return handled();
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === 'v') {
+      requestComposerMode('normal');
+      textarea.setSelectionRange(active, active);
+      return handled();
+    }
+
+    if (event.ctrlKey) {
+      return false;
+    }
+
+    const activePosition = getLineColumnAtIndex(value, active);
+
+    switch (event.key) {
+      case 'v':
+        requestComposerMode('visual');
+        visualAnchorRef.current = anchor;
+        setVisualSelection(anchor, active);
+        return handled();
+      case 'V':
+        requestComposerMode('visual-line');
+        visualAnchorRef.current = anchor;
+        setVisualLineSelection(anchor, active);
+        return handled();
+      case 'h':
+      case 'ArrowLeft':
+        setVisualBlockSelection(
+          anchor,
+          getIndexAtLineColumn(value, activePosition.line, activePosition.column - 1),
+        );
+        return handled();
+      case 'l':
+      case 'ArrowRight':
+        setVisualBlockSelection(
+          anchor,
+          getIndexAtLineColumn(value, activePosition.line, activePosition.column + 1),
+        );
+        return handled();
+      case 'j':
+      case 'ArrowDown':
+        setVisualBlockSelection(anchor, moveCursorVertically(value, active, 1));
+        return handled();
+      case 'k':
+      case 'ArrowUp':
+        setVisualBlockSelection(anchor, moveCursorVertically(value, active, -1));
+        return handled();
+      case '0':
+      case 'Home':
+        setVisualBlockSelection(anchor, getLineStart(value, active));
+        return handled();
+      case '^':
+        setVisualBlockSelection(anchor, getFirstNonWhitespaceInLine(value, active));
+        return handled();
+      case '$':
+      case 'End':
+        setVisualBlockSelection(anchor, getLineEnd(value, active));
+        return handled();
+      case 'G':
+        setVisualBlockSelection(anchor, value.length);
+        return handled();
+      case 'w':
+        setVisualBlockSelection(anchor, findNextWordStart(value, active));
+        return handled();
+      case 'b':
+        setVisualBlockSelection(anchor, findPreviousWordStart(value, active));
+        return handled();
+      case 'e':
+        setVisualBlockSelection(anchor, findWordEnd(value, active));
+        return handled();
+      case 'x':
+      case 'd':
+      case 'Delete':
+        deleteCurrentBlockSelection(false);
+        return handled();
+      case 'c':
+      case 's':
+        deleteCurrentBlockSelection(true);
+        return handled();
+      case 'i':
+        requestComposerMode('insert');
+        textarea.setSelectionRange(textarea.selectionStart, textarea.selectionStart);
+        return handled();
+      default:
+        if (isPlainPrintableKey(event)) {
+          return handled();
+        }
+        return false;
+    }
+  };
+
+  const handleVisualLineModeKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (event.altKey || (event.metaKey && event.key !== 'Enter')) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    const anchor = visualAnchorRef.current ?? textarea.selectionStart ?? 0;
+    const active = visualLineActiveRef.current ?? anchor;
+
+    const handled = () => {
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    };
+
+    if (event.key === 'Escape') {
+      requestComposerMode('normal');
+      textarea.setSelectionRange(getLineStart(value, active), getLineStart(value, active));
+      return handled();
+    }
+
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      handleSend();
+      return handled();
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === 'v') {
+      requestComposerMode('visual-block');
+      visualAnchorRef.current = anchor;
+      setVisualBlockSelection(anchor, active);
+      return handled();
+    }
+
+    if (event.ctrlKey) {
+      return false;
+    }
+
+    switch (event.key) {
+      case 'V':
+        requestComposerMode('normal');
+        textarea.setSelectionRange(getLineStart(value, active), getLineStart(value, active));
+        return handled();
+      case 'v':
+        requestComposerMode('visual');
+        visualAnchorRef.current = anchor;
+        setVisualSelection(anchor, active);
+        return handled();
+      case 'j':
+      case 'ArrowDown':
+        setVisualLineSelection(anchor, moveCursorVertically(value, active, 1));
+        return handled();
+      case 'k':
+      case 'ArrowUp':
+        setVisualLineSelection(anchor, moveCursorVertically(value, active, -1));
+        return handled();
+      case 'G':
+        setVisualLineSelection(anchor, value.length);
+        return handled();
+      case 'g':
+        setVisualLineSelection(anchor, 0);
+        return handled();
+      case 'x':
+      case 'd':
+      case 'Delete':
+        deleteCurrentSelection(false);
+        return handled();
+      case 'c':
+      case 's':
+        deleteCurrentSelection(true);
+        return handled();
+      case 'i':
+        requestComposerMode('insert');
+        textarea.setSelectionRange(textarea.selectionStart, textarea.selectionStart);
+        return handled();
+      default:
+        if (isPlainPrintableKey(event)) {
+          return handled();
+        }
+        return false;
+    }
+  };
+
+  const handleNormalModeKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean => {
+    if (event.altKey || (event.metaKey && event.key !== 'Enter')) {
+      return false;
+    }
+
+    const textarea = event.currentTarget;
+    const selectionStart = textarea.selectionStart ?? 0;
+    const selectionEnd = textarea.selectionEnd ?? selectionStart;
+    const hasSelection = selectionStart !== selectionEnd;
+    const now = Date.now();
+    const sequence =
+      now - vimSequenceRef.current.timestamp <= TELEGRAM_VIM_SEQUENCE_TIMEOUT_MS
+        ? vimSequenceRef.current.key
+        : null;
+
+    const clearSequence = () => {
+      vimSequenceRef.current = { key: null, timestamp: 0 };
+    };
+
+    const setSequence = (key: TelegramVimSequence) => {
+      vimSequenceRef.current = { key, timestamp: now };
+    };
+
+    const handled = () => {
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    };
+
+    if (event.key === 'Escape') {
+      clearSequence();
+      textarea.blur();
+      return handled();
+    }
+
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      clearSequence();
+      handleSend();
+      return handled();
+    }
+
+    if (event.ctrlKey && event.key.toLowerCase() === 'v') {
+      clearSequence();
+      visualAnchorRef.current = selectionStart;
+      setVisualBlockSelection(selectionStart, selectionEnd > selectionStart ? selectionEnd - 1 : selectionStart);
+      requestComposerMode('visual-block');
+      return handled();
+    }
+
+    if (event.ctrlKey) {
+      return false;
+    }
+
+    if (sequence === 'g' && event.key === 'g') {
+      clearSequence();
+      moveTextareaCursor(0);
+      return handled();
+    }
+
+    if (sequence === 'd' && event.key === 'd') {
+      clearSequence();
+      deleteCurrentLine();
+      return handled();
+    }
+
+    if ((sequence === 'd' || sequence === 'c') && event.key === 'i') {
+      setSequence(sequence === 'd' ? 'di' : 'ci');
+      return handled();
+    }
+
+    if ((sequence === 'd' || sequence === 'c') && event.key === 'a') {
+      setSequence(sequence === 'd' ? 'da' : 'ca');
+      return handled();
+    }
+
+    if ((sequence === 'di' || sequence === 'ci' || sequence === 'da' || sequence === 'ca') && event.key === 'w') {
+      clearSequence();
+      applyWordTextObject(sequence[0] as 'c' | 'd', sequence[1] === 'a', selectionStart, selectionEnd);
+      return handled();
+    }
+
+    if (sequence === 'c' && event.key === 'c') {
+      clearSequence();
+      changeCurrentLine();
+      return handled();
+    }
+
+    clearSequence();
+
+    switch (event.key) {
+      case 'i':
+        requestComposerMode('insert');
+        return handled();
+      case 'v':
+        visualAnchorRef.current = selectionStart;
+        setVisualSelection(selectionStart, selectionEnd > selectionStart ? selectionEnd - 1 : selectionStart);
+        requestComposerMode('visual');
+        return handled();
+      case 'V':
+        visualAnchorRef.current = selectionStart;
+        setVisualLineSelection(selectionStart, selectionEnd > selectionStart ? selectionEnd - 1 : selectionStart);
+        requestComposerMode('visual-line');
+        return handled();
+      case 'I':
+        moveTextareaCursor(getFirstNonWhitespaceInLine(value, selectionStart));
+        requestComposerMode('insert');
+        return handled();
+      case 'a':
+        moveTextareaCursor(Math.min(value.length, selectionEnd + 1));
+        requestComposerMode('insert');
+        return handled();
+      case 'A':
+        moveTextareaCursor(getLineEnd(value, selectionEnd));
+        requestComposerMode('insert');
+        return handled();
+      case 'o': {
+        const lineEnd = getLineEnd(value, selectionEnd);
+        const insertAt = value.length === 0 ? 0 : lineEnd;
+        const textToInsert = value.length === 0 ? '' : '\n';
+        const nextValue = `${value.slice(0, insertAt)}${textToInsert}${value.slice(insertAt)}`;
+        syncDraftValueWithSelection(nextValue, insertAt + textToInsert.length);
+        requestComposerMode('insert');
+        return handled();
+      }
+      case 'O': {
+        const lineStart = getLineStart(value, selectionStart);
+        const textToInsert = value.length === 0 ? '' : '\n';
+        const nextValue = `${value.slice(0, lineStart)}${textToInsert}${value.slice(lineStart)}`;
+        syncDraftValueWithSelection(nextValue, lineStart);
+        requestComposerMode('insert');
+        return handled();
+      }
+      case 'h':
+      case 'ArrowLeft':
+        moveTextareaCursor(Math.max(0, selectionStart - 1));
+        return handled();
+      case 'l':
+      case 'ArrowRight':
+        moveTextareaCursor(Math.min(value.length, selectionEnd + 1));
+        return handled();
+      case 'j':
+      case 'ArrowDown':
+        moveTextareaCursor(moveCursorVertically(value, selectionEnd, 1));
+        return handled();
+      case 'k':
+      case 'ArrowUp':
+        moveTextareaCursor(moveCursorVertically(value, selectionStart, -1));
+        return handled();
+      case '0':
+      case 'Home':
+        moveTextareaCursor(getLineStart(value, selectionStart));
+        return handled();
+      case '^':
+        moveTextareaCursor(getFirstNonWhitespaceInLine(value, selectionStart));
+        return handled();
+      case '$':
+      case 'End':
+        moveTextareaCursor(getLineEnd(value, selectionEnd));
+        return handled();
+      case 'G':
+        moveTextareaCursor(value.length);
+        return handled();
+      case 'w':
+        moveTextareaCursor(findNextWordStart(value, selectionEnd));
+        return handled();
+      case 'b':
+        moveTextareaCursor(findPreviousWordStart(value, selectionStart));
+        return handled();
+      case 'e':
+        moveTextareaCursor(findWordEnd(value, selectionEnd));
+        return handled();
+      case 'x':
+      case 'Delete':
+        deleteSelectionOrRange(selectionStart, selectionEnd, Math.min(value.length, selectionStart + 1));
+        return handled();
+      case 'X':
+      case 'Backspace':
+        if (hasSelection) {
+          deleteSelectionOrRange(selectionStart, selectionEnd, selectionEnd);
+        } else {
+          deleteSelectionOrRange(Math.max(0, selectionStart - 1), selectionStart, selectionStart);
+        }
+        return handled();
+      case 'D':
+        deleteSelectionOrRange(selectionStart, selectionEnd, getLineEnd(value, selectionEnd));
+        return handled();
+      case 'C':
+        deleteSelectionOrRange(selectionStart, selectionEnd, getLineEnd(value, selectionEnd));
+        requestComposerMode('insert');
+        return handled();
+      case 'd':
+        setSequence('d');
+        return handled();
+      case 'c':
+        setSequence('c');
+        return handled();
+      case 'g':
+        setSequence('g');
+        return handled();
+      default:
+        if (isPlainPrintableKey(event)) {
+          return handled();
+        }
+        return false;
+    }
+  };
+
   useEffect(() => {
     if (draftText === syncedDraftValueRef.current) {
       hasLocalDraftEditRef.current = false;
@@ -332,6 +1326,19 @@ export const TelegramComposer = ({
     syncedDraftValueRef.current = draftText;
     setValue(draftText);
   }, [draftText]);
+
+  useEffect(() => {
+    setComposerMode(appMode === 'insert' ? 'insert' : 'normal');
+  }, [appMode]);
+
+  useEffect(() => {
+    if (composerMode === 'insert') {
+      return;
+    }
+
+    setEmojiCompletion(null);
+    setMentionCompletion(null);
+  }, [composerMode]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -599,6 +1606,20 @@ export const TelegramComposer = ({
             event.currentTarget.value = '';
           }}
         />
+        <div
+          className={`telegram-vim-mode-indicator mode-${composerMode}`}
+          aria-label={`Composer ${composerMode} mode`}
+        >
+          {composerMode === 'insert'
+            ? 'INS'
+            : composerMode === 'visual'
+              ? 'VIS'
+              : composerMode === 'visual-line'
+                ? 'VLI'
+              : composerMode === 'visual-block'
+                ? 'VBL'
+                : 'NOR'}
+        </div>
         <textarea
           id="telegram-compose-input"
           ref={(node) => {
@@ -608,7 +1629,8 @@ export const TelegramComposer = ({
             }
             inputRef.current = node;
           }}
-          className="telegram-compose-input"
+          className={`telegram-compose-input vim-${composerMode}`}
+          data-vim-mode={composerMode}
           placeholder={placeholder}
           rows={1}
           disabled={composeLocked}
@@ -631,7 +1653,16 @@ export const TelegramComposer = ({
               ? `telegram-emoji-completion-item-${emojiCompletion.activeIndex}`
               : undefined
           }
+          onBeforeInput={(event) => {
+            if (composerMode !== 'insert' && isTrustedInputEvent(event)) {
+              event.preventDefault();
+            }
+          }}
           onChange={(event) => {
+            if (composerMode !== 'insert' && isTrustedInputEvent(event)) {
+              event.target.value = value;
+              return;
+            }
             syncDraftValue(event.target.value);
             updateMentionCompletion(
               event.target.value,
@@ -646,6 +1677,10 @@ export const TelegramComposer = ({
             );
           }}
           onInput={(event) => {
+            if (composerMode !== 'insert' && isTrustedInputEvent(event)) {
+              event.currentTarget.value = value;
+              return;
+            }
             syncDraftValue(event.currentTarget.value);
             updateMentionCompletion(
               event.currentTarget.value,
@@ -691,6 +1726,14 @@ export const TelegramComposer = ({
           }}
           onPaste={(event) => {
             const files = getClipboardFiles(event.clipboardData);
+            if (composerMode !== 'insert') {
+              event.preventDefault();
+              if (files.length > 0) {
+                legacyApi?.appendTelegramFiles(files);
+              }
+              return;
+            }
+
             if (files.length < 1) {
               return;
             }
@@ -712,6 +1755,30 @@ export const TelegramComposer = ({
             );
           }}
           onKeyDown={(event) => {
+            if (composerMode === 'visual-block') {
+              if (handleVisualBlockModeKeyDown(event)) {
+                return;
+              }
+            }
+
+            if (composerMode === 'visual-line') {
+              if (handleVisualLineModeKeyDown(event)) {
+                return;
+              }
+            }
+
+            if (composerMode === 'visual') {
+              if (handleVisualModeKeyDown(event)) {
+                return;
+              }
+            }
+
+            if (composerMode === 'normal') {
+              if (handleNormalModeKeyDown(event)) {
+                return;
+              }
+            }
+
             if (mentionCompletion && event.key === 'ArrowDown') {
               event.preventDefault();
               setMentionCompletion((current) =>
@@ -807,6 +1874,18 @@ export const TelegramComposer = ({
             if (emojiCompletion && event.key === 'Escape') {
               event.preventDefault();
               setEmojiCompletion(null);
+              return;
+            }
+
+            if (
+              event.key === 'Escape' &&
+              !event.shiftKey &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey
+            ) {
+              event.preventDefault();
+              requestComposerMode('normal');
               return;
             }
 

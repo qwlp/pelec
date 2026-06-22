@@ -2609,7 +2609,7 @@ textarea {
 
 .telegram-compose-row {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 40px 40px;
+  grid-template-columns: 40px 42px minmax(0, 1fr) 40px 40px;
   gap: 8px;
   align-items: center;
   min-height: 48px;
@@ -2930,6 +2930,40 @@ textarea {
   font-size: calc(11px * var(--font-scale));
 }
 
+.telegram-vim-mode-indicator {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 40px;
+  border: 1px solid rgba(255, 190, 224, 0.14);
+  background: rgba(27, 22, 42, 0.72);
+  color: #cab8dd;
+  font-size: calc(10px * var(--font-scale));
+  letter-spacing: 0.08em;
+  line-height: 1;
+  user-select: none;
+}
+
+.telegram-vim-mode-indicator.mode-insert {
+  border-color: rgba(255, 190, 224, 0.2);
+  background: rgba(255, 79, 167, 0.1);
+  color: #ffe4f2;
+}
+
+.telegram-vim-mode-indicator.mode-normal {
+  border-color: rgba(255, 190, 224, 0.2);
+  background: rgba(255, 79, 167, 0.1);
+  color: #ffe4f2;
+}
+
+.telegram-vim-mode-indicator.mode-visual,
+.telegram-vim-mode-indicator.mode-visual-block,
+.telegram-vim-mode-indicator.mode-visual-line {
+  border-color: rgba(255, 190, 224, 0.2);
+  background: rgba(255, 79, 167, 0.1);
+  color: #ffe4f2;
+}
+
 .telegram-compose-input {
   border: 1px solid rgba(255, 190, 224, 0.12);
   background: rgba(27, 22, 42, 0.72);
@@ -2944,6 +2978,23 @@ textarea {
   overflow-y: hidden;
   line-height: 1.4;
   box-shadow: none;
+}
+
+.telegram-compose-input.vim-normal {
+  border-color: rgba(255, 190, 224, 0.22);
+  caret-color: #ffe4f2;
+  caret-shape: block;
+}
+
+.telegram-compose-input.vim-visual,
+.telegram-compose-input.vim-visual-block,
+.telegram-compose-input.vim-visual-line {
+  border-color: rgba(255, 190, 224, 0.22);
+  caret-color: #ffe4f2;
+}
+
+.telegram-compose-input.vim-insert {
+  caret-shape: bar;
 }
 
 .telegram-compose-input:focus,
