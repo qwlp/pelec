@@ -431,10 +431,8 @@ export const registerIpcHandlers = ({
       const opened = await openResolvedDocumentInDefaultApp(document);
       emitAppActivity({
         id: activityId,
-        label: opened ? `Opened ${document.fileName}` : 'Open failed',
-        detail: opened
-          ? 'Opened in the default system app.'
-          : `Could not open ${document.fileName}.`,
+        label: opened ? 'Opened' : 'Open failed',
+        detail: opened ? undefined : `Could not open ${document.fileName}.`,
         progress: opened ? 1 : undefined,
         state: opened ? 'success' : 'error',
       });

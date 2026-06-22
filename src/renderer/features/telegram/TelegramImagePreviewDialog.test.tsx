@@ -30,9 +30,9 @@ describe('TelegramImagePreviewDialog', () => {
       />,
     );
 
-    fireEvent.click(view.getByText('Copy'));
-    fireEvent.click(view.getByText('Download'));
-    fireEvent.click(view.getByText('Close'));
+    fireEvent.click(view.getByRole('button', { name: 'Copy' }));
+    fireEvent.click(view.getByRole('button', { name: 'Download' }));
+    fireEvent.click(view.getByRole('button', { name: 'Close' }));
 
     expect(onCopy).toHaveBeenCalledTimes(1);
     expect(onDownload).toHaveBeenCalledTimes(1);
@@ -50,12 +50,12 @@ describe('TelegramImagePreviewDialog', () => {
     );
     const image = view.getByAltText('Telegram image preview');
 
-    fireEvent.click(view.getByText('Rotate Right'));
+    fireEvent.click(view.getByRole('button', { name: 'Rotate right' }));
     expect(image.getAttribute('style')).toBe(
       'transform: translate(0px, 0px) rotate(90deg) scale(1);',
     );
 
-    fireEvent.click(view.getByText('Rotate Left'));
+    fireEvent.click(view.getByRole('button', { name: 'Rotate left' }));
     expect(image.getAttribute('style')).toBe('');
 
     fireEvent.keyDown(window, { key: 'r' });

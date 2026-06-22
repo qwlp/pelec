@@ -99,3 +99,6 @@ out/
 
 # Codex
 .codex/
+
+# Other dist
+dist/

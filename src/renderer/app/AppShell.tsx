@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
-import type { ShortcutConfig } from '../../shared/types';
+import type { AppActivity, ShortcutConfig } from '../../shared/types';
 import { useKeyboardBindings } from '../keyboard/useKeyboardBindings';
 import type { LegacyAppBridgeApi } from '../legacyBridge';
 import { applyUserTheme } from '../lib/theme';
@@ -15,9 +15,11 @@ import { useAppDispatch, useAppState } from '../state/appStore';
 import { selectCommandPaletteItems, selectLegacyTelegramSnapshot } from '../state/selectors';
 import { LegacyWorkspaceAdapter } from './LegacyWorkspaceAdapter';
 import { ModalLayer } from './ModalLayer';
+import { StatusLayer } from './StatusLayer';
 import { WebviewHost } from './WebviewHost';
 
 const TELEGRAM_COMPACT_BREAKPOINT_PX = 820;
+const IMAGE_ACTION_TOAST_CLEAR_MS = 2600;
 
 const buildMentionFallback = (displayName: string): string | null => {
   const normalized = displayName
@@ -133,6 +135,7 @@ export const AppShell = () => {
   const telegramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingTelegramPaneFocusRef = useRef<'telegram-chats' | 'telegram-messages' | null>(null);
   const previousTelegramCompactLayoutRef = useRef(false);
+  const imageActionToastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const end = beginMeasure('app.boot');
@@ -165,6 +168,15 @@ export const AppShell = () => {
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      if (imageActionToastTimerRef.current !== null) {
+        window.clearTimeout(imageActionToastTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const shortcuts = state.config.appConfig?.shortcuts ?? FALLBACK_SHORTCUTS;
   const customKeymap = state.config.userConfig?.keyboard.keymap ?? {};
 
@@ -178,6 +190,39 @@ export const AppShell = () => {
 
   const closeCommandPalette = useEffectEvent(() => {
     dispatch({ type: 'commandPalette/close' });
+  });
+
+  const showImageActionToast = useEffectEvent((activity: AppActivity) => {
+    dispatch({ type: 'activity/set', activity });
+
+    if (imageActionToastTimerRef.current !== null) {
+      window.clearTimeout(imageActionToastTimerRef.current);
+    }
+
+    imageActionToastTimerRef.current = window.setTimeout(() => {
+      imageActionToastTimerRef.current = null;
+      dispatch({ type: 'activity/set', activity: null });
+    }, IMAGE_ACTION_TOAST_CLEAR_MS);
+  });
+
+  const handleCopyTelegramImagePreview = useEffectEvent(async () => {
+    const copied = (await legacyApi?.copyTelegramImagePreview()) ?? false;
+    showImageActionToast({
+      id: `telegram-image-copy:${Date.now()}`,
+      label: copied ? 'Image copied' : 'Image copy failed',
+      detail: copied ? undefined : 'Could not copy the image to the clipboard.',
+      state: copied ? 'success' : 'error',
+    });
+  });
+
+  const handleDownloadTelegramImagePreview = useEffectEvent(() => {
+    const started = legacyApi?.downloadTelegramImagePreview() ?? false;
+    showImageActionToast({
+      id: `telegram-image-download:${Date.now()}`,
+      label: started ? 'Image download started' : 'Image download failed',
+      detail: started ? undefined : 'Could not start the image download.',
+      state: started ? 'success' : 'error',
+    });
   });
 
   const ignoreKeyboardHelp = (): null => null;
@@ -690,8 +735,10 @@ export const AppShell = () => {
         onCommandQueryChange={(query) => dispatch({ type: 'commandPalette/query', query })}
         onCopyTelegramMessage={handleTelegramContextCopy}
         onDeleteTelegramMessage={handleTelegramContextDelete}
-        onCopyTelegramImagePreview={() => legacyApi?.copyTelegramImagePreview()}
-        onDownloadTelegramImagePreview={() => legacyApi?.downloadTelegramImagePreview()}
+        onCopyTelegramImagePreview={() => {
+          void handleCopyTelegramImagePreview();
+        }}
+        onDownloadTelegramImagePreview={handleDownloadTelegramImagePreview}
         onExecuteCommand={executeCommand}
         onForwardTelegramMessage={(chatId) => legacyApi?.forwardTelegramMessageToChat(chatId)}
         onOpenTelegramForwardMenu={(messageId) => legacyApi?.openTelegramForwardMenu(messageId)}
@@ -713,6 +760,7 @@ export const AppShell = () => {
         telegramImagePreviewMeta={telegramSnapshot?.imagePreviewMeta ?? null}
         telegramImagePreviewUrl={telegramSnapshot?.imagePreviewUrl ?? null}
       />
+      <StatusLayer />
     </div>
   );
 };

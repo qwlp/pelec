@@ -2362,7 +2362,11 @@ export const bootLegacyApp = async (
     );
   };
 
-  const downloadTelegramImage = (url: string): void => {
+  const downloadTelegramImage = (url: string): boolean => {
+    if (!url.trim()) {
+      return false;
+    }
+
     const link = document.createElement('a');
     link.href = url;
     link.download = 'telegram-image';
@@ -2370,9 +2374,10 @@ export const bootLegacyApp = async (
     document.body.append(link);
     link.click();
     link.remove();
+    return true;
   };
 
-  const copyTelegramImage = async (url: string): Promise<void> => {
+  const copyTelegramImage = async (url: string): Promise<boolean> => {
     try {
       const imageUrl = url.trim();
       if (!imageUrl) {
@@ -2381,13 +2386,14 @@ export const bootLegacyApp = async (
       const copied = await window.pelec.copyImageToClipboard(imageUrl);
       if (copied) {
         statusBar.textContent = 'Image copied.';
-        return;
+        return true;
       }
     } catch {
       // Fall through to failure state below.
     }
 
     statusBar.textContent = 'Failed to copy image.';
+    return false;
   };
 
   const copyTelegramMessageImageById = (messageId: string): void => {
@@ -2548,22 +2554,22 @@ export const bootLegacyApp = async (
     render();
   };
 
-  const copyActiveTelegramImagePreview = (): void => {
+  const copyActiveTelegramImagePreview = async (): Promise<boolean> => {
     if (!activeTelegramImageUrl) {
-      return;
+      return false;
     }
-    void copyTelegramImage(activeTelegramImageUrl);
+    return copyTelegramImage(activeTelegramImageUrl);
   };
 
-  const downloadActiveTelegramImagePreview = (): void => {
+  const downloadActiveTelegramImagePreview = (): boolean => {
     if (!activeTelegramImageUrl) {
-      return;
+      return false;
     }
-    downloadTelegramImage(activeTelegramImageUrl);
+    return downloadTelegramImage(activeTelegramImageUrl);
   };
 
   telegramImageCopyEl.addEventListener('click', () => {
-    copyActiveTelegramImagePreview();
+    void copyActiveTelegramImagePreview();
   });
 
   telegramImageDownloadEl.addEventListener('click', () => {

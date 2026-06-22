@@ -224,6 +224,33 @@ const getLastTelegramMessageElement = (target: HTMLElement | null): HTMLElement 
 const getTelegramMessageDistanceFromBottom = (scrollContainer: HTMLElement): number =>
   scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
 
+const isTelegramMessageInteractiveTarget = (target: EventTarget | null): boolean => {
+  if (!target || typeof (target as Element).closest !== 'function') {
+    return false;
+  }
+
+  const element = target as Element;
+  return Boolean(
+    element.closest(
+      [
+        'button',
+        'a',
+        'input',
+        'textarea',
+        'select',
+        '[role="button"]',
+        '.telegram-message-image',
+        '.telegram-message-album-item',
+        '.telegram-message-album-image',
+        '.telegram-message-video',
+        '.telegram-message-animation',
+        '.telegram-message-sticker',
+        '.telegram-deferred-image',
+      ].join(', '),
+    ),
+  );
+};
+
 const hasSelectionInsideElement = (element: HTMLElement): boolean => {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount < 1) {
@@ -2001,7 +2028,10 @@ export const TelegramMessageList = ({
 
     const scrollContainer = getTelegramMessageScrollContainer(target);
     const activateMessagesPane = (event: Event) => {
-      if (isSelectableMessageTextTarget(event.target)) {
+      if (
+        isSelectableMessageTextTarget(event.target) ||
+        isTelegramMessageInteractiveTarget(event.target)
+      ) {
         return;
       }
       if (scrollContainer && scrollContainer.tabIndex < 0) {

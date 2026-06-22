@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type PointerEvent,
   type WheelEvent,
 } from 'react';
@@ -172,27 +173,47 @@ export const TelegramImagePreviewDialog = ({
             <button
               type="button"
               className="ghost-button"
+              aria-label="Rotate left"
               onClick={() => rotatePreview(-90)}
-              title="Rotate counterclockwise"
+              title="Rotate left"
             >
-              Rotate Left
+              <ImageActionIcon name="rotate-left" />
             </button>
             <button
               type="button"
               className="ghost-button"
+              aria-label="Rotate right"
               onClick={() => rotatePreview(90)}
-              title="Rotate clockwise"
+              title="Rotate right"
             >
-              Rotate Right
+              <ImageActionIcon name="rotate-right" />
             </button>
-            <button type="button" className="ghost-button" onClick={onCopy}>
-              Copy
+            <button
+              type="button"
+              className="ghost-button"
+              aria-label="Copy"
+              title="Copy"
+              onClick={onCopy}
+            >
+              <ImageActionIcon name="copy" />
             </button>
-            <button type="button" className="ghost-button" onClick={onDownload}>
-              Download
+            <button
+              type="button"
+              className="ghost-button"
+              aria-label="Download"
+              title="Download"
+              onClick={onDownload}
+            >
+              <ImageActionIcon name="download" />
             </button>
-            <button type="button" className="ghost-button" onClick={onClose}>
-              Close
+            <button
+              type="button"
+              className="ghost-button"
+              aria-label="Close"
+              title="Close"
+              onClick={onClose}
+            >
+              <ImageActionIcon name="close" />
             </button>
           </div>
         </header>
@@ -220,6 +241,60 @@ export const TelegramImagePreviewDialog = ({
         </div>
       </div>
     </div>
+  );
+};
+
+type ImageActionIconName = 'rotate-left' | 'rotate-right' | 'copy' | 'download' | 'close';
+
+const ImageActionIcon = ({ name }: { name: ImageActionIconName }) => {
+  const paths: Record<ImageActionIconName, ReactNode> = {
+    'rotate-left': (
+      <>
+        <path d="M7 7H3V3" />
+        <path d="M3.4 7.4A7 7 0 1 1 5 17.7" />
+      </>
+    ),
+    'rotate-right': (
+      <>
+        <path d="M17 7h4V3" />
+        <path d="M20.6 7.4A7 7 0 1 0 19 17.7" />
+      </>
+    ),
+    copy: (
+      <>
+        <rect width="11" height="13" x="9" y="7" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </>
+    ),
+    download: (
+      <>
+        <path d="M12 3v12" />
+        <path d="m7 10 5 5 5-5" />
+        <path d="M5 21h14" />
+      </>
+    ),
+    close: (
+      <>
+        <path d="M18 6 6 18" />
+        <path d="m6 6 12 12" />
+      </>
+    ),
+  };
+
+  return (
+    <svg
+      className="telegram-image-action-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {paths[name]}
+    </svg>
   );
 };
 

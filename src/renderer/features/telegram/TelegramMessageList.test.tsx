@@ -384,6 +384,58 @@ describe('TelegramMessageList', () => {
     expect(document.activeElement).toBe(scrollContainer);
   });
 
+  it('opens image previews without activating the message pane on mousedown', () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    scrollContainer.tabIndex = -1;
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+    const legacyApi = {
+      activateTelegramMessagesPane: vi.fn(),
+      openTelegramImagePreview: vi.fn(),
+      selectTelegramMessage: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: 'image-1',
+            sender: 'Ada',
+            text: 'Photo',
+            timestamp: 1,
+            imageUrl: 'https://example.com/image.png',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const image = target.querySelector<HTMLImageElement>('.telegram-message-image');
+    expect(image).toBeTruthy();
+
+    fireEvent.mouseDown(image as HTMLImageElement);
+    fireEvent.click(image as HTMLImageElement);
+
+    expect(legacyApi.activateTelegramMessagesPane).not.toHaveBeenCalled();
+    expect(legacyApi.selectTelegramMessage).not.toHaveBeenCalled();
+    expect(legacyApi.openTelegramImagePreview).toHaveBeenCalledWith(
+      'https://example.com/image.png',
+      expect.objectContaining({
+        sender: 'Ada',
+        timestamp: 1,
+      }),
+    );
+    expect(document.activeElement).not.toBe(scrollContainer);
+  });
+
   it('renders a compact back action and routes it to the provided handler', () => {
     const target = document.createElement('div');
     document.body.append(target);

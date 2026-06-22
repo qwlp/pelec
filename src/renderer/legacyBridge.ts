@@ -121,8 +121,8 @@ export interface LegacyAppBridgeApi {
   closeTelegramImagePreview(): void;
   copyTelegramMessage(messageId: string): void;
   copyTelegramMessageImage(messageId: string): void;
-  copyTelegramImagePreview(): void;
-  downloadTelegramImagePreview(): void;
+  copyTelegramImagePreview(): Promise<boolean>;
+  downloadTelegramImagePreview(): boolean;
   focusTelegramComposer(): void;
   openTelegramForwardMenu(messageId: string): void;
   refreshQrAuth(): void;
