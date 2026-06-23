@@ -654,6 +654,10 @@ export const AppShell = () => {
     legacyApi?.deleteSelection();
   });
 
+  const handleTelegramContextEdit = useEffectEvent((messageId: string) => {
+    legacyApi?.editTelegramMessage(messageId);
+  });
+
   return (
     <div className="modern-app-shell">
       <div
@@ -727,6 +731,7 @@ export const AppShell = () => {
             attachments={telegramSnapshot.pendingAttachments}
             canSend={telegramSnapshot.activeChatCanSend}
             draftText={telegramSnapshot.draftText}
+            editing={telegramSnapshot.editing}
             inputRef={telegramComposerInputRef}
             legacyApi={legacyApi}
             mentionSuggestions={telegramMentionSuggestions}
@@ -753,6 +758,7 @@ export const AppShell = () => {
         onCommandQueryChange={(query) => dispatch({ type: 'commandPalette/query', query })}
         onCopyTelegramMessage={handleTelegramContextCopy}
         onDeleteTelegramMessage={handleTelegramContextDelete}
+        onEditTelegramMessage={handleTelegramContextEdit}
         onCopyTelegramImagePreview={() => {
           void handleCopyTelegramImagePreview();
         }}

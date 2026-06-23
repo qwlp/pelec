@@ -1,4 +1,4 @@
-import type { ChatCall, ChatPoll, ChatReaction, ChatTextEntity } from '../../../shared/connectors';
+import type { ChatCall, ChatPoll, ChatReaction, ChatServiceEvent, ChatTextEntity } from '../../../shared/connectors';
 
 const readTrimmedString = (value: unknown): string | undefined =>
   typeof value === 'string' ? value.trim() || undefined : undefined;
@@ -362,6 +362,82 @@ export const extractTelegramMessageText = (
   }
 
   return `[${container._ ?? 'message'}]`;
+};
+
+export const extractTelegramServiceEvent = (
+  content: unknown,
+  options?: {
+    detail?: string;
+  },
+): ChatServiceEvent | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    title?: string;
+    member_user_ids?: unknown[];
+    user_id?: number;
+  };
+
+  const kind = container._?.trim();
+  if (!kind) {
+    return undefined;
+  }
+
+  let title: string | undefined;
+  let detail: string | undefined;
+  switch (kind) {
+    case 'messageBasicGroupChatCreate':
+      title = 'created the group';
+      detail = readTrimmedString(container.title);
+      break;
+    case 'messageSupergroupChatCreate':
+      title = 'created the group';
+      break;
+    case 'messageChatAddMembers': {
+      const count = Array.isArray(container.member_user_ids) ? container.member_user_ids.length : 0;
+      title = count > 1 ? 'added members' : 'added a member';
+      detail = readTrimmedString(options?.detail);
+      break;
+    }
+    case 'messageChatDeleteMember':
+      title = 'removed a member';
+      detail = readTrimmedString(options?.detail);
+      break;
+    case 'messageChatJoinByLink':
+      title = 'Joined via invite link';
+      break;
+    case 'messageChatJoinByRequest':
+      title = 'Join request approved';
+      break;
+    case 'messageChatChangeTitle':
+      title = 'Group title changed';
+      detail = readTrimmedString(container.title);
+      break;
+    case 'messagePinMessage':
+      title = 'Pinned a message';
+      break;
+    case 'messageScreenshotTaken':
+      title = 'Screenshot taken';
+      break;
+    case 'messageChatSetTheme':
+      title = 'Chat theme changed';
+      break;
+    case 'messageChatSetMessageAutoDeleteTime':
+      title = 'Auto-delete timer changed';
+      break;
+    default:
+      return undefined;
+  }
+
+  return {
+    source: 'telegram',
+    kind,
+    title,
+    detail: readTrimmedString(options?.detail) ?? detail,
+  };
 };
 
 export const normalizeTelegramChatPreviewSender = (label: string | undefined): string => {

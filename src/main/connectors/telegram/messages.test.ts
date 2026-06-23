@@ -5,6 +5,7 @@ import {
   extractTelegramMessageText,
   extractTelegramPollInfo,
   extractTelegramReactions,
+  extractTelegramServiceEvent,
   formatTelegramCallDuration,
 } from './messages';
 
@@ -54,6 +55,35 @@ describe('telegram message helpers', () => {
         },
       }),
     ).toBe('Poll: Best editor?');
+  });
+
+  it('extracts display metadata for telegram service events', () => {
+    expect(
+      extractTelegramServiceEvent({
+        _: 'messageBasicGroupChatCreate',
+        title: 'DMUC Student Services',
+      }),
+    ).toEqual({
+      source: 'telegram',
+      kind: 'messageBasicGroupChatCreate',
+      title: 'created the group',
+      detail: 'DMUC Student Services',
+    });
+
+    expect(
+      extractTelegramServiceEvent(
+        {
+          _: 'messageChatAddMembers',
+          member_user_ids: [1, 2],
+        },
+        { detail: 'Bruno - Marcom Manager KVL, Ada' },
+      ),
+    ).toEqual({
+      source: 'telegram',
+      kind: 'messageChatAddMembers',
+      title: 'added members',
+      detail: 'Bruno - Marcom Manager KVL, Ada',
+    });
   });
 
   it('extracts poll metadata from telegram poll messages', () => {

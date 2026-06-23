@@ -13,6 +13,11 @@ export interface LegacyTelegramReplyPreview {
   text: string;
 }
 
+export interface LegacyTelegramEditState {
+  messageId: string | null;
+  originalText: string;
+}
+
 export interface LegacyTelegramForwardState {
   candidates: ChatSummary[];
   query: string;
@@ -73,6 +78,7 @@ export interface LegacyTelegramSnapshot {
   messages: LegacyRenderableTelegramMessage[];
   messagesLoading: boolean;
   pendingAttachments: PendingTelegramAttachment[];
+  editing: LegacyTelegramEditState;
   replyToMessageId: string | null;
   replyPreview: LegacyTelegramReplyPreview | null;
   searchQuery: string;
@@ -97,6 +103,7 @@ export interface LegacyAppBridgeApi {
   selectTelegramMessage(messageId: string): void;
   activateSelection(): void;
   deleteSelection(): void;
+  editTelegramMessage(messageId: string): void;
   executeCommand(commandId: string): void;
   cancelAuthPrompt(): void;
   closeQrAuth(): void;
@@ -117,6 +124,7 @@ export interface LegacyAppBridgeApi {
   openTelegramImagePreview(url: string, meta?: LegacyTelegramImagePreviewMeta): void;
   appendTelegramFiles(files: File[]): void;
   clearTelegramReply(): void;
+  cancelTelegramEdit(): void;
   closeTelegramContextMenu(): void;
   closeTelegramForwardMenu(): void;
   closeTelegramImagePreview(): void;

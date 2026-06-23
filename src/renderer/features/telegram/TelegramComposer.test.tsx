@@ -37,6 +37,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="hi"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -52,6 +53,44 @@ describe('TelegramComposer', () => {
 
     expect(legacyApi.sendTelegramMessage).toHaveBeenCalled();
     expect(textarea?.value).toBe('');
+  });
+
+  it('renders edit state and routes cancel edit', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramEdit: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    const view = render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        draftText="edited text"
+        editing={{ messageId: 'message-1', originalText: 'original text' }}
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    expect(view.getByText('Editing message')).toBeTruthy();
+    expect(view.getByText('original text')).toBeTruthy();
+
+    fireEvent.click(view.getByLabelText('Cancel edit'));
+
+    expect(legacyApi.cancelTelegramEdit).toHaveBeenCalled();
   });
 
   it('renders the visible react composer textarea without redirecting focus to legacy input', () => {
@@ -73,6 +112,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -106,6 +146,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -126,6 +167,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="abc"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -159,6 +201,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="temporary"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -179,6 +222,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -213,6 +257,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -233,6 +278,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'line one\nline two'}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -267,6 +313,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'line one\nline two\nline three'}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -286,6 +333,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'line one\nline two\nline three\nline four\nline five\nline six'}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -309,6 +357,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend={false}
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={null}
         replyPreview={null}
@@ -341,6 +390,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={longMessage}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -395,6 +445,7 @@ describe('TelegramComposer', () => {
           },
         ]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'a'.repeat(1025)}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -433,6 +484,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -449,6 +501,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -487,6 +540,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -532,6 +586,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -578,6 +633,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -633,6 +689,7 @@ describe('TelegramComposer', () => {
           },
         ]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -670,6 +727,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         replyPreview={null}
@@ -706,6 +764,101 @@ describe('TelegramComposer', () => {
     expect(legacyApi.sendTelegramMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('suggests and inserts double-colon text expansions before sending', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        editing={{ messageId: null, originalText: '' }}
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 7, selectionStart: 7, value: '::today' },
+    });
+
+    await waitFor(() => {
+      expect(target.textContent).toContain('::today');
+      expect(target.textContent).toContain('Current date');
+    });
+
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toMatch(/^\w{3} \d{2}, \d{4}$|^\d{2} \w{3} \d{4}$/u);
+    });
+    expect(legacyApi.sendTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it('expands direct double-colon random commands with Space', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        editing={{ messageId: null, originalText: '' }}
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
+    expect(textarea).toBeTruthy();
+
+    fireEvent.focus(textarea as HTMLTextAreaElement);
+    fireEvent.input(textarea as HTMLTextAreaElement, {
+      target: { selectionEnd: 17, selectionStart: 17, value: '::random(int, 4)' },
+    });
+    (textarea as HTMLTextAreaElement).setSelectionRange(17, 17);
+    fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: ' ' });
+
+    await waitFor(() => {
+      expect(textarea?.value).toMatch(/^\d{4} $/u);
+    });
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith(expect.stringMatching(/^\d{4} $/u));
+  });
+
   it('suggests and inserts mention completions from the current chat', async () => {
     const target = document.createElement('div');
     document.body.append(target);
@@ -725,6 +878,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         mentionSuggestions={[
@@ -778,6 +932,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText=""
         legacyApi={legacyApi}
         mentionSuggestions={[
@@ -830,6 +985,7 @@ describe('TelegramComposer', () => {
       <TelegramComposer
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="hello world"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -891,6 +1047,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="hello"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -932,6 +1089,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'one\ntwo\nthree'}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -979,6 +1137,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="hello world again"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -1007,6 +1166,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="hello world again"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -1081,6 +1241,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText="hello world"
         legacyApi={legacyApi}
         replyPreview={null}
@@ -1146,6 +1307,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'abcde\nabcde\nabcde'}
         legacyApi={legacyApi}
         replyPreview={null}
@@ -1215,6 +1377,7 @@ describe('TelegramComposer', () => {
         appMode="normal"
         attachments={[]}
         canSend
+        editing={{ messageId: null, originalText: '' }}
         draftText={'one\ntwo\nthree'}
         legacyApi={legacyApi}
         replyPreview={null}

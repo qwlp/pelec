@@ -104,6 +104,8 @@ interface AppState {
   selectedTelegramMessageId: string | null;
   replyingToMessageId: string | null;
   replyingToSender: string | null;
+  editingTelegramMessageId: string | null;
+  editingTelegramOriginalText: string;
   pendingTelegramAttachments: PendingTelegramAttachment[];
   telegramLoading: boolean;
   telegramMessagesLoading: boolean;
@@ -236,6 +238,8 @@ export const bootLegacyApp = async (
     selectedTelegramMessageId: null,
     replyingToMessageId: null,
     replyingToSender: null,
+    editingTelegramMessageId: null,
+    editingTelegramOriginalText: '',
     pendingTelegramAttachments: [],
     telegramLoading: false,
     telegramMessagesLoading: false,
@@ -340,6 +344,10 @@ export const bootLegacyApp = async (
       messages: getVisibleTelegramMessages(),
       messagesLoading: state.telegramMessagesLoading,
       pendingAttachments: [...state.pendingTelegramAttachments],
+      editing: {
+        messageId: state.editingTelegramMessageId,
+        originalText: state.editingTelegramOriginalText,
+      },
       replyToMessageId: state.replyingToMessageId,
       replyPreview: getTelegramReplyPreview(),
       searchQuery: state.telegramSearchQuery,
@@ -2244,6 +2252,23 @@ export const bootLegacyApp = async (
     }
   };
 
+  const clearTelegramEditState = (): void => {
+    state.editingTelegramMessageId = null;
+    state.editingTelegramOriginalText = '';
+  };
+
+  const cancelTelegramEdit = (): void => {
+    if (!state.editingTelegramMessageId) {
+      return;
+    }
+    clearTelegramEditState();
+    telegramComposeInput.value = '';
+    syncTelegramComposeInputHeight();
+    updateTelegramEmojiCompletion();
+    statusBar.textContent = 'Edit canceled.';
+    render();
+  };
+
   const getTelegramReplyPreview = (): { sender: string; text: string } | null => {
     if (!state.replyingToMessageId) {
       return null;
@@ -2275,8 +2300,52 @@ export const bootLegacyApp = async (
     }
     state.replyingToMessageId = message.id;
     state.replyingToSender = message.sender;
+    clearTelegramEditState();
     setMode('insert');
     statusBar.textContent = `Replying to ${message.sender}`;
+  };
+
+  const beginEditTelegramMessage = (message: ChatMessage): void => {
+    if (isPendingTelegramMessage(message)) {
+      statusBar.textContent = 'Wait for the message to finish sending.';
+      render();
+      return;
+    }
+    if (!message.outgoing) {
+      statusBar.textContent = 'Only your messages can be edited.';
+      render();
+      return;
+    }
+    const originalText = safeText(message.text).trim();
+    if (!originalText || message.serviceEvent || message.call || message.poll || message.document || message.hasAudio) {
+      statusBar.textContent = 'This message cannot be edited here.';
+      render();
+      return;
+    }
+    clearTelegramReplyState({ clearAttachments: true });
+    state.editingTelegramMessageId = message.id;
+    state.editingTelegramOriginalText = originalText;
+    telegramComposeInput.value = originalText;
+    syncTelegramComposeInputHeight();
+    updateTelegramEmojiCompletion();
+    selectTelegramMessage(message.id);
+    setMode('insert');
+    statusBar.textContent = 'Editing message.';
+    render();
+    window.setTimeout(() => {
+      telegramComposeInput.focus();
+      telegramComposeInput.setSelectionRange(originalText.length, originalText.length);
+    }, 0);
+  };
+
+  const beginEditTelegramMessageById = (messageId: string): void => {
+    const message = findTelegramMessageById(messageId);
+    if (!message) {
+      statusBar.textContent = 'Message unavailable.';
+      render();
+      return;
+    }
+    beginEditTelegramMessage(message);
   };
 
   const forwardTelegramMessageToChat = async (chat: ChatSummary): Promise<void> => {
@@ -3396,6 +3465,9 @@ export const bootLegacyApp = async (
   ): Promise<void> => {
     state.selectedTelegramChatId = chatId;
     clearTelegramReplyState({ clearAttachments: true });
+    clearTelegramEditState();
+    telegramComposeInput.value = '';
+    syncTelegramComposeInputHeight();
     state.vimPane = 'telegram-chats';
     return loadTelegramMessages(
       chatId,
@@ -4238,6 +4310,63 @@ export const bootLegacyApp = async (
 
     const chatId = state.activeTelegramChatId;
     const text = telegramComposeInput.value.trim();
+    if (state.editingTelegramMessageId) {
+      if (state.pendingTelegramAttachments.length > 0) {
+        statusBar.textContent = 'Remove attachments before saving an edit.';
+        render();
+        return;
+      }
+      if (!text) {
+        statusBar.textContent = 'Edited message cannot be empty.';
+        render();
+        return;
+      }
+      const textCharacterCount = getTelegramCharacterCount(text);
+      if (textCharacterCount > TELEGRAM_TEXT_MESSAGE_LIMIT) {
+        const limitMessage = getTelegramTextLimitMessage(textCharacterCount, TELEGRAM_TEXT_MESSAGE_LIMIT, 'message');
+        statusBar.textContent = limitMessage;
+        openTelegramLimitDialog(limitMessage);
+        render();
+        return;
+      }
+      if (text === state.editingTelegramOriginalText) {
+        cancelTelegramEdit();
+        return;
+      }
+
+      const editingMessageId = state.editingTelegramMessageId;
+      closeTelegramEmojiCompletion();
+      telegramSendButton.disabled = true;
+      statusBar.textContent = 'Saving edit...';
+      render();
+      try {
+        const edited = await window.pelec.editConnectorMessage('telegram', chatId, editingMessageId, text);
+        if (!edited) {
+          await refreshConnectorStatuses();
+          const status = getStatusByNetwork('telegram');
+          statusBar.textContent = `Edit failed: ${status.lastError ?? status.details}`;
+          render();
+          return;
+        }
+        const existing = findTelegramMessageById(editingMessageId);
+        if (existing) {
+          existing.text = text;
+          existing.textEntities = undefined;
+          bumpTelegramMessagesVersion();
+        }
+        clearTelegramEditState();
+        telegramComposeInput.value = '';
+        syncTelegramComposeInputHeight();
+        scheduleTelegramMessagesRefresh(chatId, 90);
+        scheduleTelegramChatsRefresh(0, false);
+        statusBar.textContent = 'Message edited.';
+        render();
+      } finally {
+        telegramSendButton.disabled = false;
+      }
+      return;
+    }
+
     const attachments = [...state.pendingTelegramAttachments];
     const hasAttachments = attachments.length > 0;
     const hasVoiceAttachments = attachments.some((attachment) => attachment.kind === 'voice');
@@ -4746,6 +4875,12 @@ export const bootLegacyApp = async (
 
     if (state.replyingToMessageId === messageId) {
       clearTelegramReplyState({ clearAttachments: true });
+    }
+
+    if (state.editingTelegramMessageId === messageId) {
+      clearTelegramEditState();
+      telegramComposeInput.value = '';
+      syncTelegramComposeInputHeight();
     }
 
     if (telegramContextMenuState.messageId === messageId) {
@@ -5844,12 +5979,18 @@ export const bootLegacyApp = async (
 
             const item = document.createElement('article');
             item.className = 'telegram-message-item';
+            const isServiceEvent = !!primaryMessage.serviceEvent;
             item.classList.add(primaryMessage.outgoing ? 'outgoing' : 'incoming');
+            if (isServiceEvent) {
+              item.classList.add('service-event');
+            }
             if (shouldCollapseAlbum) {
               item.classList.add('album');
             }
             const isContinuation =
+              !isServiceEvent &&
               !!previousMessage &&
+              !previousMessage.serviceEvent &&
               safeText(previousMessage.sender) === safeText(primaryMessage.sender) &&
               previousMessage.outgoing === primaryMessage.outgoing;
             if (isContinuation) {
@@ -5879,7 +6020,16 @@ export const bootLegacyApp = async (
             }
 
             const bodyNodes: HTMLElement[] = [];
-            if (!isContinuation) {
+            if (primaryMessage.serviceEvent) {
+              const service = primaryMessage.serviceEvent;
+              const serviceLine = document.createElement('div');
+              serviceLine.className = 'telegram-service-line';
+              const serviceActor = document.createElement('span');
+              serviceActor.className = 'telegram-service-actor';
+              serviceActor.textContent = primaryMessage.outgoing ? 'You' : senderLabel.replace(/\s+\(@[^)]+\)$/u, '');
+              serviceLine.append(serviceActor, ` ${service.title || messageTextTrimmed || 'updated the chat'}`);
+              bodyNodes.push(serviceLine);
+            } else if (!isContinuation) {
               bodyNodes.push(header);
             }
             if (primaryMessage.forwardedFrom) {
@@ -6038,6 +6188,7 @@ export const bootLegacyApp = async (
               !shouldCollapseAlbum && isTelegramDocumentFallbackText(primaryMessage);
             const shouldRenderText =
               !!messageTextTrimmed &&
+              !primaryMessage.serviceEvent &&
               !primaryMessage.call &&
               !suppressImageFallbackText &&
               !suppressVideoFallbackText &&
@@ -6210,11 +6361,13 @@ export const bootLegacyApp = async (
       telegramComposeReplyEl.classList.add('hidden');
     }
 
-    telegramComposeInput.placeholder = state.replyingToMessageId
-      ? `Reply to ${state.replyingToSender ?? 'message'}`
-      : state.pendingTelegramAttachments.length > 0
-        ? 'Type a caption...'
-        : 'Type your message here...';
+    telegramComposeInput.placeholder = state.editingTelegramMessageId
+      ? 'Edit your message...'
+      : state.replyingToMessageId
+        ? `Reply to ${state.replyingToSender ?? 'message'}`
+        : state.pendingTelegramAttachments.length > 0
+          ? 'Type a caption...'
+          : 'Type your message here...';
     syncTelegramComposeInputHeight();
     renderTelegramEmojiCompletion();
     lastRenderedTelegramChatId = state.activeTelegramChatId;
@@ -6620,6 +6773,13 @@ export const bootLegacyApp = async (
         return;
       }
 
+      if (event.key === 'Escape' && state.editingTelegramMessageId) {
+        event.preventDefault();
+        cancelTelegramEdit();
+        setMode('normal');
+        return;
+      }
+
       if (state.activeNetwork === 'telegram' && event.ctrlKey && event.key.toLowerCase() === 's') {
         event.preventDefault();
         clearGPending();
@@ -6813,6 +6973,7 @@ export const bootLegacyApp = async (
     deleteSelection: () => {
       void deleteSelectedTelegramMessage();
     },
+    editTelegramMessage: beginEditTelegramMessageById,
     cancelAuthPrompt,
     closeQrAuth: hideQrModal,
     executeCommand: executeCommandById,
@@ -6844,6 +7005,7 @@ export const bootLegacyApp = async (
       clearTelegramReplyState();
       render();
     },
+    cancelTelegramEdit,
     closeTelegramContextMenu: () => {
       closeTelegramContextMenu();
     },

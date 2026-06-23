@@ -141,6 +141,13 @@ export interface ChatCall {
   discardReason?: 'missed' | 'declined' | 'disconnected' | 'hung_up' | 'empty';
 }
 
+export interface ChatServiceEvent {
+  source: 'telegram';
+  kind: string;
+  title: string;
+  detail?: string;
+}
+
 export interface ResolvedDocument extends ChatDocument {
   filePath: string;
 }
@@ -218,6 +225,7 @@ export interface ChatMessage {
   document?: ChatDocument;
   call?: ChatCall;
   poll?: ChatPoll;
+  serviceEvent?: ChatServiceEvent;
 }
 
 export type ConnectorInvalidationReason = 'incoming' | 'outgoing' | 'history' | 'read-state';
@@ -287,6 +295,7 @@ export interface Connector {
     replyToMessageId?: string,
   ): Promise<boolean>;
   sendMessage?(chatId: string, text: string, replyToMessageId?: string): Promise<boolean>;
+  editMessage?(chatId: string, messageId: string, text: string): Promise<boolean>;
   forwardMessage?(fromChatId: string, toChatId: string, messageId: string): Promise<boolean>;
   deleteMessage?(chatId: string, messageId: string): Promise<boolean>;
   onUpdate?(handler: (event: ConnectorUpdateEvent) => void): () => void;

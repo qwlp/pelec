@@ -1340,6 +1340,46 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
     0 0 14px rgba(255, 113, 188, 0.32);
 }
 
+.telegram-message-item.service-event {
+  justify-self: center;
+  width: min(86%, 720px);
+  max-width: 720px;
+  padding: 3px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 0 !important;
+  box-shadow: none;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+.telegram-message-item.service-event.selected {
+  outline-offset: 3px;
+  box-shadow: none;
+}
+
+.telegram-service-line {
+  font-size: calc(14px * var(--font-scale));
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.telegram-service-actor {
+  color: var(--ink-main);
+  font-weight: 750;
+}
+
+.telegram-service-time {
+  display: inline-block;
+  margin-left: 10px;
+  color: var(--ink-soft);
+  font-size: calc(12px * var(--font-scale));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .telegram-message-item.continuation {
   margin-top: -6px;
 }
@@ -2887,6 +2927,7 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-emoji-completion,
+.telegram-text-expansion-completion,
 .telegram-mention-completion {
   margin-left: 48px;
   margin-right: 96px;
@@ -2899,11 +2940,13 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-emoji-completion.hidden,
+.telegram-text-expansion-completion.hidden,
 .telegram-mention-completion.hidden {
   display: none;
 }
 
 .telegram-emoji-completion-item,
+.telegram-text-expansion-completion-item,
 .telegram-mention-completion-item {
   width: 100%;
   border: 0;
@@ -2923,7 +2966,12 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
   grid-template-columns: 28px minmax(0, 1fr);
 }
 
+.telegram-text-expansion-completion-item {
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+}
+
 .telegram-emoji-completion-item:first-child,
+.telegram-text-expansion-completion-item:first-child,
 .telegram-mention-completion-item:first-child {
   border-top: 0;
 }
@@ -2931,6 +2979,9 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 .telegram-emoji-completion-item:hover,
 .telegram-emoji-completion-item:focus-visible,
 .telegram-emoji-completion-item.active,
+.telegram-text-expansion-completion-item:hover,
+.telegram-text-expansion-completion-item:focus-visible,
+.telegram-text-expansion-completion-item.active,
 .telegram-mention-completion-item:hover,
 .telegram-mention-completion-item:focus-visible,
 .telegram-mention-completion-item.active {
@@ -2938,6 +2989,7 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-emoji-completion-item:focus-visible,
+.telegram-text-expansion-completion-item:focus-visible,
 .telegram-mention-completion-item:focus-visible {
   outline: 1px solid rgba(255, 190, 224, 0.28);
   outline-offset: -1px;
@@ -2964,6 +3016,38 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-emoji-completion-match {
+  color: #bfaecf;
+  font-size: calc(11px * var(--font-scale));
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.telegram-text-expansion-command {
+  color: #f7e9fb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(12px * var(--font-scale));
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.telegram-text-expansion-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.telegram-text-expansion-description {
+  color: #f7e9fb;
+  font-size: calc(13px * var(--font-scale));
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.telegram-text-expansion-preview {
   color: #bfaecf;
   font-size: calc(11px * var(--font-scale));
   line-height: 1.2;

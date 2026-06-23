@@ -35,6 +35,35 @@ describe('TelegramConnector picker methods', () => {
     ).resolves.toBe(false);
   });
 
+  it('edits text messages using TDLib editMessageText', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      editMessage: TelegramConnector['editMessage'];
+    };
+    const invoke = vi.fn(async () => ({}));
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(connector.editMessage('100', '55', 'updated text')).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledWith({
+      _: 'editMessageText',
+      chat_id: 100,
+      message_id: 55,
+      input_message_content: {
+        _: 'inputMessageText',
+        text: {
+          _: 'formattedText',
+          text: 'updated text',
+        },
+      },
+    });
+  });
+
   it('sends stickers and GIFs using TDLib inputFileId payloads', async () => {
     const connector = createConnector() as unknown as {
       status: { authState: string };

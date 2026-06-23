@@ -27,6 +27,7 @@ import {
   buildTelegramChatPreview,
   extractTelegramCallInfo,
   extractTelegramMessageEntities,
+  extractTelegramServiceEvent,
   extractTelegramMessageText,
   extractTelegramPollInfo,
   extractTelegramReactions,
@@ -627,6 +628,7 @@ export class TelegramConnector implements Connector {
           const replyTargetId = this.extractReplyTargetId(message);
           const replyContext = replyTargetId ? replyContextById.get(replyTargetId) : undefined;
           const videoDimensions = extractTelegramVideoDimensions(message.content);
+          const serviceEventDetail = await this.resolveServiceEventDetail(client, message.content);
           return {
             id: String(message.id ?? ''),
             mediaAlbumId: message.media_album_id ? String(message.media_album_id) : undefined,
@@ -671,6 +673,9 @@ export class TelegramConnector implements Connector {
             document: extractTelegramDocumentMetadata(message.content),
             call: extractTelegramCallInfo(message.content),
             poll: extractTelegramPollInfo(message.content),
+            serviceEvent: extractTelegramServiceEvent(message.content, {
+              detail: serviceEventDetail,
+            }),
           };
         }),
       );
@@ -797,6 +802,39 @@ export class TelegramConnector implements Connector {
       this.status.lastError =
         error instanceof Error ? error.message : 'Unknown sendMessage error';
       this.status.details = `Failed sending message: ${this.status.lastError}`;
+      return false;
+    }
+  }
+
+  async editMessage(chatId: string, messageId: string, text: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    const messageText = text.trim();
+    if (!tdMessageId || !messageText) {
+      return false;
+    }
+
+    try {
+      await this.tdClient.invoke({
+        _: 'editMessageText',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        input_message_content: {
+          _: 'inputMessageText',
+          text: {
+            _: 'formattedText',
+            text: messageText,
+          },
+        },
+      });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown editMessage error';
+      this.status.details = `Failed editing message: ${this.status.lastError}`;
       return false;
     }
   }
@@ -1803,6 +1841,35 @@ export class TelegramConnector implements Connector {
     if (sender.chat_id) {
       return this.resolveChatAvatar(client, sender.chat_id);
     }
+    return undefined;
+  }
+
+  private async resolveServiceEventDetail(client: TdClient, content: unknown): Promise<string | undefined> {
+    if (!content || typeof content !== 'object') {
+      return undefined;
+    }
+
+    const event = content as {
+      _?: string;
+      member_user_ids?: unknown[];
+      user_id?: number;
+    };
+
+    if (event._ === 'messageChatAddMembers') {
+      const userIds = (Array.isArray(event.member_user_ids) ? event.member_user_ids : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      if (userIds.length < 1) {
+        return undefined;
+      }
+      const labels = await Promise.all(userIds.map((userId) => this.resolveUserLabel(client, userId)));
+      return labels.map((label) => label.trim()).filter(Boolean).join(', ') || undefined;
+    }
+
+    if (event._ === 'messageChatDeleteMember' && event.user_id) {
+      return this.resolveUserLabel(client, event.user_id);
+    }
+
     return undefined;
   }
 

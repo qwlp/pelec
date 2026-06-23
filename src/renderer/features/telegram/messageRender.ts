@@ -79,6 +79,10 @@ const addMessageToSignature = (
     message.call?.isVideo ? '1' : '0',
     message.call?.durationSeconds ?? '',
     message.call?.discardReason ?? '',
+    message.serviceEvent?.source ?? '',
+    message.serviceEvent?.kind ?? '',
+    message.serviceEvent?.title ?? '',
+    message.serviceEvent?.detail ?? '',
     message.pendingState ?? '',
   ].forEach(add);
 

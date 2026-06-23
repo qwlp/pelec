@@ -53,6 +53,10 @@ describe('appReducer', () => {
       ],
       messagesLoading: false,
       pendingAttachments: [],
+      editing: {
+        messageId: null,
+        originalText: '',
+      },
       replyToMessageId: null,
       replyPreview: null,
       searchQuery: '',

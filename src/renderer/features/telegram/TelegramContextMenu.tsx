@@ -5,6 +5,7 @@ interface TelegramContextMenuProps {
   onClose(): void;
   onCopy(messageId: string): void;
   onDelete(messageId: string): void;
+  onEdit(messageId: string): void;
   onForward(messageId: string): void;
   onReply(messageId: string): void;
   onSelect(messageId: string): void;
@@ -17,6 +18,7 @@ export const TelegramContextMenu = ({
   onClose,
   onCopy,
   onDelete,
+  onEdit,
   onForward,
   onReply,
   onSelect,
@@ -43,11 +45,12 @@ export const TelegramContextMenu = ({
     () => [
       { id: 'copy', label: 'Copy', run: () => onCopy(messageId) },
       { id: 'select', label: 'Select', run: () => onSelect(messageId) },
+      { id: 'edit', label: 'Edit', run: () => onEdit(messageId) },
       { id: 'forward', label: 'Forward', run: () => onForward(messageId) },
       { id: 'reply', label: 'Reply', run: () => onReply(messageId) },
       { id: 'delete', label: 'Delete', run: () => onDelete(messageId) },
     ],
-    [messageId, onCopy, onDelete, onForward, onReply, onSelect],
+    [messageId, onCopy, onDelete, onEdit, onForward, onReply, onSelect],
   );
 
   return (

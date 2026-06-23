@@ -36,6 +36,7 @@ interface ModalLayerProps {
   onCloseTelegramImagePreview(): void;
   onCopyTelegramMessage(messageId: string): void;
   onDeleteTelegramMessage(messageId: string): void;
+  onEditTelegramMessage(messageId: string): void;
   onCopyTelegramImagePreview(): void;
   onDownloadTelegramImagePreview(): void;
   onForwardTelegramMessage(chatId: string): void;
@@ -71,6 +72,7 @@ export const ModalLayer = ({
   onCloseTelegramImagePreview,
   onCopyTelegramMessage,
   onDeleteTelegramMessage,
+  onEditTelegramMessage,
   onCopyTelegramImagePreview,
   onDownloadTelegramImagePreview,
   onForwardTelegramMessage,
@@ -128,6 +130,7 @@ export const ModalLayer = ({
           onClose={onCloseTelegramContextMenu}
           onCopy={onCopyTelegramMessage}
           onDelete={onDeleteTelegramMessage}
+          onEdit={onEditTelegramMessage}
           onForward={onOpenTelegramForwardMenu}
           onReply={onReplyToTelegramMessage}
           onSelect={onSelectTelegramMessage}

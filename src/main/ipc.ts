@@ -491,6 +491,13 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:edit-message',
+    async (_event, network: NetworkId, chatId: string, messageId: string, text: string) => {
+      return (await getConnectorManager()?.editMessage(network, chatId, messageId, text)) ?? false;
+    },
+  );
+
+  ipcMain.handle(
     'connector:send-image',
     async (
       _event,

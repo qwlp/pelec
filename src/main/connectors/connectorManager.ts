@@ -242,6 +242,19 @@ export class ConnectorManager {
     return connector.sendMessage(chatId, text, replyToMessageId);
   }
 
+  async editMessage(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    text: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.editMessage) {
+      return false;
+    }
+    return connector.editMessage(chatId, messageId, text);
+  }
+
   async sendImageMessage(
     network: NetworkId,
     chatId: string,

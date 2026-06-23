@@ -125,6 +125,59 @@ describe('TelegramMessageList', () => {
     expect(legacyApi.selectTelegramMessage).toHaveBeenCalledWith('1');
   });
 
+  it('renders telegram service fallback messages as simple event rows', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'create',
+            sender: 'DMUC Student Services (@DMUCStudentservices)',
+            text: '[messageBasicGroupChatCreate]',
+            timestamp: 1,
+          },
+          {
+            id: 'members',
+            sender: 'L (@Lj0902)',
+            text: 'Members added',
+            timestamp: 2,
+            serviceEvent: {
+              source: 'telegram',
+              kind: 'messageChatAddMembers',
+              title: 'added a member',
+              detail: 'Bruno - Marcom Manager KVL',
+            },
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const createMessage = target.querySelector<HTMLElement>('[data-message-id="create"]');
+    const membersMessage = target.querySelector<HTMLElement>('[data-message-id="members"]');
+    expect(createMessage?.classList.contains('service-event')).toBe(true);
+    expect(createMessage?.querySelector('.telegram-service-line')?.textContent).toContain(
+      'DMUC Student Services created the group',
+    );
+    expect(createMessage?.querySelector('.telegram-service-time')?.textContent).toBe(
+      'Jan 1, 1970, 07:00 AM',
+    );
+    expect(createMessage?.querySelector('.telegram-message-footer')).toBeNull();
+    expect(createMessage?.textContent).not.toContain('[messageBasicGroupChatCreate]');
+    expect(membersMessage?.classList.contains('service-event')).toBe(true);
+    expect(membersMessage?.querySelector('.telegram-service-line')?.textContent).toContain(
+      'L added Bruno - Marcom Manager KVL',
+    );
+  });
+
   it('truncates pathological message text instead of blocking the renderer', () => {
     const target = document.createElement('div');
     document.body.append(target);

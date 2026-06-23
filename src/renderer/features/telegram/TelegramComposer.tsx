@@ -8,10 +8,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from 'react';
-import { Mic, Paperclip, SendHorizontal, SmilePlus, Square } from 'lucide-react';
+import { Mic, Paperclip, SendHorizontal, SmilePlus, Square, X } from 'lucide-react';
 import type { AppMode } from '../../../shared/types';
 import type { PendingTelegramAttachment } from './media';
-import type { LegacyAppBridgeApi, LegacyTelegramReplyPreview } from '../../legacyBridge';
+import type {
+  LegacyAppBridgeApi,
+  LegacyTelegramEditState,
+  LegacyTelegramReplyPreview,
+} from '../../legacyBridge';
 import {
   buildTelegramEmojiSuggestions,
   getTelegramEmojiTokenMatch,
@@ -26,6 +30,7 @@ interface TelegramComposerProps {
   attachments: PendingTelegramAttachment[];
   canSend: boolean;
   draftText: string;
+  editing: LegacyTelegramEditState;
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   legacyApi: LegacyAppBridgeApi | null;
   mentionSuggestions?: TelegramMentionSuggestion[];
@@ -57,6 +62,19 @@ type TelegramMentionCompletionState = {
   tokenStart: number;
 };
 
+type TelegramTextExpansionSuggestion = {
+  command: string;
+  description: string;
+  getValue: () => string;
+};
+
+type TelegramTextExpansionCompletionState = {
+  activeIndex: number;
+  suggestions: TelegramTextExpansionSuggestion[];
+  tokenEnd: number;
+  tokenStart: number;
+};
+
 type TelegramVimMode = 'insert' | 'normal' | 'visual' | 'visual-block' | 'visual-line';
 type TelegramVimSequence = 'c' | 'ca' | 'ci' | 'd' | 'da' | 'di' | 'g' | null;
 
@@ -68,6 +86,7 @@ const TELEGRAM_VIM_SEQUENCE_TIMEOUT_MS = 900;
 
 const WORD_CHARACTER_PATTERN = /[\p{L}\p{N}_]/u;
 const HORIZONTAL_WHITESPACE_PATTERN = /[^\S\n]/u;
+const TELEGRAM_TEXT_EXPANSION_PATTERN = /^::([A-Za-z]+)(?:\(([^)]*)\))?$/u;
 
 const getTelegramCharacterCount = (value: string): number => Array.from(value).length;
 
@@ -349,6 +368,168 @@ const getTelegramMentionTokenMatch = (
   };
 };
 
+const formatTelegramExpansionDate = (date: Date): string =>
+  new Intl.DateTimeFormat(undefined, {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(date);
+
+const formatTelegramExpansionTime = (date: Date): string =>
+  new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+
+const addTelegramExpansionDays = (date: Date, days: number): Date => {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+};
+
+const getSecureRandomInt = (maxExclusive: number): number => {
+  if (maxExclusive <= 1) {
+    return 0;
+  }
+
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.getRandomValues) {
+    return Math.floor(Math.random() * maxExclusive);
+  }
+
+  const maxUint32 = 0xffffffff;
+  const limit = maxUint32 - (maxUint32 % maxExclusive);
+  const buffer = new Uint32Array(1);
+
+  do {
+    cryptoApi.getRandomValues(buffer);
+  } while (buffer[0] >= limit);
+
+  return buffer[0] % maxExclusive;
+};
+
+const getRandomCharacters = (characters: string, length: number): string => {
+  let result = '';
+  for (let index = 0; index < length; index += 1) {
+    result += characters[getSecureRandomInt(characters.length)] ?? '';
+  }
+  return result;
+};
+
+const parsePositiveInteger = (value: string | undefined, fallback: number, max = 256): number => {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.min(max, parsed);
+};
+
+const rollTelegramDice = (argument: string | undefined): string => {
+  const input = (argument ?? '20').trim().toLowerCase();
+  const multiDiceMatch = /^(\d*)d(\d+)$/u.exec(input);
+
+  if (multiDiceMatch) {
+    const diceCount = Math.min(100, parsePositiveInteger(multiDiceMatch[1], 1));
+    const sides = Math.min(1000000, parsePositiveInteger(multiDiceMatch[2], 20, 1000000));
+    let total = 0;
+    for (let index = 0; index < diceCount; index += 1) {
+      total += getSecureRandomInt(sides) + 1;
+    }
+    return String(total);
+  }
+
+  const sides = Math.min(1000000, parsePositiveInteger(input, 20, 1000000));
+  return String(getSecureRandomInt(sides) + 1);
+};
+
+const buildTelegramTextExpansionValue = (token: string): string | null => {
+  const match = TELEGRAM_TEXT_EXPANSION_PATTERN.exec(token.trim());
+  if (!match) {
+    return null;
+  }
+
+  const command = (match[1] ?? '').toLowerCase();
+  const argument = match[2]?.trim();
+  const now = new Date();
+
+  if (command === 'today' || command === 'date') {
+    const offset = command === 'today' ? Number.parseInt(argument ?? '0', 10) : 0;
+    return formatTelegramExpansionDate(addTelegramExpansionDays(now, Number.isFinite(offset) ? offset : 0));
+  }
+
+  if (command === 'tomorrow') {
+    return formatTelegramExpansionDate(addTelegramExpansionDays(now, 1));
+  }
+
+  if (command === 'yesterday') {
+    return formatTelegramExpansionDate(addTelegramExpansionDays(now, -1));
+  }
+
+  if (command === 'now' || command === 'time') {
+    return formatTelegramExpansionTime(now);
+  }
+
+  if (command === 'roll') {
+    return rollTelegramDice(argument);
+  }
+
+  if (command === 'random') {
+    const [kind = 'alnum', lengthText = '16'] = (argument ?? '').split(',').map((part) => part.trim());
+    const length = parsePositiveInteger(lengthText, 16, 256);
+    if (kind === 'str') {
+      return getRandomCharacters('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', length);
+    }
+    if (kind === 'int') {
+      return getRandomCharacters('0123456789', length);
+    }
+    if (kind === 'alnum') {
+      return getRandomCharacters('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', length);
+    }
+  }
+
+  return null;
+};
+
+const TELEGRAM_TEXT_EXPANSION_SUGGESTIONS: TelegramTextExpansionSuggestion[] = [
+  { command: '::today', description: 'Current date', getValue: () => buildTelegramTextExpansionValue('::today') ?? '' },
+  { command: '::tomorrow', description: "Tomorrow's date", getValue: () => buildTelegramTextExpansionValue('::tomorrow') ?? '' },
+  { command: '::yesterday', description: "Yesterday's date", getValue: () => buildTelegramTextExpansionValue('::yesterday') ?? '' },
+  { command: '::today(5)', description: 'Date offset by days', getValue: () => buildTelegramTextExpansionValue('::today(5)') ?? '' },
+  { command: '::now', description: 'Current local time', getValue: () => buildTelegramTextExpansionValue('::now') ?? '' },
+  { command: '::roll(d20)', description: 'Roll a die', getValue: () => buildTelegramTextExpansionValue('::roll(d20)') ?? '' },
+  { command: '::roll(4d6)', description: 'Roll multiple dice', getValue: () => buildTelegramTextExpansionValue('::roll(4d6)') ?? '' },
+  { command: '::random(str, 20)', description: 'Random letters', getValue: () => buildTelegramTextExpansionValue('::random(str, 20)') ?? '' },
+  { command: '::random(int, 10)', description: 'Random digits', getValue: () => buildTelegramTextExpansionValue('::random(int, 10)') ?? '' },
+  { command: '::random(alnum, 16)', description: 'Random letters and digits', getValue: () => buildTelegramTextExpansionValue('::random(alnum, 16)') ?? '' },
+];
+
+const getTelegramTextExpansionTokenMatch = (
+  value: string,
+  selectionStart: number | null,
+  selectionEnd: number | null,
+): { query: string; tokenEnd: number; tokenStart: number } | null => {
+  if (
+    typeof selectionStart !== 'number' ||
+    typeof selectionEnd !== 'number' ||
+    selectionStart !== selectionEnd
+  ) {
+    return null;
+  }
+
+  const beforeCursor = value.slice(0, selectionStart);
+  const match = /(^|\s)(::[^\n]*)$/u.exec(beforeCursor);
+  if (!match) {
+    return null;
+  }
+
+  const token = match[2] ?? '';
+  return {
+    query: token.toLowerCase(),
+    tokenEnd: selectionStart,
+    tokenStart: selectionStart - token.length,
+  };
+};
+
 const getClipboardFiles = (clipboardData: DataTransfer | null): File[] => {
   if (!clipboardData) {
     return [];
@@ -379,6 +560,7 @@ export const TelegramComposer = ({
   attachments,
   canSend,
   draftText,
+  editing,
   inputRef,
   legacyApi,
   mentionSuggestions = [],
@@ -395,6 +577,8 @@ export const TelegramComposer = ({
   );
   const [emojiCompletion, setEmojiCompletion] = useState<TelegramEmojiCompletionState | null>(null);
   const [mentionCompletion, setMentionCompletion] = useState<TelegramMentionCompletionState | null>(null);
+  const [textExpansionCompletion, setTextExpansionCompletion] =
+    useState<TelegramTextExpansionCompletionState | null>(null);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
@@ -468,6 +652,7 @@ export const TelegramComposer = ({
     syncDraftValueWithSelection(nextValue, start + emoji.length);
     setEmojiCompletion(null);
     setMentionCompletion(null);
+    setTextExpansionCompletion(null);
     window.requestAnimationFrame?.(() => {
       textareaRef.current?.focus();
     }) ?? window.setTimeout(() => textareaRef.current?.focus(), 0);
@@ -484,6 +669,7 @@ export const TelegramComposer = ({
     textarea.setSelectionRange(start, end);
     updateMentionCompletion(value, start, end, true);
     updateEmojiCompletion(value, start, end);
+    updateTextExpansionCompletion(value, start, end);
   };
 
   const setVisualSelection = (anchor: number, active: number) => {
@@ -561,6 +747,11 @@ export const TelegramComposer = ({
     }
 
     if (getTelegramMentionTokenMatch(nextValue, selectionStart, selectionEnd)) {
+      setEmojiCompletion(null);
+      return;
+    }
+
+    if (getTelegramTextExpansionTokenMatch(nextValue, selectionStart, selectionEnd)) {
       setEmojiCompletion(null);
       return;
     }
@@ -654,6 +845,49 @@ export const TelegramComposer = ({
     });
   };
 
+  const updateTextExpansionCompletion = (
+    nextValue = value,
+    selectionStart = textareaRef.current?.selectionStart ?? null,
+    selectionEnd = textareaRef.current?.selectionEnd ?? null,
+    force = false,
+  ) => {
+    if (!force && document.activeElement !== textareaRef.current) {
+      setTextExpansionCompletion(null);
+      return;
+    }
+
+    const tokenMatch = getTelegramTextExpansionTokenMatch(nextValue, selectionStart, selectionEnd);
+    if (!tokenMatch) {
+      setTextExpansionCompletion(null);
+      return;
+    }
+
+    const suggestions = TELEGRAM_TEXT_EXPANSION_SUGGESTIONS.filter((suggestion) =>
+      suggestion.command.toLowerCase().startsWith(tokenMatch.query),
+    ).slice(0, 8);
+
+    if (suggestions.length < 1) {
+      setTextExpansionCompletion(null);
+      return;
+    }
+
+    setEmojiCompletion(null);
+    setMentionCompletion(null);
+    setTextExpansionCompletion((current) => {
+      const currentSuggestion = current?.suggestions[current.activeIndex];
+      const matchedIndex = currentSuggestion
+        ? suggestions.findIndex((suggestion) => suggestion.command === currentSuggestion.command)
+        : -1;
+
+      return {
+        activeIndex: matchedIndex >= 0 ? matchedIndex : 0,
+        suggestions,
+        tokenEnd: tokenMatch.tokenEnd,
+        tokenStart: tokenMatch.tokenStart,
+      };
+    });
+  };
+
   const applyEmojiSuggestion = (suggestion?: TelegramEmojiSuggestion): boolean => {
     if (!emojiCompletion) {
       return false;
@@ -676,6 +910,7 @@ export const TelegramComposer = ({
     };
     syncDraftValue(nextValue);
     setEmojiCompletion(null);
+    setTextExpansionCompletion(null);
     textareaRef.current?.focus();
     return true;
   };
@@ -704,6 +939,56 @@ export const TelegramComposer = ({
     };
     syncDraftValue(nextValue);
     setMentionCompletion(null);
+    setTextExpansionCompletion(null);
+    textareaRef.current?.focus();
+    return true;
+  };
+
+  const applyTextExpansionSuggestion = (
+    suggestion?: TelegramTextExpansionSuggestion,
+    appendTrailingSpace = false,
+  ): boolean => {
+    const textarea = textareaRef.current;
+    const tokenStart = textExpansionCompletion?.tokenStart;
+    const tokenEnd = textExpansionCompletion?.tokenEnd;
+    const activeSuggestion =
+      suggestion ?? textExpansionCompletion?.suggestions[textExpansionCompletion.activeIndex];
+
+    if (typeof tokenStart !== 'number' || typeof tokenEnd !== 'number') {
+      const selectionStart = textarea?.selectionStart ?? value.length;
+      const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+      const directMatch = getTelegramTextExpansionTokenMatch(value, selectionStart, selectionEnd);
+      const directValue = directMatch
+        ? buildTelegramTextExpansionValue(value.slice(directMatch.tokenStart, directMatch.tokenEnd))
+        : null;
+      if (!directMatch || directValue === null) {
+        setTextExpansionCompletion(null);
+        return false;
+      }
+
+      const suffix = appendTrailingSpace ? ' ' : '';
+      const nextValue = `${value.slice(0, directMatch.tokenStart)}${directValue}${suffix}${value.slice(
+        directMatch.tokenEnd,
+      )}`;
+      const nextSelection = directMatch.tokenStart + directValue.length + suffix.length;
+      syncDraftValueWithSelection(nextValue, nextSelection);
+      setTextExpansionCompletion(null);
+      textareaRef.current?.focus();
+      return true;
+    }
+
+    const expansionValue = activeSuggestion?.getValue() ?? buildTelegramTextExpansionValue(value.slice(tokenStart, tokenEnd));
+    if (!expansionValue) {
+      setTextExpansionCompletion(null);
+      return false;
+    }
+
+    const suffix = appendTrailingSpace ? ' ' : '';
+    const nextValue = `${value.slice(0, tokenStart)}${expansionValue}${suffix}${value.slice(tokenEnd)}`;
+    const nextSelection = tokenStart + expansionValue.length + suffix.length;
+
+    syncDraftValueWithSelection(nextValue, nextSelection);
+    setTextExpansionCompletion(null);
     textareaRef.current?.focus();
     return true;
   };
@@ -1388,7 +1673,7 @@ export const TelegramComposer = ({
       );
       pendingSelectionRef.current = null;
     }
-  }, [value, attachments.length, replyPreview]);
+  }, [value, attachments.length, editing.messageId, replyPreview]);
 
   useEffect(() => {
     updateEmojiCompletion();
@@ -1437,6 +1722,9 @@ export const TelegramComposer = ({
   }, [limitDialogMessage]);
 
   const placeholder = useMemo(() => {
+    if (editing.messageId) {
+      return 'Edit your message...';
+    }
     if (replyPreview) {
       return `Reply to ${replyPreview.sender}`;
     }
@@ -1444,7 +1732,7 @@ export const TelegramComposer = ({
       return 'Type a caption...';
     }
     return 'Type your message here...';
-  }, [attachments.length, replyPreview]);
+  }, [attachments.length, editing.messageId, replyPreview]);
 
   const isRecording = voiceRecorderState === 'recording';
   const isPreparing = voiceRecorderState === 'preparing';
@@ -1583,7 +1871,22 @@ export const TelegramComposer = ({
           ) : null}
         </div>
       ) : null}
-      {replyPreview ? (
+      {editing.messageId ? (
+        <div className="telegram-compose-reply telegram-compose-edit">
+          <div className="telegram-compose-reply-body">
+            <div className="telegram-compose-reply-sender">Editing message</div>
+            <div className="telegram-compose-reply-text">{editing.originalText}</div>
+          </div>
+          <button
+            type="button"
+            className="telegram-compose-reply-close"
+            onClick={() => legacyApi?.cancelTelegramEdit()}
+            aria-label="Cancel edit"
+          >
+            <X aria-hidden="true" size={16} strokeWidth={2.2} />
+          </button>
+        </div>
+      ) : replyPreview ? (
         <div className="telegram-compose-reply">
           <div className="telegram-compose-reply-body">
             <div className="telegram-compose-reply-sender">{replyPreview.sender}</div>
@@ -1652,7 +1955,7 @@ export const TelegramComposer = ({
         <TelegramMediaPicker
           ref={mediaPickerRef}
           chatId={activeChatId}
-          disabled={composeLocked || !canSend}
+          disabled={composeLocked || !canSend || !!editing.messageId}
           onClose={() => setMediaPickerOpen(false)}
           onEmojiInsert={insertEmojiAtCursor}
           onSent={() => {
@@ -1666,7 +1969,7 @@ export const TelegramComposer = ({
         <button
           type="button"
           className="telegram-attach-button"
-          disabled={composeLocked}
+          disabled={composeLocked || !!editing.messageId}
           onClick={() => fileInputRef.current?.click()}
           aria-label="Attach file"
         >
@@ -1717,17 +2020,21 @@ export const TelegramComposer = ({
           value={value}
           aria-autocomplete="list"
           aria-controls={
-            mentionCompletion
+            textExpansionCompletion
+              ? 'telegram-text-expansion-completion'
+              : mentionCompletion
               ? 'telegram-mention-completion'
               : emojiCompletion
                 ? 'telegram-emoji-completion'
                 : undefined
           }
-          aria-expanded={mentionCompletion || emojiCompletion ? 'true' : 'false'}
+          aria-expanded={textExpansionCompletion || mentionCompletion || emojiCompletion ? 'true' : 'false'}
           aria-invalid={isOverTextLimit ? 'true' : undefined}
           aria-describedby={isOverTextLimit ? 'telegram-compose-limit-warning' : undefined}
           aria-activedescendant={
-            mentionCompletion
+            textExpansionCompletion
+              ? `telegram-text-expansion-completion-item-${textExpansionCompletion.activeIndex}`
+              : mentionCompletion
               ? `telegram-mention-completion-item-${mentionCompletion.activeIndex}`
               : emojiCompletion
               ? `telegram-emoji-completion-item-${emojiCompletion.activeIndex}`
@@ -1755,6 +2062,12 @@ export const TelegramComposer = ({
               event.target.selectionStart,
               event.target.selectionEnd,
             );
+            updateTextExpansionCompletion(
+              event.target.value,
+              event.target.selectionStart,
+              event.target.selectionEnd,
+              true,
+            );
           }}
           onInput={(event) => {
             if (composerMode !== 'insert' && isTrustedInputEvent(event)) {
@@ -1773,6 +2086,12 @@ export const TelegramComposer = ({
               event.currentTarget.selectionStart,
               event.currentTarget.selectionEnd,
             );
+            updateTextExpansionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
+            );
           }}
           onFocus={(event) => {
             updateMentionCompletion(
@@ -1786,10 +2105,17 @@ export const TelegramComposer = ({
               event.currentTarget.selectionStart,
               event.currentTarget.selectionEnd,
             );
+            updateTextExpansionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
+            );
           }}
           onBlur={() => {
             setEmojiCompletion(null);
             setMentionCompletion(null);
+            setTextExpansionCompletion(null);
           }}
           onClick={(event) => {
             updateMentionCompletion(
@@ -1802,6 +2128,12 @@ export const TelegramComposer = ({
               event.currentTarget.value,
               event.currentTarget.selectionStart,
               event.currentTarget.selectionEnd,
+            );
+            updateTextExpansionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
             );
           }}
           onPaste={(event) => {
@@ -1832,6 +2164,12 @@ export const TelegramComposer = ({
               event.currentTarget.value,
               event.currentTarget.selectionStart,
               event.currentTarget.selectionEnd,
+            );
+            updateTextExpansionCompletion(
+              event.currentTarget.value,
+              event.currentTarget.selectionStart,
+              event.currentTarget.selectionEnd,
+              true,
             );
           }}
           onKeyDown={(event) => {
@@ -1868,6 +2206,80 @@ export const TelegramComposer = ({
 
             if (composerMode === 'normal') {
               if (handleNormalModeKeyDown(event)) {
+                return;
+              }
+            }
+
+            if (textExpansionCompletion && event.key === 'ArrowDown') {
+              event.preventDefault();
+              setTextExpansionCompletion((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.min(
+                        current.suggestions.length - 1,
+                        current.activeIndex + 1,
+                      ),
+                    }
+                  : current,
+              );
+              return;
+            }
+
+            if (textExpansionCompletion && event.key === 'ArrowUp') {
+              event.preventDefault();
+              setTextExpansionCompletion((current) =>
+                current
+                  ? {
+                      ...current,
+                      activeIndex: Math.max(0, current.activeIndex - 1),
+                    }
+                  : current,
+              );
+              return;
+            }
+
+            if (
+              textExpansionCompletion &&
+              ((event.key === 'Enter' &&
+                !event.shiftKey &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey) ||
+                (event.key === 'Tab' && !event.shiftKey) ||
+                (event.key === ' ' && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey))
+            ) {
+              event.preventDefault();
+              applyTextExpansionSuggestion(undefined, event.key === ' ');
+              return;
+            }
+
+            if (textExpansionCompletion && event.key === 'Escape') {
+              event.preventDefault();
+              setTextExpansionCompletion(null);
+              return;
+            }
+
+            if (
+              ((event.key === 'Enter' &&
+                !event.shiftKey &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey) ||
+                (event.key === 'Tab' && !event.shiftKey) ||
+                (event.key === ' ' &&
+                  !event.shiftKey &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  !event.altKey)) &&
+              getTelegramTextExpansionTokenMatch(
+                value,
+                event.currentTarget.selectionStart,
+                event.currentTarget.selectionEnd,
+              )
+            ) {
+              event.preventDefault();
+              if (applyTextExpansionSuggestion(undefined, event.key === ' ')) {
                 return;
               }
             }
@@ -2002,11 +2414,12 @@ export const TelegramComposer = ({
           ref={mediaPickerToggleRef}
           type="button"
           className={`telegram-picker-toggle${mediaPickerOpen ? ' active' : ''}`}
-          disabled={composeLocked || !activeChatId}
+          disabled={composeLocked || !activeChatId || !!editing.messageId}
           onClick={() => {
             setMediaPickerOpen((open) => !open);
             setEmojiCompletion(null);
             setMentionCompletion(null);
+            setTextExpansionCompletion(null);
           }}
           aria-label="Open emoji, sticker, and GIF picker"
           aria-expanded={mediaPickerOpen ? 'true' : 'false'}
@@ -2092,6 +2505,49 @@ export const TelegramComposer = ({
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+      {textExpansionCompletion ? (
+        <div
+          id="telegram-text-expansion-completion"
+          className="telegram-text-expansion-completion"
+          role="listbox"
+          aria-label="Text expansion suggestions"
+        >
+          {textExpansionCompletion.suggestions.map((suggestion, index) => (
+            <button
+              key={suggestion.command}
+              id={`telegram-text-expansion-completion-item-${index}`}
+              type="button"
+              className={`telegram-text-expansion-completion-item${
+                index === textExpansionCompletion.activeIndex ? ' active' : ''
+              }`}
+              role="option"
+              aria-selected={index === textExpansionCompletion.activeIndex ? 'true' : 'false'}
+              onMouseEnter={() => {
+                setTextExpansionCompletion((current) =>
+                  current
+                    ? {
+                        ...current,
+                        activeIndex: index,
+                      }
+                    : current,
+                );
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                applyTextExpansionSuggestion(suggestion);
+              }}
+            >
+              <span className="telegram-text-expansion-command">{suggestion.command}</span>
+              <span className="telegram-text-expansion-copy">
+                <span className="telegram-text-expansion-description">
+                  {suggestion.description}
+                </span>
+                <span className="telegram-text-expansion-preview">{suggestion.getValue()}</span>
+              </span>
+            </button>
+          ))}
         </div>
       ) : null}
       {mentionCompletion ? (

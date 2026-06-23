@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import type { ChatMessage } from '../../../shared/connectors';
+import type { ChatMessage, ChatServiceEvent } from '../../../shared/connectors';
 import type { LegacyAppBridgeApi, LegacyRenderableTelegramMessage } from '../../legacyBridge';
 import { describeTelegramCall } from './calls';
 import { renderTelegramRichText } from './links';
@@ -82,6 +82,131 @@ const limitTelegramRenderedText = (
     truncated: true,
     originalLength: value.length,
   };
+};
+
+const TELEGRAM_SERVICE_TEXT_BY_KIND: Record<string, string> = {
+  messageBasicGroupChatCreate: 'created the group',
+  messageSupergroupChatCreate: 'created the group',
+  messageChatAddMembers: 'added a member',
+  messageChatDeleteMember: 'removed a member',
+  messageChatJoinByLink: 'Joined via invite link',
+  messageChatJoinByRequest: 'Join request approved',
+  messageChatChangeTitle: 'changed the group title',
+  messagePinMessage: 'pinned a message',
+  messageScreenshotTaken: 'took a screenshot',
+  messageChatSetTheme: 'changed the chat theme',
+  messageChatSetMessageAutoDeleteTime: 'changed the auto-delete timer',
+};
+
+const TELEGRAM_SERVICE_KIND_BY_TEXT = new Map(
+  [
+    ...Object.entries(TELEGRAM_SERVICE_TEXT_BY_KIND).map<[string, string]>(([kind, title]) => [
+      title.toLowerCase(),
+      kind,
+    ]),
+    ['members added', 'messageChatAddMembers'],
+    ['member added', 'messageChatAddMembers'],
+  ] satisfies Array<[string, string]>,
+);
+
+const resolveTelegramServiceEvent = (
+  message: ChatMessage,
+  text: string,
+): ChatServiceEvent | undefined => {
+  if (message.serviceEvent) {
+    return message.serviceEvent;
+  }
+
+  const trimmed = text.trim();
+  const rawKind = /^\[?(message[A-Za-z0-9]+)\]?$/u.exec(trimmed)?.[1];
+  if (rawKind && TELEGRAM_SERVICE_TEXT_BY_KIND[rawKind]) {
+    return {
+      source: 'telegram',
+      kind: rawKind,
+      title: TELEGRAM_SERVICE_TEXT_BY_KIND[rawKind],
+    };
+  }
+
+  const kind = TELEGRAM_SERVICE_KIND_BY_TEXT.get(trimmed.toLowerCase());
+  if (!kind) {
+    return undefined;
+  }
+
+  return {
+    source: 'telegram',
+    kind,
+    title: TELEGRAM_SERVICE_TEXT_BY_KIND[kind],
+  };
+};
+
+const formatTelegramServiceActor = (sender: string, outgoing?: boolean): string => {
+  if (outgoing) {
+    return 'You';
+  }
+  return safeLabel(sender, 'Someone').replace(/\s+\(@[^)]+\)$/u, '').trim() || 'Someone';
+};
+
+const renderTelegramServiceContent = (
+  serviceEvent: ChatServiceEvent,
+  sender: string,
+  outgoing?: boolean,
+) => {
+  const actor = formatTelegramServiceActor(sender, outgoing);
+  switch (serviceEvent.kind) {
+    case 'messageBasicGroupChatCreate':
+    case 'messageSupergroupChatCreate':
+      return (
+        <>
+          <span className="telegram-service-actor">{actor}</span> created the group
+        </>
+      );
+    case 'messageChatAddMembers':
+      return (
+        <>
+          <span className="telegram-service-actor">{actor}</span> added{' '}
+          {serviceEvent.detail ? (
+            <span className="telegram-service-actor">{serviceEvent.detail}</span>
+          ) : (
+            'a member'
+          )}
+        </>
+      );
+    case 'messageChatDeleteMember':
+      return (
+        <>
+          <span className="telegram-service-actor">{actor}</span> removed{' '}
+          {serviceEvent.detail ? (
+            <span className="telegram-service-actor">{serviceEvent.detail}</span>
+          ) : (
+            'a member'
+          )}
+        </>
+      );
+    case 'messageChatChangeTitle':
+      return (
+        <>
+          <span className="telegram-service-actor">{actor}</span> changed the group title
+          {serviceEvent.detail ? (
+            <>
+              {' '}
+              to <span className="telegram-service-actor">{serviceEvent.detail}</span>
+            </>
+          ) : null}
+        </>
+      );
+    case 'messagePinMessage':
+      return (
+        <>
+          <span className="telegram-service-actor">{actor}</span> pinned a message
+        </>
+      );
+    default:
+      return (
+        <>
+          <span className="telegram-service-actor">{actor}</span> {serviceEvent.title}
+        </>
+      );
+  }
 };
 
 const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): MessageBundle[] => {
@@ -1398,8 +1523,11 @@ const TelegramMessageRow = memo(
     const messageTextTrimmed = messageTextValue.trim();
     const messageTextLower = messageTextTrimmed.toLowerCase();
     const senderLabel = safeLabel(primaryMessage.sender, primaryMessage.outgoing ? 'You' : 'Unknown');
+    const serviceEvent = resolveTelegramServiceEvent(primaryMessage, messageTextTrimmed);
     const isContinuation =
+      !serviceEvent &&
       !!previousMessage &&
+      !resolveTelegramServiceEvent(previousMessage, safeText(previousMessage.text)) &&
       safeText(previousMessage.sender) === safeText(primaryMessage.sender) &&
       previousMessage.outgoing === primaryMessage.outgoing;
 
@@ -1414,6 +1542,7 @@ const TelegramMessageRow = memo(
     const suppressPollFallbackText = !!primaryMessage.poll;
     const shouldRenderText =
       !!messageTextTrimmed &&
+      !serviceEvent &&
       !primaryMessage.call &&
       !suppressImageFallbackText &&
       !suppressVideoFallbackText &&
@@ -1458,7 +1587,7 @@ const TelegramMessageRow = memo(
         <article
           className={`telegram-message-item ${primaryMessage.outgoing ? 'outgoing' : 'incoming'}${
             shouldCollapseAlbum ? ' album' : ''
-          }${isContinuation ? ' continuation' : ''}${isSelected ? ' selected' : ''}${
+          }${serviceEvent ? ' service-event' : ''}${isContinuation ? ' continuation' : ''}${isSelected ? ' selected' : ''}${
             isDocumentOnlyMessage ? ' document-only' : ''
           }${isPollOnlyMessage ? ' poll-only' : ''}${
             primaryMessage.poll ? ' has-poll' : ''
@@ -1480,7 +1609,17 @@ const TelegramMessageRow = memo(
             legacyApi?.openTelegramContextMenu(primaryMessage.id, event.clientX, event.clientY);
           }}
         >
-          {!isContinuation ? (
+          {serviceEvent ? (
+            <div className="telegram-service-line">
+              {renderTelegramServiceContent(serviceEvent, primaryMessage.sender, primaryMessage.outgoing)}
+              <span
+                className="telegram-service-time"
+                title={hasValidTimestamp(primaryMessage.timestamp) ? formatFullDateTime(primaryMessage.timestamp) : ''}
+              >
+                {formatMessageTimestamp(primaryMessage.timestamp)}
+              </span>
+            </div>
+          ) : !isContinuation ? (
             <div className="telegram-message-header">
               {primaryMessage.outgoing ? null : (
                 <TelegramMessageAvatar label={senderLabel} imageUrl={primaryMessage.senderAvatarUrl} />
@@ -1615,44 +1754,46 @@ const TelegramMessageRow = memo(
               ))}
             </div>
           ) : null}
-          <div className="telegram-message-footer">
-            <span
-              className="telegram-message-time"
-              title={hasValidTimestamp(primaryMessage.timestamp) ? formatFullDateTime(primaryMessage.timestamp) : ''}
-            >
-              {formatMessageTimestamp(primaryMessage.timestamp)}
-            </span>
-            {primaryMessage.outgoing ? (
+          {serviceEvent ? null : (
+            <div className="telegram-message-footer">
               <span
-                className={`telegram-message-receipt ${
-                  primaryMessage.pendingState === 'sending'
-                    ? 'sending'
-                    : primaryMessage.readByPeer
-                      ? 'read'
-                      : 'sent'
-                }`}
-                title={
-                  primaryMessage.pendingState === 'sending'
-                    ? 'Sending'
-                    : primaryMessage.readByPeer
-                      ? 'Read'
-                      : 'Sent'
-                }
+                className="telegram-message-time"
+                title={hasValidTimestamp(primaryMessage.timestamp) ? formatFullDateTime(primaryMessage.timestamp) : ''}
               >
-                {primaryMessage.pendingState === 'sending' ? (
-                  <span className="telegram-message-spinner" aria-hidden="true" />
-                ) : primaryMessage.readByPeer ? (
-                  <span className="telegram-message-tick double" aria-label="Read">
-                    ✓✓
-                  </span>
-                ) : (
-                  <span className="telegram-message-tick" aria-label="Sent">
-                    ✓
-                  </span>
-                )}
+                {formatMessageTimestamp(primaryMessage.timestamp)}
               </span>
-            ) : null}
-          </div>
+              {primaryMessage.outgoing ? (
+                <span
+                  className={`telegram-message-receipt ${
+                    primaryMessage.pendingState === 'sending'
+                      ? 'sending'
+                      : primaryMessage.readByPeer
+                        ? 'read'
+                        : 'sent'
+                  }`}
+                  title={
+                    primaryMessage.pendingState === 'sending'
+                      ? 'Sending'
+                      : primaryMessage.readByPeer
+                        ? 'Read'
+                        : 'Sent'
+                  }
+                >
+                  {primaryMessage.pendingState === 'sending' ? (
+                    <span className="telegram-message-spinner" aria-hidden="true" />
+                  ) : primaryMessage.readByPeer ? (
+                    <span className="telegram-message-tick double" aria-label="Read">
+                      ✓✓
+                    </span>
+                  ) : (
+                    <span className="telegram-message-tick" aria-label="Sent">
+                      ✓
+                    </span>
+                  )}
+                </span>
+              ) : null}
+            </div>
+          )}
         </article>
       </>
     );
