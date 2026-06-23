@@ -13,6 +13,7 @@ interface UseKeyboardBindingsOptions {
   keyboardHelpOpen: boolean;
   legacyApi: LegacyAppBridgeApi | null;
   mode: AppMode;
+  onEscape?(): boolean;
   onFocusSearch?(): void;
   onMoveLeft?(): void;
   onMoveRight?(): void;

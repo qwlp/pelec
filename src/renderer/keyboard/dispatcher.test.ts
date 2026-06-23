@@ -223,6 +223,41 @@ describe('dispatchKeyboardEvent', () => {
     expect(legacyApi.movePane).not.toHaveBeenCalled();
   });
 
+  it('uses the custom escape handler before legacy escape', () => {
+    const { context, legacyApi, state } = buildContext();
+    context.onEscape = vi.fn().mockReturnValue(true);
+    const event = new window.KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+
+    const handled = dispatchKeyboardEvent(event, context, state);
+
+    expect(handled).toBe(true);
+    expect(context.onEscape).toHaveBeenCalledOnce();
+    expect(legacyApi.handleEscape).not.toHaveBeenCalled();
+  });
+
+  it('uses the custom escape handler while typing', () => {
+    const { context, legacyApi, state } = buildContext();
+    context.onEscape = vi.fn().mockReturnValue(true);
+    const textarea = document.createElement('textarea');
+    document.body.append(textarea);
+    const event = new window.KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, 'target', { value: textarea });
+
+    const handled = dispatchKeyboardEvent(event, context, state);
+
+    expect(handled).toBe(true);
+    expect(context.onEscape).toHaveBeenCalledOnce();
+    expect(legacyApi.handleEscape).not.toHaveBeenCalled();
+  });
+
   it('does not open keyboard help while typing in an input', () => {
     const { context, state } = buildContext();
     const input = document.createElement('textarea');

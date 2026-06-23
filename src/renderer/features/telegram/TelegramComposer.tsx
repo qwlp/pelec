@@ -1978,6 +1978,11 @@ export const TelegramComposer = ({
               !event.altKey
             ) {
               event.preventDefault();
+              const cursor = Math.min(
+                event.currentTarget.selectionStart ?? 0,
+                event.currentTarget.selectionEnd ?? 0,
+              );
+              moveTextareaCursor(Math.max(0, cursor - 1));
               requestComposerMode('normal');
               return;
             }

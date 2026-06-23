@@ -20,6 +20,7 @@ export interface KeyboardDispatcherContext {
   keyboardHelpOpen: boolean;
   legacyApi: LegacyAppBridgeApi | null;
   mode: AppMode;
+  onEscape?(): boolean;
   onFocusSearch?(): void;
   onMoveLeft?(): void;
   onMoveRight?(): void;
@@ -119,6 +120,13 @@ export const dispatchKeyboardEvent = (
   }
 
   if (normalized.isTypingTarget && scope !== 'webview') {
+    if (normalized.key === 'Escape' && context.onEscape?.()) {
+      event.preventDefault();
+      event.stopPropagation();
+      state.pendingSequence = null;
+      state.pendingSequenceAt = 0;
+      return true;
+    }
     return false;
   }
 
@@ -133,6 +141,12 @@ export const dispatchKeyboardEvent = (
   if (normalized.key === 'Escape' && context.legacyApi) {
     event.preventDefault();
     event.stopPropagation();
+    if (context.onEscape?.()) {
+      context.closeCommandPalette();
+      state.pendingSequence = null;
+      state.pendingSequenceAt = 0;
+      return true;
+    }
     context.legacyApi.handleEscape();
     context.closeCommandPalette();
     return true;

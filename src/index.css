@@ -1302,6 +1302,7 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-message-item {
+  position: relative;
   border: 1px solid var(--line-soft);
   padding: 10px;
   background: var(--bg-elev);
@@ -1312,8 +1313,13 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-message-item.selected {
-  border-color: rgba(255, 124, 193, 0.78);
-  box-shadow: var(--accent-glow-shadow);
+  border-color: #ffd2ea;
+  border-width: 2px;
+  outline: 1px solid rgba(255, 124, 193, 0.9);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.32) inset,
+    0 0 14px rgba(255, 113, 188, 0.28);
 }
 
 .telegram-message-item.incoming {
@@ -1328,7 +1334,10 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-message-item.outgoing.selected {
-  box-shadow: var(--accent-glow-shadow);
+  border-color: #ffd2ea;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.34) inset,
+    0 0 14px rgba(255, 113, 188, 0.32);
 }
 
 .telegram-message-item.continuation {

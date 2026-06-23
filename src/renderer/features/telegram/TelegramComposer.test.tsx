@@ -850,16 +850,17 @@ describe('TelegramComposer', () => {
       expect(textarea?.dataset.vimMode).toBe('normal');
     });
     expect(legacyApi.setMode).toHaveBeenLastCalledWith('normal');
+    expect(textarea?.selectionStart).toBe(4);
 
     fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'h' });
-    expect(textarea?.selectionStart).toBe(4);
+    expect(textarea?.selectionStart).toBe(3);
 
     fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'x' });
 
     await waitFor(() => {
-      expect(textarea?.value).toBe('hell world');
+      expect(textarea?.value).toBe('helo world');
     });
-    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('hell world');
+    expect(legacyApi.setTelegramDraftValue).toHaveBeenLastCalledWith('helo world');
 
     fireEvent.keyDown(textarea as HTMLTextAreaElement, { key: 'i' });
 

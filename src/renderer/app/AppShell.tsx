@@ -477,6 +477,21 @@ export const AppShell = () => {
     }
   });
 
+  const handleEscape = useEffectEvent((): boolean => {
+    if (
+      state.appShell.activeNetwork !== 'telegram' ||
+      !telegramCompactShowMessages ||
+      telegramSnapshot?.imagePreviewUrl ||
+      telegramSnapshot?.forward.visible ||
+      telegramSnapshot?.contextMenu.visible
+    ) {
+      return false;
+    }
+
+    handleTelegramBackToChats();
+    return true;
+  });
+
   useEffect(() => {
     const offOpenPalette = window.pelec.onOpenCommandPalette(() => {
       openCommandPalette();
@@ -555,6 +570,7 @@ export const AppShell = () => {
     keyboardHelpOpen: false,
     legacyApi,
     mode: state.appShell.mode,
+    onEscape: () => handleEscape(),
     onFocusSearch: () => focusSearch(),
     onMoveLeft: () => handleMoveLeft(),
     onMoveRight: () => handleMoveRight(),
