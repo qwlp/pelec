@@ -53,6 +53,7 @@ describe('appReducer', () => {
       ],
       messagesLoading: false,
       pendingAttachments: [],
+      replyToMessageId: null,
       replyPreview: null,
       searchQuery: '',
       selectedChatId: 'chat-1',

@@ -111,6 +111,25 @@ export type TdFileRef = {
   };
 };
 
+export type TdSticker = {
+  emoji?: string;
+  width?: number;
+  height?: number;
+  sticker?: TdFileRef;
+  thumbnail?: { file?: TdFileRef };
+  format?: { _?: string };
+  set_id?: number | string;
+};
+
+export type TdAnimation = {
+  width?: number;
+  height?: number;
+  animation?: TdFileRef;
+  thumbnail?: { file?: TdFileRef };
+  mime_type?: string;
+  file_name?: string;
+};
+
 export type TelegramDocumentRef = {
   file: TdFileRef | undefined;
   fileName: string;

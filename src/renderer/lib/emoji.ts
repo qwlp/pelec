@@ -119,6 +119,12 @@ TELEGRAM_EMOJI_INDEX.sort(
     left.canonicalAlias.localeCompare(right.canonicalAlias),
 );
 
+export const getTelegramEmojiCatalog = (): TelegramEmojiCatalogEntry[] =>
+  TELEGRAM_EMOJI_CATALOG.map((entry) => ({
+    emoji: entry.emoji,
+    aliases: [...entry.aliases],
+  }));
+
 const splitTelegramEmojiAlias = (alias: string): string[] =>
   alias
     .toLowerCase()
@@ -305,5 +311,9 @@ export const buildTelegramEmojiSuggestions = (query: string): TelegramEmojiSugge
         left.canonicalAlias.localeCompare(right.canonicalAlias),
     )
     .slice(0, TELEGRAM_EMOJI_COMPLETION_MAX_RESULTS)
-    .map(({ aliasLength: _aliasLength, score: _score, ...suggestion }) => suggestion);
+    .map((suggestion) => ({
+      emoji: suggestion.emoji,
+      canonicalAlias: suggestion.canonicalAlias,
+      matchedAlias: suggestion.matchedAlias,
+    }));
 };

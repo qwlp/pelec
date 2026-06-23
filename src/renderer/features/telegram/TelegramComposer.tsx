@@ -8,6 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from 'react';
+import { Mic, Paperclip, SendHorizontal, SmilePlus, Square } from 'lucide-react';
 import type { AppMode } from '../../../shared/types';
 import type { PendingTelegramAttachment } from './media';
 import type { LegacyAppBridgeApi, LegacyTelegramReplyPreview } from '../../legacyBridge';
@@ -17,8 +18,10 @@ import {
   type TelegramEmojiSuggestion,
 } from '../../lib/emoji';
 import { formatTelegramAttachmentMeta } from './media';
+import { TelegramMediaPicker } from './TelegramMediaPicker';
 
 interface TelegramComposerProps {
+  activeChatId?: string | null;
   appMode?: AppMode;
   attachments: PendingTelegramAttachment[];
   canSend: boolean;
@@ -27,6 +30,7 @@ interface TelegramComposerProps {
   legacyApi: LegacyAppBridgeApi | null;
   mentionSuggestions?: TelegramMentionSuggestion[];
   onModeChange?: (mode: AppMode) => void;
+  replyToMessageId?: string | null;
   replyPreview: LegacyTelegramReplyPreview | null;
   sendBehavior: 'enter' | 'mod-enter';
   target: HTMLElement | null;
@@ -370,6 +374,7 @@ const formatRecordingDuration = (durationMs: number): string => {
 };
 
 export const TelegramComposer = ({
+  activeChatId = null,
   appMode = 'insert',
   attachments,
   canSend,
@@ -378,6 +383,7 @@ export const TelegramComposer = ({
   legacyApi,
   mentionSuggestions = [],
   onModeChange,
+  replyToMessageId,
   replyPreview,
   sendBehavior,
   target,
@@ -393,8 +399,11 @@ export const TelegramComposer = ({
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
   const [limitDialogMessage, setLimitDialogMessage] = useState<string | null>(null);
+  const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaPickerRef = useRef<HTMLDivElement | null>(null);
+  const mediaPickerToggleRef = useRef<HTMLButtonElement | null>(null);
   const syncedDraftValueRef = useRef(draftText);
   const hasLocalDraftEditRef = useRef(false);
   const pendingSelectionRef = useRef<{ end: number; start: number } | null>(null);
@@ -447,6 +456,21 @@ export const TelegramComposer = ({
     };
     pendingSelectionRef.current = nextSelection;
     syncDraftValue(nextValue);
+  };
+
+  const insertEmojiAtCursor = (emoji: string) => {
+    const textarea = textareaRef.current;
+    const selectionStart = textarea?.selectionStart ?? value.length;
+    const selectionEnd = textarea?.selectionEnd ?? selectionStart;
+    const start = clampIndex(Math.min(selectionStart, selectionEnd), value);
+    const end = clampIndex(Math.max(selectionStart, selectionEnd), value);
+    const nextValue = `${value.slice(0, start)}${emoji}${value.slice(end)}`;
+    syncDraftValueWithSelection(nextValue, start + emoji.length);
+    setEmojiCompletion(null);
+    setMentionCompletion(null);
+    window.requestAnimationFrame?.(() => {
+      textareaRef.current?.focus();
+    }) ?? window.setTimeout(() => textareaRef.current?.focus(), 0);
   };
 
   const moveTextareaCursor = (nextSelectionStart: number, nextSelectionEnd = nextSelectionStart) => {
@@ -1427,6 +1451,48 @@ export const TelegramComposer = ({
   const isSending = voiceRecorderState === 'sending';
   const composeLocked = isRecording || isPreparing || isSending;
   const dragActive = dragDepth > 0 && !composeLocked;
+
+  useEffect(() => {
+    if (!activeChatId || !canSend || composeLocked) {
+      setMediaPickerOpen(false);
+    }
+  }, [activeChatId, canSend, composeLocked]);
+
+  useEffect(() => {
+    if (!mediaPickerOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const targetNode = event.target;
+      if (!(targetNode instanceof Node)) {
+        return;
+      }
+
+      if (
+        mediaPickerRef.current?.contains(targetNode) ||
+        mediaPickerToggleRef.current?.contains(targetNode)
+      ) {
+        return;
+      }
+
+      setMediaPickerOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, [mediaPickerOpen]);
+
+  useEffect(() => {
+    document.body.classList.toggle('telegram-media-picker-open', mediaPickerOpen);
+
+    return () => {
+      document.body.classList.remove('telegram-media-picker-open');
+    };
+  }, [mediaPickerOpen]);
+
   const hasDraggedFiles = (dataTransfer: DataTransfer | null): boolean => {
     if (!dataTransfer) {
       return false;
@@ -1582,6 +1648,20 @@ export const TelegramComposer = ({
           ))}
         </div>
       ) : null}
+      {mediaPickerOpen && activeChatId ? (
+        <TelegramMediaPicker
+          ref={mediaPickerRef}
+          chatId={activeChatId}
+          disabled={composeLocked || !canSend}
+          onClose={() => setMediaPickerOpen(false)}
+          onEmojiInsert={insertEmojiAtCursor}
+          onSent={() => {
+            legacyApi?.clearTelegramReply();
+            legacyApi?.refresh();
+          }}
+          replyToMessageId={replyToMessageId ?? undefined}
+        />
+      ) : null}
       <div className="telegram-compose-row">
         <button
           type="button"
@@ -1590,7 +1670,7 @@ export const TelegramComposer = ({
           onClick={() => fileInputRef.current?.click()}
           aria-label="Attach file"
         >
-          +
+          <Paperclip aria-hidden="true" size={18} strokeWidth={2.1} />
         </button>
         <input
           ref={fileInputRef}
@@ -1755,6 +1835,19 @@ export const TelegramComposer = ({
             );
           }}
           onKeyDown={(event) => {
+            if (
+              mediaPickerOpen &&
+              event.key === 'Escape' &&
+              !event.shiftKey &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey
+            ) {
+              event.preventDefault();
+              setMediaPickerOpen(false);
+              return;
+            }
+
             if (composerMode === 'visual-block') {
               if (handleVisualBlockModeKeyDown(event)) {
                 return;
@@ -1901,6 +1994,21 @@ export const TelegramComposer = ({
           }}
         />
         <button
+          ref={mediaPickerToggleRef}
+          type="button"
+          className={`telegram-picker-toggle${mediaPickerOpen ? ' active' : ''}`}
+          disabled={composeLocked || !activeChatId}
+          onClick={() => {
+            setMediaPickerOpen((open) => !open);
+            setEmojiCompletion(null);
+            setMentionCompletion(null);
+          }}
+          aria-label="Open emoji, sticker, and GIF picker"
+          aria-expanded={mediaPickerOpen ? 'true' : 'false'}
+        >
+          <SmilePlus aria-hidden="true" size={20} strokeWidth={2} />
+        </button>
+        <button
           type="button"
           className={`telegram-voice-record-button${isRecording ? ' recording' : ''}`}
           disabled={isPreparing || isSending || voiceRecorderState === 'unsupported'}
@@ -1918,7 +2026,11 @@ export const TelegramComposer = ({
             legacyApi?.startTelegramVoiceRecording();
           }}
         >
-          {isRecording ? '■' : '●'}
+          {isRecording ? (
+            <Square aria-hidden="true" size={16} strokeWidth={2.4} />
+          ) : (
+            <Mic aria-hidden="true" size={18} strokeWidth={2.1} />
+          )}
         </button>
         <button
           type="button"
@@ -1926,7 +2038,7 @@ export const TelegramComposer = ({
           disabled={composeLocked}
           onClick={handleSend}
         >
-          ➤
+          <SendHorizontal aria-hidden="true" size={18} strokeWidth={2.1} />
         </button>
       </div>
       {isOverTextLimit ? (

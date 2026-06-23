@@ -73,6 +73,7 @@ export interface LegacyTelegramSnapshot {
   messages: LegacyRenderableTelegramMessage[];
   messagesLoading: boolean;
   pendingAttachments: PendingTelegramAttachment[];
+  replyToMessageId: string | null;
   replyPreview: LegacyTelegramReplyPreview | null;
   searchQuery: string;
   selectedChatId: string | null;

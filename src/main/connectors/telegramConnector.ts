@@ -17,6 +17,10 @@ import type {
   ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
+  TelegramPickerItem,
+  TelegramPickerQuery,
+  TelegramStickerSetSource,
+  TelegramStickerSetSummary,
 } from '../../shared/connectors';
 import type { NetworkDefinition, NetworkId, TelegramUserConfig } from '../../shared/types';
 import {
@@ -50,9 +54,14 @@ import {
   extractTelegramVoiceDurationSeconds,
   extractTelegramVoiceNoteFile,
   getTelegramDocument,
+  getTelegramAnimationPreviewFile,
   hasTelegramVideo,
   hasTelegramVoiceNote,
   isTelegramAnimatedSticker,
+  getTelegramStickerPreviewFile,
+  inferTelegramLocalMimeType,
+  mapTelegramAnimationToPickerItem,
+  mapTelegramStickerToPickerItem,
 } from './telegram/media';
 import {
   getFfmpegBinaryPath,
@@ -74,8 +83,11 @@ import type {
   TdChat,
   TdClient,
   TdChatMemberStatus,
+  TdAnimation,
+  TdFileRef,
   TdMessage,
   TdScopeNotificationSettings,
+  TdSticker,
   TdSupergroup,
   TdUpdateWithChatContext,
 } from './telegram/types';
@@ -91,6 +103,14 @@ type LegacyConnectorUpdateEvent =
   | { network: NetworkId; kind: 'status' }
   | { network: NetworkId; kind: 'chats'; chatId?: string }
   | { network: NetworkId; kind: 'messages'; chatId?: string };
+
+type TdStickerSet = {
+  id?: number | string;
+  title?: string;
+  name?: string;
+  thumbnail?: { file?: TdFileRef };
+  stickers?: TdSticker[];
+};
 
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
@@ -1139,11 +1159,392 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async listTelegramStickerSets(
+    source: TelegramStickerSetSource,
+  ): Promise<TelegramStickerSetSummary[]> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return [];
+    }
+
+    try {
+      if (source === 'recent' || source === 'favorite') {
+        const stickers = source === 'favorite'
+          ? await this.getFavoriteTelegramStickers(this.tdClient, 24)
+          : await this.getRecentTelegramStickers(this.tdClient, 24);
+        const thumbnailUrl = (await this.resolveStickerPreview(this.tdClient, stickers[0]))?.url;
+        return [
+          {
+            id: source,
+            title: source === 'favorite' ? 'Favorites' : 'Recent',
+            source,
+            thumbnailUrl,
+            stickerCount: stickers.length,
+          },
+        ];
+      }
+
+      const result = await this.invokeWithTimeout<{ sets?: TdStickerSet[] }>(
+        this.tdClient,
+        {
+          _: 'getInstalledStickerSets',
+          sticker_type: { _: 'stickerTypeRegular' },
+        },
+        'getInstalledStickerSets',
+      );
+
+      const summaries = await Promise.all(
+        (result.sets ?? []).slice(0, 32).map(async (set): Promise<TelegramStickerSetSummary | null> => {
+          const setId = String(set.id ?? '').trim();
+          const title = set.title?.trim() || set.name?.trim() || 'Sticker set';
+          const thumbnailUrl = await this.resolveTdFileRefPreviewUrl(this.tdClient as TdClient, set.thumbnail?.file);
+          return setId
+            ? {
+                id: setId,
+                title,
+                name: set.name?.trim() || undefined,
+                source,
+                thumbnailUrl,
+                stickerCount: set.stickers?.length,
+              }
+            : null;
+        }),
+      );
+
+      return summaries.filter((set): set is TelegramStickerSetSummary => set !== null);
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram sticker-set error';
+      this.status.details = `Failed loading Telegram sticker sets: ${this.status.lastError}`;
+      return [];
+    }
+  }
+
+  async listTelegramPickerItems(query: TelegramPickerQuery): Promise<TelegramPickerItem[]> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return [];
+    }
+
+    const limit = Math.max(1, Math.min(80, Math.floor(query.limit ?? 48)));
+
+    try {
+      if (query.kind === 'gif') {
+        const animations = query.query?.trim()
+          ? await this.searchTelegramAnimations(this.tdClient, query.query.trim(), limit)
+          : await this.getSavedTelegramAnimations(this.tdClient, limit);
+        return this.mapTelegramAnimationsForPicker(this.tdClient, animations, limit);
+      }
+
+      let stickers: TdSticker[] = [];
+      let setTitle: string | undefined;
+      if (query.setId?.trim() && !['recent', 'favorite'].includes(query.setId.trim())) {
+        const set = await this.getTelegramStickerSet(this.tdClient, query.setId.trim());
+        stickers = set?.stickers ?? [];
+        setTitle = set?.title;
+      } else if (query.query?.trim() || query.emoji?.trim()) {
+        stickers = await this.searchTelegramStickers(
+          this.tdClient,
+          query.emoji?.trim() || query.query?.trim() || '',
+          query.query?.trim() || '',
+          limit,
+        );
+      } else if (query.setId?.trim() === 'favorite') {
+        stickers = await this.getFavoriteTelegramStickers(this.tdClient, limit);
+        setTitle = 'Favorites';
+      } else {
+        stickers = await this.getRecentTelegramStickers(this.tdClient, limit);
+        setTitle = 'Recent';
+        if (stickers.length < 1) {
+          stickers = await this.getFavoriteTelegramStickers(this.tdClient, limit);
+          setTitle = 'Favorites';
+        }
+      }
+
+      return this.mapTelegramStickersForPicker(this.tdClient, stickers, limit, setTitle);
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram picker item error';
+      this.status.details = `Failed loading Telegram picker items: ${this.status.lastError}`;
+      return [];
+    }
+  }
+
+  async sendTelegramPickerItem(
+    chatId: string,
+    item: TelegramPickerItem,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const fileId = Number(item.id);
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+      return false;
+    }
+
+    try {
+      const inputFile = {
+        _: 'inputFileId',
+        id: fileId,
+      };
+      const baseRequest = {
+        _: 'sendMessage',
+        chat_id: Number(chatId),
+        input_message_content:
+          item.kind === 'gif'
+            ? {
+                _: 'inputMessageAnimation',
+                animation: inputFile,
+                thumbnail: null,
+                added_sticker_file_ids: [],
+                duration: 0,
+                width: item.width ?? 0,
+                height: item.height ?? 0,
+                caption: {
+                  _: 'formattedText',
+                  text: '',
+                },
+              }
+            : {
+                _: 'inputMessageSticker',
+                sticker: inputFile,
+                thumbnail: null,
+                emoji: item.emoji ?? '',
+                width: item.width ?? 0,
+                height: item.height ?? 0,
+              },
+      } as Record<string, unknown>;
+
+      await this.sendTdMessage(baseRequest, replyToMessageId);
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram picker send error';
+      this.status.details = `Failed sending Telegram media: ${this.status.lastError}`;
+      return false;
+    }
+  }
+
   private resolveQrWaiters(link: string | null): void {
     for (const resolve of this.qrWaiters) {
       resolve(link);
     }
     this.qrWaiters = [];
+  }
+
+  private async getRecentTelegramStickers(client: TdClient, limit: number): Promise<TdSticker[]> {
+    const result = await this.invokeWithTimeout<{ stickers?: TdSticker[] }>(
+      client,
+      {
+        _: 'getRecentStickers',
+        is_attached: false,
+      },
+      'getRecentStickers',
+    );
+    return (result.stickers ?? []).slice(0, limit);
+  }
+
+  private async getFavoriteTelegramStickers(client: TdClient, limit: number): Promise<TdSticker[]> {
+    const result = await this.invokeWithTimeout<{ stickers?: TdSticker[] }>(
+      client,
+      {
+        _: 'getFavoriteStickers',
+      },
+      'getFavoriteStickers',
+    );
+    return (result.stickers ?? []).slice(0, limit);
+  }
+
+  private async getTelegramStickerSet(
+    client: TdClient,
+    setId: string,
+  ): Promise<TdStickerSet | undefined> {
+    const numericSetId = Number(setId);
+    if (!Number.isFinite(numericSetId) || numericSetId <= 0) {
+      return undefined;
+    }
+
+    return this.invokeWithTimeout<TdStickerSet>(
+      client,
+      {
+        _: 'getStickerSet',
+        set_id: numericSetId,
+      },
+      'getStickerSet',
+    );
+  }
+
+  private async searchTelegramStickers(
+    client: TdClient,
+    emoji: string,
+    query: string,
+    limit: number,
+  ): Promise<TdSticker[]> {
+    const requests: Array<Record<string, unknown>> = [
+      {
+        _: 'searchStickers',
+        sticker_type: { _: 'stickerTypeRegular' },
+        emojis: emoji,
+        query,
+        limit,
+      },
+      {
+        _: 'searchStickers',
+        emoji,
+        limit,
+      },
+    ];
+
+    for (const request of requests) {
+      try {
+        const result = await this.invokeWithTimeout<{ stickers?: TdSticker[] }>(
+          client,
+          request,
+          'searchStickers',
+        );
+        const stickers = result.stickers ?? [];
+        if (stickers.length > 0) {
+          return stickers.slice(0, limit);
+        }
+      } catch {
+        // Try the next TDLib shape; searchStickers changed over TDLib versions.
+      }
+    }
+
+    return [];
+  }
+
+  private async getSavedTelegramAnimations(client: TdClient, limit: number): Promise<TdAnimation[]> {
+    const result = await this.invokeWithTimeout<{ animations?: TdAnimation[] }>(
+      client,
+      {
+        _: 'getSavedAnimations',
+      },
+      'getSavedAnimations',
+    );
+    return (result.animations ?? []).slice(0, limit);
+  }
+
+  private async searchTelegramAnimations(
+    client: TdClient,
+    query: string,
+    limit: number,
+  ): Promise<TdAnimation[]> {
+    const requests: Array<Record<string, unknown>> = [
+      {
+        _: 'searchAnimations',
+        query,
+        limit,
+      },
+      {
+        _: 'getAnimationSearchResults',
+        query,
+        offset: '',
+        limit,
+      },
+    ];
+
+    for (const request of requests) {
+      try {
+        const result = await this.invokeWithTimeout<{
+          animations?: TdAnimation[];
+          results?: TdAnimation[];
+        }>(
+          client,
+          request,
+          String(request._),
+        );
+        const animations = result.animations ?? result.results ?? [];
+        if (animations.length > 0) {
+          return animations.slice(0, limit);
+        }
+      } catch {
+        // Try the next Telegram animation search method name.
+      }
+    }
+
+    return [];
+  }
+
+  private async mapTelegramStickersForPicker(
+    client: TdClient,
+    stickers: TdSticker[],
+    limit: number,
+    setTitle?: string,
+  ): Promise<TelegramPickerItem[]> {
+    const items = await Promise.all(
+      stickers.slice(0, limit).map(async (sticker) => {
+        const preview = await this.resolveStickerPreview(client, sticker);
+        return mapTelegramStickerToPickerItem(
+          sticker,
+          preview?.url,
+          preview?.mimeType,
+          setTitle,
+        );
+      }),
+    );
+    return items.filter((item): item is TelegramPickerItem => item !== undefined);
+  }
+
+  private async mapTelegramAnimationsForPicker(
+    client: TdClient,
+    animations: TdAnimation[],
+    limit: number,
+  ): Promise<TelegramPickerItem[]> {
+    const items = await Promise.all(
+      animations.slice(0, limit).map(async (animation) => {
+        const preview = await this.resolveAnimationPreview(client, animation);
+        return mapTelegramAnimationToPickerItem(animation, preview?.url, preview?.mimeType);
+      }),
+    );
+    return items.filter((item): item is TelegramPickerItem => item !== undefined);
+  }
+
+  private async resolveStickerPreview(
+    client: TdClient,
+    sticker: TdSticker | undefined,
+  ): Promise<{ url: string; mimeType: string } | undefined> {
+    const previewFile = getTelegramStickerPreviewFile(sticker);
+    return this.resolveTdFileRefPreview(client, previewFile);
+  }
+
+  private async resolveAnimationPreview(
+    client: TdClient,
+    animation: TdAnimation | undefined,
+  ): Promise<{ url: string; mimeType: string } | undefined> {
+    return this.resolveTdFileRefPreview(client, getTelegramAnimationPreviewFile(animation));
+  }
+
+  private async resolveTdFileRefPreviewUrl(
+    client: TdClient,
+    file: TdFileRef | undefined,
+  ): Promise<string | undefined> {
+    return (await this.resolveTdFileRefPreview(client, file))?.url;
+  }
+
+  private async resolveTdFileRefPreview(
+    client: TdClient,
+    file: TdFileRef | undefined,
+  ): Promise<{ url: string; mimeType: string } | undefined> {
+    if (!file) {
+      return undefined;
+    }
+
+    const localPath = await resolveTdFilePath({
+      client,
+      file,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+    });
+    if (!localPath) {
+      return undefined;
+    }
+
+    const mimeType = inferTelegramLocalMimeType(localPath);
+    return {
+      url: buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME, mimeType),
+      mimeType,
+    };
   }
 
   private toTdMessageId(value: string | undefined): number | bigint | undefined {

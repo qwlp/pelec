@@ -14,6 +14,9 @@ import type {
   ConnectorProfileUpdate,
   ListMessagesOptions,
   OutgoingAttachmentDocument,
+  TelegramPickerItem,
+  TelegramPickerQuery,
+  TelegramStickerSetSource,
 } from '../shared/connectors';
 import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from '../shared/types';
 import type { ConnectorManager } from './connectors/connectorManager';
@@ -335,6 +338,40 @@ export const registerIpcHandlers = ({
       optionIds: number[],
     ) => {
       return (await getConnectorManager()?.answerPoll(network, chatId, messageId, optionIds)) ?? false;
+    },
+  );
+
+  ipcMain.handle(
+    'connector:list-telegram-sticker-sets',
+    async (_event, network: NetworkId, source: TelegramStickerSetSource) => {
+      return (await getConnectorManager()?.listTelegramStickerSets(network, source)) ?? [];
+    },
+  );
+
+  ipcMain.handle(
+    'connector:list-telegram-picker-items',
+    async (_event, network: NetworkId, query: TelegramPickerQuery) => {
+      return (await getConnectorManager()?.listTelegramPickerItems(network, query)) ?? [];
+    },
+  );
+
+  ipcMain.handle(
+    'connector:send-telegram-picker-item',
+    async (
+      _event,
+      network: NetworkId,
+      chatId: string,
+      item: TelegramPickerItem,
+      replyToMessageId?: string,
+    ) => {
+      return (
+        (await getConnectorManager()?.sendTelegramPickerItem(
+          network,
+          chatId,
+          item,
+          replyToMessageId,
+        )) ?? false
+      );
     },
   );
 

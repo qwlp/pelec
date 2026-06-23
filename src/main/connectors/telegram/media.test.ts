@@ -19,6 +19,10 @@ import {
   hasTelegramVoiceNote,
   inferTelegramLocalMimeType,
   isTelegramAnimatedSticker,
+  getTelegramAnimationPreviewFile,
+  getTelegramStickerPreviewFile,
+  mapTelegramAnimationToPickerItem,
+  mapTelegramStickerToPickerItem,
 } from './media';
 
 describe('telegram media helpers', () => {
@@ -180,5 +184,61 @@ describe('telegram media helpers', () => {
     expect(inferTelegramLocalMimeType('/tmp/video.webm')).toBe('video/webm');
     expect(inferTelegramLocalMimeType('/tmp/video.mov')).toBe('video/quicktime');
     expect(inferTelegramLocalMimeType('/tmp/file.bin', 'application/pdf')).toBe('application/pdf');
+  });
+
+  it('maps Telegram stickers and animations into picker items', () => {
+    const sticker = {
+      emoji: ' 😀 ',
+      width: 512,
+      height: 512,
+      sticker: { id: 11 },
+      thumbnail: { file: { id: 12 } },
+      format: { _: 'stickerFormatWebm' },
+    };
+    const animation = {
+      width: 320,
+      height: 240,
+      animation: { id: 21 },
+      thumbnail: { file: { id: 22 } },
+      mime_type: 'video/mp4',
+    };
+
+    expect(getTelegramStickerPreviewFile(sticker)).toEqual({ id: 11 });
+    expect(getTelegramAnimationPreviewFile(animation)).toEqual({ id: 22 });
+    expect(
+      mapTelegramStickerToPickerItem(
+        sticker,
+        'pelec-media://local/?path=sticker.webm',
+        'video/webm',
+        'Set',
+      ),
+    ).toEqual({
+      id: '11',
+      kind: 'sticker',
+      previewUrl: 'pelec-media://local/?path=sticker.webm',
+      previewMimeType: 'video/webm',
+      emoji: '😀',
+      setTitle: 'Set',
+      animated: true,
+      width: 512,
+      height: 512,
+    });
+    expect(
+      mapTelegramAnimationToPickerItem(
+        animation,
+        'pelec-media://local/?path=gif.mp4',
+        'video/mp4',
+      ),
+    ).toEqual({
+      id: '21',
+      kind: 'gif',
+      previewUrl: 'pelec-media://local/?path=gif.mp4',
+      previewMimeType: 'video/mp4',
+      animated: true,
+      width: 320,
+      height: 240,
+    });
+    expect(mapTelegramStickerToPickerItem({ sticker: {} }, 'preview')).toBeUndefined();
+    expect(mapTelegramAnimationToPickerItem({ animation: { id: 9 } }, undefined)).toBeUndefined();
   });
 });

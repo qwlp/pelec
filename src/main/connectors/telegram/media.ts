@@ -1,12 +1,16 @@
-import type { ChatDocument } from '../../../shared/connectors';
-import type { TdFileRef, TelegramDocumentRef } from './types';
+import type { ChatDocument, TelegramPickerItem } from '../../../shared/connectors';
+import type { TdAnimation, TdFileRef, TdSticker, TelegramDocumentRef } from './types';
 
 export const buildTelegramLocalMediaUrl = (
   localPath: string,
   scheme = 'pelec-media',
+  mimeType?: string,
 ): string => {
   const mediaUrl = new URL(`${scheme}://local/`);
   mediaUrl.searchParams.set('path', localPath);
+  if (mimeType?.trim()) {
+    mediaUrl.searchParams.set('mime', mimeType.trim().toLowerCase());
+  }
   return mediaUrl.toString();
 };
 
@@ -72,6 +76,92 @@ export const getTelegramFileSizeBytes = (file: TdFileRef | undefined): number | 
   return Number.isFinite(size) && size > 0 ? size : undefined;
 };
 
+export const isTelegramStickerAnimatedFormat = (format: string | undefined): boolean =>
+  format === 'stickerFormatTgs' || format === 'stickerFormatWebm';
+
+export const getTelegramStickerPreviewFile = (sticker: TdSticker | undefined): TdFileRef | undefined => {
+  if (!sticker) {
+    return undefined;
+  }
+
+  const format = sticker.format?._;
+  if (isTelegramStickerAnimatedFormat(format) && format !== 'stickerFormatWebm') {
+    return sticker.thumbnail?.file ?? sticker.sticker;
+  }
+
+  return sticker.sticker ?? sticker.thumbnail?.file;
+};
+
+export const getTelegramAnimationPreviewFile = (
+  animation: TdAnimation | undefined,
+): TdFileRef | undefined => {
+  if (!animation) {
+    return undefined;
+  }
+
+  return animation.thumbnail?.file ?? animation.animation;
+};
+
+const tdFileIdToPickerId = (file: TdFileRef | undefined): string | undefined => {
+  const fileId = file?.id;
+  if (!fileId) {
+    return undefined;
+  }
+  return String(fileId);
+};
+
+const getPositiveDimension = (value: unknown): number | undefined => {
+  const dimension = Math.floor(Number(value ?? 0));
+  return Number.isFinite(dimension) && dimension > 0 ? dimension : undefined;
+};
+
+export const mapTelegramStickerToPickerItem = (
+  sticker: TdSticker | undefined,
+  previewUrl: string | undefined,
+  previewMimeType?: string,
+  setTitle?: string,
+): TelegramPickerItem | undefined => {
+  const id = tdFileIdToPickerId(sticker?.sticker);
+  if (!id || !previewUrl) {
+    return undefined;
+  }
+
+  const emoji = sticker?.emoji?.trim() || undefined;
+  const format = sticker?.format?._;
+  return {
+    id,
+    kind: 'sticker',
+    previewUrl,
+    previewMimeType,
+    emoji,
+    setTitle: setTitle?.trim() || undefined,
+    animated: isTelegramStickerAnimatedFormat(format),
+    width: getPositiveDimension(sticker?.width),
+    height: getPositiveDimension(sticker?.height),
+  };
+};
+
+export const mapTelegramAnimationToPickerItem = (
+  animation: TdAnimation | undefined,
+  previewUrl: string | undefined,
+  previewMimeType?: string,
+): TelegramPickerItem | undefined => {
+  const id = tdFileIdToPickerId(animation?.animation);
+  if (!id || !previewUrl) {
+    return undefined;
+  }
+
+  return {
+    id,
+    kind: 'gif',
+    previewUrl,
+    previewMimeType,
+    animated: true,
+    width: getPositiveDimension(animation?.width),
+    height: getPositiveDimension(animation?.height),
+  };
+};
+
 export const extractTelegramStickerSource = (
   content: unknown,
 ): { sticker?: TdFileRef; thumbnail?: TdFileRef; animated: boolean; format?: string } | undefined => {
@@ -93,7 +183,7 @@ export const extractTelegramStickerSource = (
   }
 
   const format = container.sticker?.format?._;
-  const animated = format === 'stickerFormatTgs' || format === 'stickerFormatWebm';
+  const animated = isTelegramStickerAnimatedFormat(format);
 
   return {
     sticker: container.sticker?.sticker,
@@ -370,6 +460,9 @@ export const inferTelegramLocalMimeType = (
   }
   if (lowerPath.endsWith('.webm')) {
     return 'video/webm';
+  }
+  if (lowerPath.endsWith('.tgs')) {
+    return 'application/x-tgsticker';
   }
   if (lowerPath.endsWith('.mp4')) {
     return 'video/mp4';

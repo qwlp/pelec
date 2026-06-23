@@ -145,6 +145,38 @@ export interface ResolvedDocument extends ChatDocument {
   filePath: string;
 }
 
+export type TelegramPickerItemKind = 'sticker' | 'gif';
+export type TelegramStickerSetSource = 'recent' | 'favorite' | 'installed';
+
+export interface TelegramPickerItem {
+  id: string;
+  kind: TelegramPickerItemKind;
+  previewUrl: string;
+  previewMimeType?: string;
+  emoji?: string;
+  setTitle?: string;
+  animated?: boolean;
+  width?: number;
+  height?: number;
+}
+
+export interface TelegramStickerSetSummary {
+  id: string;
+  title: string;
+  name?: string;
+  source: TelegramStickerSetSource;
+  thumbnailUrl?: string;
+  stickerCount?: number;
+}
+
+export interface TelegramPickerQuery {
+  kind: TelegramPickerItemKind;
+  query?: string;
+  emoji?: string;
+  setId?: string;
+  limit?: number;
+}
+
 export interface ListMessagesOptions {
   passive?: boolean;
   beforeMessageId?: string;
@@ -228,6 +260,15 @@ export interface Connector {
   resolveVideoUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;
   answerPoll?(chatId: string, messageId: string, optionIds: number[]): Promise<boolean>;
+  listTelegramStickerSets?(
+    source: TelegramStickerSetSource,
+  ): Promise<TelegramStickerSetSummary[]>;
+  listTelegramPickerItems?(query: TelegramPickerQuery): Promise<TelegramPickerItem[]>;
+  sendTelegramPickerItem?(
+    chatId: string,
+    item: TelegramPickerItem,
+    replyToMessageId?: string,
+  ): Promise<boolean>;
   sendImageMessage?(
     chatId: string,
     dataUrl: string,

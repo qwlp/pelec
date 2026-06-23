@@ -340,6 +340,7 @@ export const bootLegacyApp = async (
       messages: getVisibleTelegramMessages(),
       messagesLoading: state.telegramMessagesLoading,
       pendingAttachments: [...state.pendingTelegramAttachments],
+      replyToMessageId: state.replyingToMessageId,
       replyPreview: getTelegramReplyPreview(),
       searchQuery: state.telegramSearchQuery,
       selectedChatId: state.selectedTelegramChatId,

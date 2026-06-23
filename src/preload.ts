@@ -10,6 +10,10 @@ import type {
   ConnectorStatus,
   ListMessagesOptions,
   OutgoingAttachmentDocument,
+  TelegramPickerItem,
+  TelegramPickerQuery,
+  TelegramStickerSetSource,
+  TelegramStickerSetSummary,
 } from './shared/connectors';
 import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from './shared/types';
 
@@ -91,6 +95,31 @@ const api = {
       chatId,
       messageId,
       optionIds,
+    ) as Promise<boolean>,
+  listTelegramStickerSets: (network: NetworkId, source: TelegramStickerSetSource) =>
+    ipcRenderer.invoke(
+      'connector:list-telegram-sticker-sets',
+      network,
+      source,
+    ) as Promise<TelegramStickerSetSummary[]>,
+  listTelegramPickerItems: (network: NetworkId, query: TelegramPickerQuery) =>
+    ipcRenderer.invoke(
+      'connector:list-telegram-picker-items',
+      network,
+      query,
+    ) as Promise<TelegramPickerItem[]>,
+  sendTelegramPickerItem: (
+    network: NetworkId,
+    chatId: string,
+    item: TelegramPickerItem,
+    replyToMessageId?: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:send-telegram-picker-item',
+      network,
+      chatId,
+      item,
+      replyToMessageId,
     ) as Promise<boolean>,
   sendConnectorMessage: (
     network: NetworkId,

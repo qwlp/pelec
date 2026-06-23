@@ -706,6 +706,7 @@ export const AppShell = () => {
         ) : null}
         {showTelegramComposer ? (
           <TelegramComposer
+            activeChatId={telegramSnapshot.activeChatId}
             appMode={state.appShell.mode}
             attachments={telegramSnapshot.pendingAttachments}
             canSend={telegramSnapshot.activeChatCanSend}
@@ -714,6 +715,7 @@ export const AppShell = () => {
             legacyApi={legacyApi}
             mentionSuggestions={telegramMentionSuggestions}
             onModeChange={(mode) => legacyApi?.setMode(mode)}
+            replyToMessageId={telegramSnapshot.replyToMessageId}
             replyPreview={telegramSnapshot.replyPreview}
             sendBehavior={state.config.userConfig?.keyboard.sendBehavior ?? 'enter'}
             target={telegramComposerTarget}

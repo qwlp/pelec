@@ -21,6 +21,8 @@ const mediaContentTypeForPath = (localPath: string): string => {
       return 'video/quicktime';
     case '.webm':
       return 'video/webm';
+    case '.tgs':
+      return 'application/x-tgsticker';
     case '.m4v':
       return 'video/x-m4v';
     case '.ogv':
@@ -28,6 +30,18 @@ const mediaContentTypeForPath = (localPath: string): string => {
     default:
       return 'application/octet-stream';
   }
+};
+
+const mediaContentTypeForRequest = (url: URL, localPath: string): string => {
+  const requestedMimeType = url.searchParams.get('mime')?.trim().toLowerCase();
+  if (
+    requestedMimeType &&
+    /^(image|video|audio)\/[a-z0-9.+-]+$/i.test(requestedMimeType)
+  ) {
+    return requestedMimeType;
+  }
+
+  return mediaContentTypeForPath(localPath);
 };
 
 const parseRangeHeader = (
@@ -95,7 +109,7 @@ export const registerMediaProtocol = (): void => {
         return new Response('Not found', { status: 404 });
       }
 
-      const contentType = mediaContentTypeForPath(localPath);
+      const contentType = mediaContentTypeForRequest(url, localPath);
       const range = parseRangeHeader(request.headers.get('range'), stats.size);
       const method = request.method.toUpperCase();
 

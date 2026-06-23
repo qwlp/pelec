@@ -11,6 +11,10 @@ import type {
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
+  TelegramPickerItem,
+  TelegramPickerQuery,
+  TelegramStickerSetSource,
+  TelegramStickerSetSummary,
 } from '../../shared/connectors';
 import type { AppConfig, NetworkDefinition, NetworkId } from '../../shared/types';
 import { TelegramConnector } from './telegramConnector';
@@ -188,6 +192,41 @@ export class ConnectorManager {
       return false;
     }
     return connector.answerPoll(chatId, messageId, optionIds);
+  }
+
+  async listTelegramStickerSets(
+    network: NetworkId,
+    source: TelegramStickerSetSource,
+  ): Promise<TelegramStickerSetSummary[]> {
+    const connector = this.getConnector(network);
+    if (!connector.listTelegramStickerSets) {
+      return [];
+    }
+    return connector.listTelegramStickerSets(source);
+  }
+
+  async listTelegramPickerItems(
+    network: NetworkId,
+    query: TelegramPickerQuery,
+  ): Promise<TelegramPickerItem[]> {
+    const connector = this.getConnector(network);
+    if (!connector.listTelegramPickerItems) {
+      return [];
+    }
+    return connector.listTelegramPickerItems(query);
+  }
+
+  async sendTelegramPickerItem(
+    network: NetworkId,
+    chatId: string,
+    item: TelegramPickerItem,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.sendTelegramPickerItem) {
+      return false;
+    }
+    return connector.sendTelegramPickerItem(chatId, item, replyToMessageId);
   }
 
   async sendMessage(
