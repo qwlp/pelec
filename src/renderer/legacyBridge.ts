@@ -26,6 +26,7 @@ export interface LegacyTelegramForwardState {
 }
 
 export interface LegacyTelegramContextMenuState {
+  canEdit: boolean;
   messageId: string | null;
   visible: boolean;
   x: number;
@@ -33,6 +34,7 @@ export interface LegacyTelegramContextMenuState {
 }
 
 export interface LegacyTelegramImagePreviewMeta {
+  imageName?: string;
   imageSizeBytes?: number;
   senderAvatarUrl?: string;
   sender: string;

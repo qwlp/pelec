@@ -56,6 +56,7 @@ const addMessageToSignature = (
     message.replyToSender ?? '',
     message.replyToText ?? '',
     message.imageUrl ?? '',
+    message.imageName ?? '',
     message.imageSizeBytes ?? '',
     message.imageDeferred ? '1' : '0',
     message.videoUrl ?? '',

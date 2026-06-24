@@ -26,6 +26,7 @@ import {
   saveResolvedDocumentToDownloads,
 } from './documents';
 import { PELEC_MEDIA_SCHEME } from './config';
+import { listInstalledFonts } from './installedFonts';
 import { showLinuxNotification } from './platform';
 import { saveUserConfig } from './userConfig';
 
@@ -108,6 +109,8 @@ export const registerIpcHandlers = ({
 
     return null;
   });
+
+  ipcMain.handle('app:list-installed-fonts', listInstalledFonts);
 
   ipcMain.handle('app:clear-cache', async (): Promise<boolean> => {
     const mainWindow = getMainWindow();

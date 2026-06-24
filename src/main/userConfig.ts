@@ -25,6 +25,7 @@ type RawUserConfig = {
     showHints?: unknown;
     sendBehavior?: unknown;
     captureInWebview?: unknown;
+    enableVimMode?: unknown;
     enableCounts?: unknown;
   };
   shortcuts?: Partial<Record<keyof ShortcutConfig, unknown>>;
@@ -104,6 +105,7 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
     showHints: true,
     sendBehavior: 'enter',
     captureInWebview: false,
+    enableVimMode: true,
     enableCounts: true,
     keymap: {
       reply: 'r',
@@ -151,6 +153,7 @@ text_opacity = 1.0
 show_hints = true
 send_behavior = "enter"
 capture_in_webview = false
+enable_vim_mode = true
 enable_counts = true
 
 [shortcuts]
@@ -190,6 +193,7 @@ text_opacity = ${config.appearance.textOpacity}
 show_hints = ${String(config.keyboard.showHints)}
 send_behavior = ${quoteTomlString(config.keyboard.sendBehavior)}
 capture_in_webview = ${String(config.keyboard.captureInWebview)}
+enable_vim_mode = ${String(config.keyboard.enableVimMode)}
 enable_counts = ${String(config.keyboard.enableCounts)}
 
 [shortcuts]
@@ -349,6 +353,8 @@ const parseUserConfigToml = (source: string): ParsedUserConfig => {
         rawConfig.keyboard.sendBehavior = value;
       } else if (key === 'capture_in_webview') {
         rawConfig.keyboard.captureInWebview = value;
+      } else if (key === 'enable_vim_mode') {
+        rawConfig.keyboard.enableVimMode = value;
       } else if (key === 'enable_counts') {
         rawConfig.keyboard.enableCounts = value;
       } else {
@@ -634,6 +640,12 @@ const resolveUserConfig = (rawConfig: RawUserConfig, warnings: string[]): UserCo
         rawConfig.keyboard?.captureInWebview,
         DEFAULT_USER_CONFIG.keyboard.captureInWebview,
         'keyboard.capture_in_webview',
+        warnings,
+      ),
+      enableVimMode: coerceBoolean(
+        rawConfig.keyboard?.enableVimMode,
+        DEFAULT_USER_CONFIG.keyboard.enableVimMode,
+        'keyboard.enable_vim_mode',
         warnings,
       ),
       enableCounts: coerceBoolean(

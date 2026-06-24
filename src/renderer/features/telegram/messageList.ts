@@ -1,3 +1,24 @@
+import type { ChatMessage } from '../../../shared/connectors';
+
+export const replaceTelegramMessageText = (
+  messages: ChatMessage[],
+  messageId: string,
+  text: string,
+): ChatMessage[] => {
+  const messageIndex = messages.findIndex((message) => message.id === messageId);
+  if (messageIndex < 0) {
+    return messages;
+  }
+
+  const nextMessages = [...messages];
+  nextMessages[messageIndex] = {
+    ...messages[messageIndex],
+    text,
+    textEntities: undefined,
+  };
+  return nextMessages;
+};
+
 export const syncTelegramMessageListNodes = (
   container: HTMLElement,
   nextNodes: HTMLElement[],

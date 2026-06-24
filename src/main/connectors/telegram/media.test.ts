@@ -4,6 +4,7 @@ import {
   extractTelegramAnimationMimeType,
   extractTelegramAnimationSource,
   extractTelegramDocumentMetadata,
+  extractTelegramImageName,
   extractTelegramImageDocumentSource,
   extractTelegramPhotoFiles,
   extractTelegramStickerEmoji,
@@ -41,6 +42,17 @@ describe('telegram media helpers', () => {
     });
 
     expect(
+      extractTelegramImageName({
+        _: 'messageDocument',
+        document: {
+          file_name: 'photo.png',
+          mime_type: 'image/png',
+          document: { id: 7 },
+        },
+      }),
+    ).toBe('photo.png');
+
+    expect(
       extractTelegramDocumentMetadata({
         _: 'messageDocument',
         document: {
@@ -65,6 +77,15 @@ describe('telegram media helpers', () => {
         },
       }),
     ).toBeUndefined();
+
+    expect(
+      extractTelegramImageName({
+        _: 'messagePhoto',
+        photo: {
+          sizes: [{ photo: { id: 1 } }],
+        },
+      }, 123456789),
+    ).toBe('photo-123456789.jpg');
   });
 
   it('extracts photo, sticker, animation, video, and voice file refs', () => {

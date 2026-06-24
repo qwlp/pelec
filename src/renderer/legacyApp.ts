@@ -7,7 +7,7 @@ import type {
   ConnectorStatus,
 } from '../shared/connectors';
 import type { AppActivity, AppMode, NetworkDefinition, NetworkId } from '../shared/types';
-import { renderStatusToast } from './components/statusToast';
+import { getStatusToastClearDelay, renderStatusToast } from './components/statusToast';
 import {
   checkpointInDetails,
   clearInstagramCooldownUntil,
@@ -44,7 +44,10 @@ import {
   createTelegramChatListItem,
   getTelegramChatRenderSignature,
 } from './features/telegram/chatList';
-import { syncTelegramMessageListNodes } from './features/telegram/messageList';
+import {
+  replaceTelegramMessageText,
+  syncTelegramMessageListNodes,
+} from './features/telegram/messageList';
 import {
   createTelegramDocumentCard,
   createTelegramMessageFooter,
@@ -150,6 +153,7 @@ type TelegramEmojiCompletionState = {
 };
 
 type TelegramContextMenuState = {
+  canEdit: boolean;
   visible: boolean;
   messageId: string | null;
   x: number;
@@ -1766,6 +1770,7 @@ export const bootLegacyApp = async (
   let qrAuthState: QrAuthState | null = null;
   let telegramContextMenuOpenedAt = 0;
   let telegramContextMenuState: TelegramContextMenuState = {
+    canEdit: false,
     visible: false,
     messageId: null,
     x: 0,
@@ -2112,6 +2117,7 @@ export const bootLegacyApp = async (
       return;
     }
     telegramContextMenuState = {
+      canEdit: false,
       visible: false,
       messageId: null,
       x: 0,
@@ -2151,6 +2157,7 @@ export const bootLegacyApp = async (
     selectTelegramMessage(messageId);
     telegramContextMenuOpenedAt = performance.now();
     telegramContextMenuState = {
+      canEdit: message?.canBeEdited ?? message?.outgoing === true,
       visible: true,
       messageId,
       x,
@@ -2308,6 +2315,11 @@ export const bootLegacyApp = async (
   const beginEditTelegramMessage = (message: ChatMessage): void => {
     if (isPendingTelegramMessage(message)) {
       statusBar.textContent = 'Wait for the message to finish sending.';
+      render();
+      return;
+    }
+    if (!(message.canBeEdited ?? message.outgoing === true)) {
+      statusBar.textContent = 'You can only edit your own messages.';
       render();
       return;
     }
@@ -2923,14 +2935,15 @@ export const bootLegacyApp = async (
       statusActivityClearTimer = null;
     }
 
-    if (activity && activity.state !== 'running') {
+    const clearDelay = getStatusToastClearDelay(activity);
+    if (clearDelay !== null) {
       statusActivityClearTimer = window.setTimeout(() => {
         statusActivityClearTimer = null;
         if (statusActivity?.id === activity.id) {
-          statusActivity = null;
+          setStatusActivity(null);
           render();
         }
-      }, 4200);
+      }, clearDelay);
     }
   };
 
@@ -3023,7 +3036,9 @@ export const bootLegacyApp = async (
         a[i].replyToMessageId !== b[i].replyToMessageId ||
         a[i].replyToSender !== b[i].replyToSender ||
         a[i].replyToText !== b[i].replyToText ||
+        a[i].canBeEdited !== b[i].canBeEdited ||
         a[i].imageUrl !== b[i].imageUrl ||
+        a[i].imageName !== b[i].imageName ||
         a[i].animationUrl !== b[i].animationUrl ||
         a[i].animationMimeType !== b[i].animationMimeType ||
         a[i].stickerUrl !== b[i].stickerUrl ||
@@ -4343,10 +4358,13 @@ export const bootLegacyApp = async (
           render();
           return;
         }
-        const existing = findTelegramMessageById(editingMessageId);
-        if (existing) {
-          existing.text = text;
-          existing.textEntities = undefined;
+        const nextMessages = replaceTelegramMessageText(
+          state.telegramMessages,
+          editingMessageId,
+          text,
+        );
+        if (nextMessages !== state.telegramMessages) {
+          state.telegramMessages = nextMessages;
           bumpTelegramMessagesVersion();
         }
         clearTelegramEditState();
@@ -6085,6 +6103,7 @@ export const bootLegacyApp = async (
                     event.stopPropagation();
                     if (albumMessage.imageUrl) {
                       openTelegramImagePreview(albumMessage.imageUrl, {
+                        imageName: albumMessage.imageName,
                         imageSizeBytes: albumMessage.imageSizeBytes,
                         sender: albumMessage.sender,
                         senderAvatarUrl: albumMessage.senderAvatarUrl,
@@ -6104,6 +6123,7 @@ export const bootLegacyApp = async (
               image.loading = 'lazy';
               image.addEventListener('click', () => {
                 openTelegramImagePreview(primaryMessage.imageUrl as string, {
+                  imageName: primaryMessage.imageName,
                   imageSizeBytes: primaryMessage.imageSizeBytes,
                   sender: primaryMessage.sender,
                   senderAvatarUrl: primaryMessage.senderAvatarUrl,

@@ -39,6 +39,8 @@ interface TelegramComposerProps {
   replyPreview: LegacyTelegramReplyPreview | null;
   sendBehavior: 'enter' | 'mod-enter';
   target: HTMLElement | null;
+  vimCountsEnabled?: boolean;
+  vimModeEnabled?: boolean;
   voiceRecorderState: 'idle' | 'preparing' | 'recording' | 'sending' | 'unsupported';
 }
 
@@ -87,10 +89,47 @@ const TELEGRAM_VIM_SEQUENCE_TIMEOUT_MS = 900;
 const WORD_CHARACTER_PATTERN = /[\p{L}\p{N}_]/u;
 const HORIZONTAL_WHITESPACE_PATTERN = /[^\S\n]/u;
 const TELEGRAM_TEXT_EXPANSION_PATTERN = /^::([A-Za-z]+)(?:\(([^)]*)\))?$/u;
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
 const getTelegramCharacterCount = (value: string): number => Array.from(value).length;
 
 const clampIndex = (index: number, value: string): number => Math.max(0, Math.min(value.length, index));
+
+const getGraphemeBoundaries = (value: string): number[] => {
+  if (value.length < 1) {
+    return [0];
+  }
+
+  const boundaries = Array.from(GRAPHEME_SEGMENTER.segment(value), (segment) => segment.index);
+  boundaries.push(value.length);
+  return boundaries;
+};
+
+const getPreviousGraphemeStart = (value: string, index: number): number => {
+  const cursor = clampIndex(index, value);
+  const boundaries = getGraphemeBoundaries(value);
+
+  for (let i = boundaries.length - 1; i >= 0; i -= 1) {
+    if (boundaries[i] < cursor) {
+      return boundaries[i];
+    }
+  }
+
+  return 0;
+};
+
+const getNextGraphemeStart = (value: string, index: number): number => {
+  const cursor = clampIndex(index, value);
+  const boundaries = getGraphemeBoundaries(value);
+
+  for (const boundary of boundaries) {
+    if (boundary > cursor) {
+      return boundary;
+    }
+  }
+
+  return value.length;
+};
 
 const getLineStart = (value: string, index: number): number => {
   const cursor = clampIndex(index, value);
@@ -133,7 +172,7 @@ const getLineColumnAtIndex = (value: string, index: number): { column: number; l
   }
 
   return {
-    column: cursor - lineStart,
+    column: Array.from(GRAPHEME_SEGMENTER.segment(value.slice(lineStart, cursor))).length,
     line,
   };
 };
@@ -162,7 +201,9 @@ const getIndexAtLineColumn = (value: string, line: number, column: number): numb
   const clampedLine = Math.max(0, Math.min(getLineCount(value) - 1, line));
   const lineStart = getLineStartByNumber(value, clampedLine);
   const lineEnd = getLineEnd(value, lineStart);
-  return Math.min(lineEnd, lineStart + Math.max(0, column));
+  const boundaries = getGraphemeBoundaries(value.slice(lineStart, lineEnd));
+  const boundary = boundaries[Math.min(boundaries.length - 1, Math.max(0, column))] ?? 0;
+  return lineStart + boundary;
 };
 
 const getFirstNonWhitespaceInLine = (value: string, index: number): number => {
@@ -172,29 +213,20 @@ const getFirstNonWhitespaceInLine = (value: string, index: number): number => {
   return match ? lineStart + match.index : lineStart;
 };
 
-const moveCursorVertically = (value: string, index: number, direction: -1 | 1): number => {
+const moveCursorVertically = (
+  value: string,
+  index: number,
+  direction: -1 | 1,
+  preferredColumn?: number,
+): number => {
   const cursor = clampIndex(index, value);
-  const currentLineStart = getLineStart(value, cursor);
-  const column = cursor - currentLineStart;
-
-  if (direction < 0) {
-    if (currentLineStart === 0) {
-      return cursor;
-    }
-
-    const previousLineEnd = currentLineStart - 1;
-    const previousLineStart = getLineStart(value, previousLineEnd);
-    return Math.min(previousLineStart + column, previousLineEnd);
-  }
-
-  const currentLineEnd = getLineEnd(value, cursor);
-  if (currentLineEnd >= value.length) {
+  const current = getLineColumnAtIndex(value, cursor);
+  const targetLine = current.line + direction;
+  if (targetLine < 0 || targetLine >= getLineCount(value)) {
     return cursor;
   }
 
-  const nextLineStart = currentLineEnd + 1;
-  const nextLineEnd = getLineEnd(value, nextLineStart);
-  return Math.min(nextLineStart + column, nextLineEnd);
+  return getIndexAtLineColumn(value, targetLine, preferredColumn ?? current.column);
 };
 
 const findNextWordStart = (value: string, index: number): number => {
@@ -569,11 +601,13 @@ export const TelegramComposer = ({
   replyPreview,
   sendBehavior,
   target,
+  vimCountsEnabled = true,
+  vimModeEnabled = true,
   voiceRecorderState,
 }: TelegramComposerProps) => {
   const [value, setValue] = useState(draftText);
   const [composerMode, setComposerMode] = useState<TelegramVimMode>(
-    appMode === 'insert' ? 'insert' : 'normal',
+    !vimModeEnabled || appMode === 'insert' ? 'insert' : 'normal',
   );
   const [emojiCompletion, setEmojiCompletion] = useState<TelegramEmojiCompletionState | null>(null);
   const [mentionCompletion, setMentionCompletion] = useState<TelegramMentionCompletionState | null>(null);
@@ -594,6 +628,8 @@ export const TelegramComposer = ({
   const visualAnchorRef = useRef<number | null>(null);
   const visualBlockActiveRef = useRef<number | null>(null);
   const visualLineActiveRef = useRef<number | null>(null);
+  const preferredColumnRef = useRef<number | null>(null);
+  const vimCountRef = useRef('');
   const vimSequenceRef = useRef<{ key: TelegramVimSequence; timestamp: number }>({
     key: null,
     timestamp: 0,
@@ -601,6 +637,8 @@ export const TelegramComposer = ({
 
   const requestComposerMode = (mode: TelegramVimMode) => {
     vimSequenceRef.current = { key: null, timestamp: 0 };
+    vimCountRef.current = '';
+    preferredColumnRef.current = null;
     if (mode !== 'visual' && mode !== 'visual-block' && mode !== 'visual-line') {
       visualAnchorRef.current = null;
       visualBlockActiveRef.current = null;
@@ -672,6 +710,35 @@ export const TelegramComposer = ({
     updateTextExpansionCompletion(value, start, end);
   };
 
+  const moveTextareaCursorByGraphemes = (index: number, direction: -1 | 1, count = 1) => {
+    let cursor = clampIndex(index, value);
+    for (let i = 0; i < count; i += 1) {
+      cursor =
+        direction < 0
+          ? getPreviousGraphemeStart(value, cursor)
+          : getNextGraphemeStart(value, cursor);
+    }
+    preferredColumnRef.current = null;
+    moveTextareaCursor(cursor);
+  };
+
+  const getPreferredVerticalTarget = (index: number, direction: -1 | 1, count = 1) => {
+    const initial = getLineColumnAtIndex(value, index);
+    const preferredColumn = preferredColumnRef.current ?? initial.column;
+    let cursor = index;
+
+    for (let i = 0; i < count; i += 1) {
+      cursor = moveCursorVertically(value, cursor, direction, preferredColumn);
+    }
+
+    preferredColumnRef.current = preferredColumn;
+    return cursor;
+  };
+
+  const moveTextareaCursorVertically = (index: number, direction: -1 | 1, count = 1) => {
+    moveTextareaCursor(getPreferredVerticalTarget(index, direction, count));
+  };
+
   const setVisualSelection = (anchor: number, active: number) => {
     const textarea = textareaRef.current;
     if (!textarea) {
@@ -683,8 +750,8 @@ export const TelegramComposer = ({
     const start = Math.min(clampedAnchor, clampedActive);
     const end =
       clampedActive >= clampedAnchor
-        ? Math.min(value.length, clampedActive + 1)
-        : Math.min(value.length, clampedAnchor + 1);
+        ? getNextGraphemeStart(value, clampedActive)
+        : getNextGraphemeStart(value, clampedAnchor);
 
     visualAnchorRef.current = clampedAnchor;
     textarea.setSelectionRange(start, Math.max(start, end));
@@ -732,7 +799,7 @@ export const TelegramComposer = ({
     }
 
     return anchor <= textarea.selectionStart
-      ? Math.max(textarea.selectionStart, textarea.selectionEnd - 1)
+      ? getPreviousGraphemeStart(value, textarea.selectionEnd)
       : textarea.selectionStart;
   };
 
@@ -1028,17 +1095,19 @@ export const TelegramComposer = ({
     return start;
   };
 
-  const deleteCurrentLine = (enterInsertMode = false) => {
+  const deleteCurrentLine = (count = 1, enterInsertMode = false) => {
     const textarea = textareaRef.current;
     const cursor = textarea?.selectionStart ?? 0;
     const lineStart = getLineStart(value, cursor);
-    const lineEnd = getLineEnd(value, cursor);
-    const deleteEnd = lineEnd < value.length ? lineEnd + 1 : lineEnd;
+    let deleteEnd = lineStart;
+    for (let i = 0; i < count; i += 1) {
+      const lineEnd = getLineEnd(value, deleteEnd);
+      deleteEnd = lineEnd < value.length ? lineEnd + 1 : lineEnd;
+    }
     const deleteStart = lineStart > 0 && deleteEnd === value.length ? lineStart - 1 : lineStart;
-    const nextCursor = deleteStart === lineStart ? lineStart : deleteStart;
     const nextValue = `${value.slice(0, deleteStart)}${value.slice(deleteEnd)}`;
 
-    syncDraftValueWithSelection(nextValue, nextCursor);
+    syncDraftValueWithSelection(nextValue, deleteStart);
     if (enterInsertMode) {
       requestComposerMode('insert');
     }
@@ -1148,6 +1217,10 @@ export const TelegramComposer = ({
       return false;
     }
 
+    if (!['j', 'k', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+      preferredColumnRef.current = null;
+    }
+
     switch (event.key) {
       case 'v':
         requestComposerMode('normal');
@@ -1160,19 +1233,19 @@ export const TelegramComposer = ({
         return handled();
       case 'h':
       case 'ArrowLeft':
-        setVisualSelection(anchor, Math.max(0, active - 1));
+        setVisualSelection(anchor, getPreviousGraphemeStart(value, active));
         return handled();
       case 'l':
       case 'ArrowRight':
-        setVisualSelection(anchor, Math.min(value.length, active + 1));
+        setVisualSelection(anchor, getNextGraphemeStart(value, active));
         return handled();
       case 'j':
       case 'ArrowDown':
-        setVisualSelection(anchor, moveCursorVertically(value, active, 1));
+        setVisualSelection(anchor, getPreferredVerticalTarget(active, 1));
         return handled();
       case 'k':
       case 'ArrowUp':
-        setVisualSelection(anchor, moveCursorVertically(value, active, -1));
+        setVisualSelection(anchor, getPreferredVerticalTarget(active, -1));
         return handled();
       case '0':
       case 'Home':
@@ -1255,6 +1328,9 @@ export const TelegramComposer = ({
     }
 
     const activePosition = getLineColumnAtIndex(value, active);
+    if (!['j', 'k', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+      preferredColumnRef.current = null;
+    }
 
     switch (event.key) {
       case 'v':
@@ -1283,11 +1359,11 @@ export const TelegramComposer = ({
         return handled();
       case 'j':
       case 'ArrowDown':
-        setVisualBlockSelection(anchor, moveCursorVertically(value, active, 1));
+        setVisualBlockSelection(anchor, getPreferredVerticalTarget(active, 1));
         return handled();
       case 'k':
       case 'ArrowUp':
-        setVisualBlockSelection(anchor, moveCursorVertically(value, active, -1));
+        setVisualBlockSelection(anchor, getPreferredVerticalTarget(active, -1));
         return handled();
       case '0':
       case 'Home':
@@ -1370,6 +1446,10 @@ export const TelegramComposer = ({
       return false;
     }
 
+    if (!['j', 'k', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+      preferredColumnRef.current = null;
+    }
+
     switch (event.key) {
       case 'V':
         requestComposerMode('normal');
@@ -1382,11 +1462,11 @@ export const TelegramComposer = ({
         return handled();
       case 'j':
       case 'ArrowDown':
-        setVisualLineSelection(anchor, moveCursorVertically(value, active, 1));
+        setVisualLineSelection(anchor, getPreferredVerticalTarget(active, 1));
         return handled();
       case 'k':
       case 'ArrowUp':
-        setVisualLineSelection(anchor, moveCursorVertically(value, active, -1));
+        setVisualLineSelection(anchor, getPreferredVerticalTarget(active, -1));
         return handled();
       case 'G':
         setVisualLineSelection(anchor, value.length);
@@ -1434,6 +1514,12 @@ export const TelegramComposer = ({
       vimSequenceRef.current = { key: null, timestamp: 0 };
     };
 
+    const takeCount = (): number => {
+      const count = Math.max(1, Number.parseInt(vimCountRef.current, 10) || 1);
+      vimCountRef.current = '';
+      return count;
+    };
+
     const setSequence = (key: TelegramVimSequence) => {
       vimSequenceRef.current = { key, timestamp: now };
     };
@@ -1446,6 +1532,8 @@ export const TelegramComposer = ({
 
     if (event.key === 'Escape') {
       clearSequence();
+      vimCountRef.current = '';
+      preferredColumnRef.current = null;
       textarea.blur();
       return handled();
     }
@@ -1468,15 +1556,26 @@ export const TelegramComposer = ({
       return false;
     }
 
+    if (
+      vimCountsEnabled &&
+      /^[0-9]$/u.test(event.key) &&
+      (event.key !== '0' || vimCountRef.current.length > 0)
+    ) {
+      vimCountRef.current = `${vimCountRef.current}${event.key}`.slice(0, 4);
+      return handled();
+    }
+
     if (sequence === 'g' && event.key === 'g') {
       clearSequence();
+      takeCount();
+      preferredColumnRef.current = null;
       moveTextareaCursor(0);
       return handled();
     }
 
     if (sequence === 'd' && event.key === 'd') {
       clearSequence();
-      deleteCurrentLine();
+      deleteCurrentLine(takeCount());
       return handled();
     }
 
@@ -1492,13 +1591,49 @@ export const TelegramComposer = ({
 
     if ((sequence === 'di' || sequence === 'ci' || sequence === 'da' || sequence === 'ca') && event.key === 'w') {
       clearSequence();
+      takeCount();
       applyWordTextObject(sequence[0] as 'c' | 'd', sequence[1] === 'a', selectionStart, selectionEnd);
       return handled();
     }
 
     if (sequence === 'c' && event.key === 'c') {
       clearSequence();
+      takeCount();
       changeCurrentLine();
+      return handled();
+    }
+
+    if ((sequence === 'd' || sequence === 'c') && ['w', 'e', 'b', '$', '0', '^'].includes(event.key)) {
+      clearSequence();
+      const count = takeCount();
+      let target = selectionStart;
+
+      for (let i = 0; i < count; i += 1) {
+        if (event.key === 'w') {
+          target =
+            sequence === 'c'
+              ? getNextGraphemeStart(value, findWordEnd(value, target))
+              : findNextWordStart(value, target);
+          if (sequence === 'c' && i + 1 < count) {
+            target = findNextWordStart(value, target);
+          }
+        } else if (event.key === 'e') {
+          target = getNextGraphemeStart(value, findWordEnd(value, target));
+        } else if (event.key === 'b') {
+          target = findPreviousWordStart(value, target);
+        } else if (event.key === '$') {
+          target = getLineEnd(value, target);
+        } else if (event.key === '0') {
+          target = getLineStart(value, target);
+        } else {
+          target = getFirstNonWhitespaceInLine(value, target);
+        }
+      }
+
+      const start = Math.min(selectionStart, target);
+      const end = Math.max(selectionEnd, target);
+      deleteSelectionOrRange(start, end, end);
+      requestComposerMode(sequence === 'c' ? 'insert' : 'normal');
       return handled();
     }
 
@@ -1506,6 +1641,7 @@ export const TelegramComposer = ({
 
     switch (event.key) {
       case 'i':
+        takeCount();
         requestComposerMode('insert');
         return handled();
       case 'v':
@@ -1519,14 +1655,17 @@ export const TelegramComposer = ({
         requestComposerMode('visual-line');
         return handled();
       case 'I':
+        takeCount();
         moveTextareaCursor(getFirstNonWhitespaceInLine(value, selectionStart));
         requestComposerMode('insert');
         return handled();
       case 'a':
-        moveTextareaCursor(Math.min(value.length, selectionEnd + 1));
+        takeCount();
+        moveTextareaCursor(getNextGraphemeStart(value, selectionEnd));
         requestComposerMode('insert');
         return handled();
       case 'A':
+        takeCount();
         moveTextareaCursor(getLineEnd(value, selectionEnd));
         requestComposerMode('insert');
         return handled();
@@ -1549,55 +1688,95 @@ export const TelegramComposer = ({
       }
       case 'h':
       case 'ArrowLeft':
-        moveTextareaCursor(Math.max(0, selectionStart - 1));
+        moveTextareaCursorByGraphemes(selectionStart, -1, takeCount());
         return handled();
       case 'l':
       case 'ArrowRight':
-        moveTextareaCursor(Math.min(value.length, selectionEnd + 1));
+        moveTextareaCursorByGraphemes(selectionEnd, 1, takeCount());
         return handled();
       case 'j':
       case 'ArrowDown':
-        moveTextareaCursor(moveCursorVertically(value, selectionEnd, 1));
+        moveTextareaCursorVertically(selectionEnd, 1, takeCount());
         return handled();
       case 'k':
       case 'ArrowUp':
-        moveTextareaCursor(moveCursorVertically(value, selectionStart, -1));
+        moveTextareaCursorVertically(selectionStart, -1, takeCount());
         return handled();
       case '0':
       case 'Home':
+        takeCount();
+        preferredColumnRef.current = null;
         moveTextareaCursor(getLineStart(value, selectionStart));
         return handled();
       case '^':
+        takeCount();
+        preferredColumnRef.current = null;
         moveTextareaCursor(getFirstNonWhitespaceInLine(value, selectionStart));
         return handled();
       case '$':
       case 'End':
+        takeCount();
+        preferredColumnRef.current = null;
         moveTextareaCursor(getLineEnd(value, selectionEnd));
         return handled();
       case 'G':
+        takeCount();
+        preferredColumnRef.current = null;
         moveTextareaCursor(value.length);
         return handled();
-      case 'w':
-        moveTextareaCursor(findNextWordStart(value, selectionEnd));
+      case 'w': {
+        let target = selectionEnd;
+        for (let i = 0, count = takeCount(); i < count; i += 1) {
+          target = findNextWordStart(value, target);
+        }
+        preferredColumnRef.current = null;
+        moveTextareaCursor(target);
         return handled();
-      case 'b':
-        moveTextareaCursor(findPreviousWordStart(value, selectionStart));
+      }
+      case 'b': {
+        let target = selectionStart;
+        for (let i = 0, count = takeCount(); i < count; i += 1) {
+          target = findPreviousWordStart(value, target);
+        }
+        preferredColumnRef.current = null;
+        moveTextareaCursor(target);
         return handled();
-      case 'e':
-        moveTextareaCursor(findWordEnd(value, selectionEnd));
+      }
+      case 'e': {
+        let target = selectionEnd;
+        for (let i = 0, count = takeCount(); i < count; i += 1) {
+          target = findWordEnd(value, target);
+          if (i + 1 < count) {
+            target = getNextGraphemeStart(value, target);
+          }
+        }
+        preferredColumnRef.current = null;
+        moveTextareaCursor(target);
         return handled();
+      }
       case 'x':
-      case 'Delete':
-        deleteSelectionOrRange(selectionStart, selectionEnd, Math.min(value.length, selectionStart + 1));
+      case 'Delete': {
+        let deleteEnd = selectionStart;
+        for (let i = 0, count = takeCount(); i < count; i += 1) {
+          deleteEnd = getNextGraphemeStart(value, deleteEnd);
+        }
+        deleteSelectionOrRange(selectionStart, selectionEnd, deleteEnd);
         return handled();
+      }
       case 'X':
-      case 'Backspace':
+      case 'Backspace': {
+        const count = takeCount();
         if (hasSelection) {
           deleteSelectionOrRange(selectionStart, selectionEnd, selectionEnd);
         } else {
-          deleteSelectionOrRange(Math.max(0, selectionStart - 1), selectionStart, selectionStart);
+          let deleteStart = selectionStart;
+          for (let i = 0; i < count; i += 1) {
+            deleteStart = getPreviousGraphemeStart(value, deleteStart);
+          }
+          deleteSelectionOrRange(deleteStart, selectionStart, selectionStart);
         }
         return handled();
+      }
       case 'D':
         deleteSelectionOrRange(selectionStart, selectionEnd, getLineEnd(value, selectionEnd));
         return handled();
@@ -1637,8 +1816,16 @@ export const TelegramComposer = ({
   }, [draftText]);
 
   useEffect(() => {
-    setComposerMode(appMode === 'insert' ? 'insert' : 'normal');
-  }, [appMode]);
+    setComposerMode(!vimModeEnabled || appMode === 'insert' ? 'insert' : 'normal');
+    if (!vimModeEnabled) {
+      vimSequenceRef.current = { key: null, timestamp: 0 };
+      vimCountRef.current = '';
+      preferredColumnRef.current = null;
+      visualAnchorRef.current = null;
+      visualBlockActiveRef.current = null;
+      visualLineActiveRef.current = null;
+    }
+  }, [appMode, vimModeEnabled]);
 
   useEffect(() => {
     if (composerMode === 'insert') {
@@ -1965,7 +2152,7 @@ export const TelegramComposer = ({
           replyToMessageId={replyToMessageId ?? undefined}
         />
       ) : null}
-      <div className="telegram-compose-row">
+      <div className={`telegram-compose-row${vimModeEnabled ? '' : ' vim-disabled'}`}>
         <button
           type="button"
           className="telegram-attach-button"
@@ -1989,20 +2176,22 @@ export const TelegramComposer = ({
             event.currentTarget.value = '';
           }}
         />
-        <div
-          className={`telegram-vim-mode-indicator mode-${composerMode}`}
-          aria-label={`Composer ${composerMode} mode`}
-        >
-          {composerMode === 'insert'
-            ? 'INS'
-            : composerMode === 'visual'
-              ? 'VIS'
-              : composerMode === 'visual-line'
-                ? 'VLI'
-              : composerMode === 'visual-block'
-                ? 'VBL'
-                : 'NOR'}
-        </div>
+        {vimModeEnabled ? (
+          <div
+            className={`telegram-vim-mode-indicator mode-${composerMode}`}
+            aria-label={`Composer ${composerMode} mode`}
+          >
+            {composerMode === 'insert'
+              ? 'INS'
+              : composerMode === 'visual'
+                ? 'VIS'
+                : composerMode === 'visual-line'
+                  ? 'VLI'
+                : composerMode === 'visual-block'
+                  ? 'VBL'
+                  : 'NOR'}
+          </div>
+        ) : null}
         <textarea
           id="telegram-compose-input"
           ref={(node) => {
@@ -2186,25 +2375,25 @@ export const TelegramComposer = ({
               return;
             }
 
-            if (composerMode === 'visual-block') {
+            if (vimModeEnabled && composerMode === 'visual-block') {
               if (handleVisualBlockModeKeyDown(event)) {
                 return;
               }
             }
 
-            if (composerMode === 'visual-line') {
+            if (vimModeEnabled && composerMode === 'visual-line') {
               if (handleVisualLineModeKeyDown(event)) {
                 return;
               }
             }
 
-            if (composerMode === 'visual') {
+            if (vimModeEnabled && composerMode === 'visual') {
               if (handleVisualModeKeyDown(event)) {
                 return;
               }
             }
 
-            if (composerMode === 'normal') {
+            if (vimModeEnabled && composerMode === 'normal') {
               if (handleNormalModeKeyDown(event)) {
                 return;
               }
@@ -2383,6 +2572,7 @@ export const TelegramComposer = ({
             }
 
             if (
+              vimModeEnabled &&
               event.key === 'Escape' &&
               !event.shiftKey &&
               !event.metaKey &&
@@ -2394,7 +2584,7 @@ export const TelegramComposer = ({
                 event.currentTarget.selectionStart ?? 0,
                 event.currentTarget.selectionEnd ?? 0,
               );
-              moveTextareaCursor(Math.max(0, cursor - 1));
+              moveTextareaCursor(getPreviousGraphemeStart(value, cursor));
               requestComposerMode('normal');
               return;
             }

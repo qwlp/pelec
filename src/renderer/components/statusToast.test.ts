@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { renderStatusToast } from './statusToast';
+import { getStatusToastClearDelay, renderStatusToast } from './statusToast';
 import { installDom } from '../test/dom';
 
 describe('renderStatusToast', () => {
@@ -21,6 +21,19 @@ describe('renderStatusToast', () => {
 
     expect(host.classList.contains('hidden')).toBe(true);
     expect(host.childElementCount).toBe(0);
+  });
+
+  it('uses a short timeout for success and a longer timeout for errors', () => {
+    expect(getStatusToastClearDelay(null)).toBeNull();
+    expect(
+      getStatusToastClearDelay({ id: 'running', label: 'Opening', state: 'running' }),
+    ).toBeNull();
+    expect(
+      getStatusToastClearDelay({ id: 'success', label: 'Opened', state: 'success' }),
+    ).toBe(1800);
+    expect(
+      getStatusToastClearDelay({ id: 'error', label: 'Open failed', state: 'error' }),
+    ).toBe(4200);
   });
 
   it('renders a compact running state without progress chrome', () => {

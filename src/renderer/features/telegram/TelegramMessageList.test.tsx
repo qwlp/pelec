@@ -247,6 +247,38 @@ describe('TelegramMessageList', () => {
     });
   });
 
+  it('shows the Telegram image filename when available', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="group-42"
+        activeChatTitle="Operations"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'large-image',
+            sender: 'Ada',
+            text: 'Photo',
+            timestamp: 100,
+            imageDeferred: true,
+            imageName: 'invoice-scan.png',
+            imageSizeBytes: 12 * 1024 * 1024,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(target.querySelector('.telegram-deferred-image-copy strong')?.textContent).toBe(
+      'invoice-scan.png',
+    );
+  });
+
   it('automatically copies selected message text without selecting the message', async () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'telegram-message-list';
@@ -398,6 +430,60 @@ describe('TelegramMessageList', () => {
 
     expect(legacyApi.activateTelegramMessagesPane).toHaveBeenCalled();
     expect(document.activeElement).toBe(scrollContainer);
+  });
+
+  it('selects a pressed message before pane activation can jump to the latest message', () => {
+    const scrollContainer = document.createElement('div');
+    scrollContainer.className = 'telegram-message-list';
+    scrollContainer.tabIndex = -1;
+    const target = document.createElement('div');
+    scrollContainer.append(target);
+    document.body.append(scrollContainer);
+    Object.defineProperty(scrollContainer, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: 120,
+    });
+
+    const legacyApi = {
+      activateTelegramMessagesPane: vi.fn(() => {
+        scrollContainer.scrollTop = 900;
+      }),
+      selectTelegramMessage: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: 'older-message',
+            sender: 'Ada',
+            text: 'Read this',
+            timestamp: 1,
+          },
+          {
+            id: 'latest-message',
+            sender: 'Linus',
+            text: 'Latest',
+            timestamp: 2,
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const olderMessage = target.querySelector<HTMLElement>('[data-message-id="older-message"]');
+    fireEvent.mouseDown(olderMessage as HTMLElement);
+
+    expect(legacyApi.selectTelegramMessage).toHaveBeenCalledWith('older-message');
+    expect(legacyApi.activateTelegramMessagesPane).not.toHaveBeenCalled();
+    expect(scrollContainer.scrollTop).toBe(120);
   });
 
   it('activates the telegram messages pane when the message list surface is clicked', () => {
@@ -1255,14 +1341,15 @@ describe('TelegramMessageList', () => {
       },
     });
 
-    const speedButton = target.querySelector<HTMLButtonElement>('.telegram-voice-rate[aria-label="Playback speed 1.5x"]');
+    const speedButton = target.querySelector<HTMLButtonElement>('.telegram-voice-rate');
     expect(speedButton).toBeTruthy();
+    expect(speedButton?.textContent).toBe('1x');
 
     fireEvent.click(speedButton as HTMLButtonElement);
 
     await waitFor(() => {
       expect(playbackRate).toBe(1.5);
-      expect(speedButton?.getAttribute('aria-pressed')).toBe('true');
+      expect(speedButton?.textContent).toBe('1.5x');
     });
   });
 

@@ -65,6 +65,7 @@ export interface KeyboardUserConfig {
   showHints: boolean;
   sendBehavior: SendBehavior;
   captureInWebview: boolean;
+  enableVimMode: boolean;
   enableCounts: boolean;
   keymap: Partial<Record<KeyboardActionId, string>>;
 }

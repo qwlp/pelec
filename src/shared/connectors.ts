@@ -198,6 +198,7 @@ export interface ChatMessage {
   textEntities?: ChatTextEntity[];
   timestamp: number;
   outgoing?: boolean;
+  canBeEdited?: boolean;
   readByPeer?: boolean;
   forwardedFrom?: string;
   replyToMessageId?: string;
@@ -206,6 +207,7 @@ export interface ChatMessage {
   hasAudio?: boolean;
   hasVideo?: boolean;
   imageUrl?: string;
+  imageName?: string;
   imageSizeBytes?: number;
   imageDeferred?: boolean;
   videoUrl?: string;

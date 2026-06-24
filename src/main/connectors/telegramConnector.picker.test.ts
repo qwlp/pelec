@@ -41,7 +41,14 @@ describe('TelegramConnector picker methods', () => {
       tdClient: TdClient;
       editMessage: TelegramConnector['editMessage'];
     };
-    const invoke = vi.fn(async () => ({}));
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 55,
+        is_outgoing: true,
+        can_be_edited: true,
+      })
+      .mockResolvedValueOnce({});
     connector.status.authState = 'authenticated';
     connector.tdClient = {
       invoke,
@@ -50,7 +57,75 @@ describe('TelegramConnector picker methods', () => {
 
     await expect(connector.editMessage('100', '55', 'updated text')).resolves.toBe(true);
 
+    expect(invoke).toHaveBeenNthCalledWith(1, {
+      _: 'getMessage',
+      chat_id: 100,
+      message_id: 55,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, {
+      _: 'editMessageText',
+      chat_id: 100,
+      message_id: 55,
+      input_message_content: {
+        _: 'inputMessageText',
+        text: {
+          _: 'formattedText',
+          text: 'updated text',
+        },
+      },
+    });
+  });
+
+  it('refuses to edit incoming messages', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      editMessage: TelegramConnector['editMessage'];
+    };
+    const invoke = vi.fn().mockResolvedValue({
+      id: 55,
+      is_outgoing: false,
+      can_be_edited: false,
+    });
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(connector.editMessage('100', '55', 'updated text')).resolves.toBe(false);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith({
+      _: 'getMessage',
+      chat_id: 100,
+      message_id: 55,
+    });
+  });
+
+  it('edits messages sent as a channel identity when Telegram allows it', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      editMessage: TelegramConnector['editMessage'];
+    };
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 55,
+        is_outgoing: false,
+        can_be_edited: true,
+      })
+      .mockResolvedValueOnce({});
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(connector.editMessage('100', '55', 'updated text')).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenNthCalledWith(2, {
       _: 'editMessageText',
       chat_id: 100,
       message_id: 55,

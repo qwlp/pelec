@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { RotateCcw, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, Search, X } from 'lucide-react';
 import type { UserConfig } from '../../../shared/types';
 import { applyUserTheme } from '../../lib/theme';
 
@@ -11,6 +11,116 @@ interface SettingsDialogProps {
 }
 
 const cloneConfig = (config: UserConfig): UserConfig => structuredClone(config);
+const serializeConfig = (config: UserConfig): string => JSON.stringify(config);
+const AUTO_SAVE_DELAY_MS = 300;
+
+const FontFamilyPicker = ({
+  fonts,
+  loading,
+  value,
+  onChange,
+}: {
+  fonts: string[];
+  loading: boolean;
+  value: string;
+  onChange(value: string): void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+  const options = useMemo(() => {
+    const available = fonts.includes(value) ? fonts : [value, ...fonts];
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return normalizedQuery
+      ? available.filter((font) => font.toLocaleLowerCase().includes(normalizedQuery))
+      : available;
+  }, [fonts, query, value]);
+
+  useEffect(() => {
+    if (!open) {
+      setQuery('');
+      return;
+    }
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    return () => document.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [open]);
+
+  return (
+    <div className="settings-font-picker" ref={rootRef}>
+      <button
+        aria-controls="settings-font-options"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label="Font family"
+        className="settings-font-trigger"
+        id="settings-font-family"
+        onClick={() => setOpen((current) => !current)}
+        role="combobox"
+        type="button"
+      >
+        <span className="settings-font-trigger-label" style={{ fontFamily: value }} title={value}>
+          {value}
+        </span>
+        <ChevronDown aria-hidden="true" size={14} />
+      </button>
+
+      {open ? (
+        <div className="settings-font-popover">
+          <div className="settings-font-search">
+            <Search aria-hidden="true" size={13} />
+            <input
+              aria-label="Search installed fonts"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setOpen(false);
+                }
+              }}
+              placeholder="Search fonts"
+              type="search"
+              value={query}
+            />
+          </div>
+          <div
+            aria-label="Installed fonts"
+            className="settings-font-options"
+            id="settings-font-options"
+            role="listbox"
+          >
+            {options.length > 0 ? options.map((font) => (
+              <button
+                aria-label={font}
+                aria-selected={font === value}
+                className={`settings-font-option${font === value ? ' selected' : ''}`}
+                key={font}
+                onClick={() => {
+                  onChange(font);
+                  setOpen(false);
+                }}
+                role="option"
+                type="button"
+              >
+                <span className="settings-font-preview" style={{ fontFamily: font }}>Aa</span>
+                <span className="settings-font-name">{font}</span>
+                {font === value ? <Check aria-hidden="true" size={13} /> : null}
+              </button>
+            )) : (
+              <div className="settings-font-empty">
+                {loading ? 'Loading fonts…' : 'No matching fonts'}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+};
 
 export const SettingsDialog = ({
   config,
@@ -21,10 +131,94 @@ export const SettingsDialog = ({
   const [draft, setDraft] = useState(() => cloneConfig(config));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [installedFonts, setInstalledFonts] = useState<string[]>([]);
+  const [loadingFonts, setLoadingFonts] = useState(true);
+  const mountedRef = useRef(true);
+  const onSaveRef = useRef(onSave);
+  const draftRef = useRef(draft);
+  const lastQueuedConfigRef = useRef(serializeConfig(config));
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingSaveCountRef = useRef(0);
+
+  onSaveRef.current = onSave;
+  draftRef.current = draft;
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   useEffect(() => {
     applyUserTheme(draft);
   }, [draft]);
+
+  const queueSave = useCallback((nextConfig: UserConfig) => {
+    const serializedConfig = serializeConfig(nextConfig);
+    if (serializedConfig === lastQueuedConfigRef.current) {
+      return saveQueueRef.current;
+    }
+
+    const configSnapshot = cloneConfig(nextConfig);
+    lastQueuedConfigRef.current = serializedConfig;
+    pendingSaveCountRef.current += 1;
+    setSaving(true);
+    setError('');
+
+    const save = saveQueueRef.current
+      .catch((): void => undefined)
+      .then(() => onSaveRef.current(configSnapshot));
+    saveQueueRef.current = save;
+
+    void save
+      .catch((reason) => {
+        if (mountedRef.current) {
+          setError(reason instanceof Error ? reason.message : 'Could not save settings.');
+        }
+      })
+      .finally(() => {
+        pendingSaveCountRef.current -= 1;
+        if (mountedRef.current && pendingSaveCountRef.current === 0) {
+          setSaving(false);
+        }
+      });
+
+    return save;
+  }, []);
+
+  useEffect(() => {
+    if (serializeConfig(draft) === lastQueuedConfigRef.current) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void queueSave(draft);
+    }, AUTO_SAVE_DELAY_MS);
+    return () => window.clearTimeout(timeout);
+  }, [draft, queueSave]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void window.pelec.listInstalledFonts()
+      .then((fonts) => {
+        if (!cancelled) {
+          setInstalledFonts(fonts);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInstalledFonts([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingFonts(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateAppearance = (
     key: keyof UserConfig['appearance'],
@@ -44,7 +238,7 @@ export const SettingsDialog = ({
   };
 
   const close = () => {
-    applyUserTheme(config);
+    void queueSave(draftRef.current);
     onClose();
   };
 
@@ -69,13 +263,20 @@ export const SettingsDialog = ({
         <div className="settings-content">
           <section className="settings-section">
             <h3>Appearance</h3>
-            <label className="settings-field settings-field-wide">
-              <span>Font family</span>
-              <input
+            <div className="settings-field settings-field-wide">
+              <label htmlFor="settings-font-family">Font family</label>
+              <FontFamilyPicker
+                fonts={installedFonts}
+                loading={loadingFonts}
                 value={draft.appearance.fontFamily}
-                onChange={(event) => updateAppearance('fontFamily', event.target.value)}
+                onChange={(font) => updateAppearance('fontFamily', font)}
               />
-            </label>
+              <small className="settings-field-detail">
+                {loadingFonts
+                  ? 'Loading installed fonts…'
+                  : `${installedFonts.length} installed font${installedFonts.length === 1 ? '' : 's'}`}
+              </small>
+            </div>
             {([
               ['fontSize', 'Font size', 10, 28, 1],
               ['windowPadding', 'Window padding', 0, 64, 1],
@@ -119,6 +320,7 @@ export const SettingsDialog = ({
             </div>
             {([
               ['showHints', 'Show keyboard hints', 'Display contextual shortcut hints.'],
+              ['enableVimMode', 'Vim mode in composer', 'Use Normal, Insert, and Visual modes while composing messages.'],
               ['enableCounts', 'Vim-style counts', 'Allow commands such as 5j.'],
               ['captureInWebview', 'Capture webview keys', 'Apply shortcuts inside embedded pages.'],
             ] as const).map(([key, label, detail]) => (
@@ -127,6 +329,7 @@ export const SettingsDialog = ({
                 <input
                   type="checkbox"
                   checked={draft.keyboard[key]}
+                  disabled={key === 'enableCounts' && !draft.keyboard.enableVimMode}
                   onChange={(event) => updateKeyboard(key, event.target.checked)}
                 />
               </label>
@@ -150,26 +353,9 @@ export const SettingsDialog = ({
           <button className="settings-text-button" type="button" onClick={onOpenConfigFile}>
             Edit advanced config
           </button>
-          <div>
-            <button className="settings-text-button" type="button" onClick={() => setDraft(cloneConfig(config))}>
-              <RotateCcw size={14} /> Reset changes
-            </button>
-            <button
-              className="settings-save-button"
-              type="button"
-              disabled={saving}
-              onClick={() => {
-                setSaving(true);
-                setError('');
-                void onSave(draft).catch((reason) => {
-                  setError(reason instanceof Error ? reason.message : 'Could not save settings.');
-                  setSaving(false);
-                });
-              }}
-            >
-              {saving ? 'Saving…' : 'Save settings'}
-            </button>
-          </div>
+          <span className="settings-save-status" role="status">
+            {saving ? 'Saving…' : 'Settings save automatically'}
+          </span>
         </footer>
       </section>
     </div>

@@ -27,6 +27,7 @@ describe('TelegramContextMenu', () => {
 
     const view = render(
       <TelegramContextMenu
+        canEdit
         messageId="message-1"
         onClose={onClose}
         onCopy={onCopy}
@@ -54,5 +55,25 @@ describe('TelegramContextMenu', () => {
     expect(onSelect).toHaveBeenCalledWith('message-1');
     expect(onDelete).toHaveBeenCalledWith('message-1');
     expect(onClose).toHaveBeenCalledTimes(6);
+  });
+
+  it('does not offer edit for messages owned by someone else', () => {
+    const view = render(
+      <TelegramContextMenu
+        canEdit={false}
+        messageId="message-1"
+        onClose={vi.fn()}
+        onCopy={vi.fn()}
+        onDelete={vi.fn()}
+        onEdit={vi.fn()}
+        onForward={vi.fn()}
+        onReply={vi.fn()}
+        onSelect={vi.fn()}
+        x={32}
+        y={48}
+      />,
+    );
+
+    expect(view.queryByText('Edit')).toBeNull();
   });
 });

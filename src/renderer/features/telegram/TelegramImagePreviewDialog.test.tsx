@@ -64,6 +64,10 @@ describe('TelegramImagePreviewDialog', () => {
     fireEvent.click(previewBody as Element);
     expect(onClose).toHaveBeenCalledTimes(1);
 
+    fireEvent.wheel(previewBody as Element, { deltaY: -1_000, clientX: 0, clientY: 0 });
+    fireEvent.click(previewBody as Element);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
     fireEvent.click(modal as Element);
     expect(onClose).toHaveBeenCalledTimes(2);
   });
@@ -90,6 +94,22 @@ describe('TelegramImagePreviewDialog', () => {
     fireEvent.keyDown(window, { key: 'r' });
     expect(image.getAttribute('style')).toBe(
       'transform: translate(0px, 0px) rotate(90deg) scale(1);',
+    );
+  });
+
+  it('prefers the Telegram image name over the derived URL name', () => {
+    const view = render(
+      <TelegramImagePreviewDialog
+        imageUrl="https://example.com/fallback-name.png"
+        meta={{ imageName: 'invoice-scan.png', sender: 'Alice', timestamp: 1_750_000_000 }}
+        onClose={vi.fn()}
+        onCopy={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+
+    expect(view.container.querySelector('.telegram-image-modal-details-title')?.textContent).toBe(
+      'invoice-scan.png',
     );
   });
 });

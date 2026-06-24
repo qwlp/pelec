@@ -126,6 +126,7 @@ export const ModalLayer = ({
       ) : null}
       {telegramContextMenu?.visible && telegramContextMenu.messageId ? (
         <TelegramContextMenu
+          canEdit={telegramContextMenu.canEdit}
           messageId={telegramContextMenu.messageId}
           onClose={onCloseTelegramContextMenu}
           onCopy={onCopyTelegramMessage}

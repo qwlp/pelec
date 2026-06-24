@@ -71,6 +71,39 @@ export const getTelegramImageFile = (content: unknown): TdFileRef | undefined =>
   return extractTelegramPhotoFiles(content).at(-1);
 };
 
+export const extractTelegramImageName = (
+  content: unknown,
+  messageId?: string | number,
+): string | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    document?: {
+      file_name?: string;
+      mime_type?: string;
+    };
+  };
+
+  if (container._ === 'messagePhoto') {
+    const normalizedMessageId = String(messageId ?? '').trim();
+    return normalizedMessageId ? `photo-${normalizedMessageId}.jpg` : 'photo.jpg';
+  }
+
+  if (container._ !== 'messageDocument') {
+    return undefined;
+  }
+
+  const mimeType = container.document?.mime_type?.trim().toLowerCase() ?? '';
+  if (!mimeType.startsWith('image/')) {
+    return undefined;
+  }
+
+  return container.document?.file_name?.trim() || undefined;
+};
+
 export const getTelegramFileSizeBytes = (file: TdFileRef | undefined): number | undefined => {
   const size = Number(file?.size ?? file?.expected_size ?? 0);
   return Number.isFinite(size) && size > 0 ? size : undefined;

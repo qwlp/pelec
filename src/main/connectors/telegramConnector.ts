@@ -43,6 +43,7 @@ import {
   extractTelegramAnimationSource,
   extractTelegramDocumentMetadata,
   extractTelegramImageDocumentSource,
+  extractTelegramImageName,
   getTelegramFileSizeBytes,
   getTelegramImageFile,
   extractTelegramPhotoFiles,
@@ -639,6 +640,7 @@ export class TelegramConnector implements Connector {
             textEntities: extractTelegramMessageEntities(message.content),
             timestamp: (message.date ?? 0) * 1000,
             outgoing: Boolean(message.is_outgoing),
+            canBeEdited: message.can_be_edited,
             readByPeer:
               message.is_outgoing === true
                 ? this.isMessageReadByPeer(message.id, lastReadOutboxMessageId)
@@ -654,6 +656,10 @@ export class TelegramConnector implements Connector {
               10 * 1024 * 1024
                 ? undefined
                 : await this.extractImageUrl(client, message.content),
+            imageName: extractTelegramImageName(
+              message.content,
+              message.id === undefined ? undefined : String(message.id),
+            ),
             imageSizeBytes: getTelegramFileSizeBytes(getTelegramImageFile(message.content)),
             imageDeferred:
               (getTelegramFileSizeBytes(getTelegramImageFile(message.content)) ?? 0) >
@@ -818,6 +824,16 @@ export class TelegramConnector implements Connector {
     }
 
     try {
+      const message = await this.loadMessageById(this.tdClient, chatId, messageId);
+      const canEdit =
+        message?.can_be_edited === true ||
+        (message?.can_be_edited === undefined && message?.is_outgoing === true);
+      if (!canEdit) {
+        this.status.lastError = 'Only your editable messages can be edited';
+        this.status.details = `Failed editing message: ${this.status.lastError}`;
+        return false;
+      }
+
       await this.tdClient.invoke({
         _: 'editMessageText',
         chat_id: Number(chatId),

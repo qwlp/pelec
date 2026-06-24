@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, Image as ImageIcon, LoaderCircle } from 'lucide-react';
+import { Download, Image as ImageIcon, LoaderCircle, Pause, Play } from 'lucide-react';
 import type { ChatMessage, ChatServiceEvent } from '../../../shared/connectors';
 import type { LegacyAppBridgeApi, LegacyRenderableTelegramMessage } from '../../legacyBridge';
 import { describeTelegramCall } from './calls';
@@ -836,6 +836,10 @@ const TelegramVoiceNote = ({
   const durationLabel =
     durationLabelOverride ??
     `${formatDuration(currentTimeSeconds)} / ${formatDuration(effectiveDurationSeconds)}`;
+  const playbackRateLabel = formatTelegramVoicePlaybackRate(playbackRate);
+  const playbackRateIndex = TELEGRAM_VOICE_PLAYBACK_RATES.indexOf(playbackRate);
+  const nextPlaybackRate =
+    TELEGRAM_VOICE_PLAYBACK_RATES[(playbackRateIndex + 1) % TELEGRAM_VOICE_PLAYBACK_RATES.length];
 
   const seekToFraction = async (fraction: number): Promise<void> => {
     const audio = audioRef.current;
@@ -879,6 +883,7 @@ const TelegramVoiceNote = ({
           type="button"
           className={`telegram-voice-play${playing ? ' playing' : ''}`}
           disabled={loading || !activeChatId}
+          aria-label={loading ? 'Loading voice note' : playing ? 'Pause voice note' : 'Play voice note'}
           onClick={async (event) => {
             event.stopPropagation();
             const audio = audioRef.current;
@@ -924,8 +929,8 @@ const TelegramVoiceNote = ({
             });
           }}
         >
-          <span className="telegram-voice-play-icon telegram-voice-play-icon-play">▶</span>
-          <span className="telegram-voice-play-icon telegram-voice-play-icon-pause" aria-hidden="true" />
+          <Play className="telegram-voice-play-icon telegram-voice-play-icon-play" aria-hidden="true" />
+          <Pause className="telegram-voice-play-icon telegram-voice-play-icon-pause" aria-hidden="true" />
         </button>
         <div className="telegram-voice-main">
           <button
@@ -955,26 +960,18 @@ const TelegramVoiceNote = ({
           </button>
           <div className="telegram-voice-meta">
             <div className="telegram-voice-duration">{durationLabel}</div>
-            <div className="telegram-voice-rate-group" role="group" aria-label="Voice note speed">
-              {TELEGRAM_VOICE_PLAYBACK_RATES.map((rate) => {
-                const label = formatTelegramVoicePlaybackRate(rate);
-                return (
-                  <button
-                    key={rate}
-                    type="button"
-                    className="telegram-voice-rate"
-                    aria-label={`Playback speed ${label}`}
-                    aria-pressed={playbackRate === rate}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onPlaybackRateChange(rate);
-                    }}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
+            <button
+              type="button"
+              className="telegram-voice-rate"
+              aria-label={`Playback speed ${playbackRateLabel}. Change to ${formatTelegramVoicePlaybackRate(nextPlaybackRate)}`}
+              title={`Playback speed: ${playbackRateLabel}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onPlaybackRateChange(nextPlaybackRate);
+              }}
+            >
+              {playbackRateLabel}
+            </button>
           </div>
         </div>
       </div>
@@ -1448,6 +1445,7 @@ function TelegramDeferredImage({
         onClick={(event) => {
           event.stopPropagation();
           legacyApi?.openTelegramImagePreview(imageUrl, {
+            imageName: message.imageName,
             imageSizeBytes: message.imageSizeBytes,
             sender: message.sender,
             senderAvatarUrl: message.senderAvatarUrl,
@@ -1464,7 +1462,7 @@ function TelegramDeferredImage({
         <ImageIcon size={22} strokeWidth={1.7} />
       </div>
       <div className="telegram-deferred-image-copy">
-        <strong>Image</strong>
+        <strong title={message.imageName || 'Image'}>{message.imageName || 'Image'}</strong>
         <span>{formatFileSize(message.imageSizeBytes) || '10+ MB'}</span>
       </div>
       <button
@@ -1674,6 +1672,7 @@ const TelegramMessageRow = memo(
                       event.stopPropagation();
                       if (albumMessage.imageUrl) {
                         legacyApi?.openTelegramImagePreview(albumMessage.imageUrl, {
+                          imageName: albumMessage.imageName,
                           imageSizeBytes: albumMessage.imageSizeBytes,
                           sender: albumMessage.sender,
                           senderAvatarUrl: albumMessage.senderAvatarUrl,
@@ -1709,6 +1708,7 @@ const TelegramMessageRow = memo(
               onClick={(event) => {
                 event.stopPropagation();
                 legacyApi?.openTelegramImagePreview(primaryMessage.imageUrl as string, {
+                  imageName: primaryMessage.imageName,
                   imageSizeBytes: primaryMessage.imageSizeBytes,
                   sender: primaryMessage.sender,
                   senderAvatarUrl: primaryMessage.senderAvatarUrl,
@@ -2189,6 +2189,14 @@ export const TelegramMessageList = ({
         isTelegramMessageInteractiveTarget(event.target)
       ) {
         return;
+      }
+      if (event.type === 'mousedown' && event.target instanceof HTMLElement) {
+        const pressedMessage = event.target.closest<HTMLElement>('[data-message-id]');
+        const pressedMessageId = pressedMessage?.dataset.messageId;
+        if (pressedMessageId && target.contains(pressedMessage)) {
+          legacyApi.selectTelegramMessage(pressedMessageId);
+          return;
+        }
       }
       if (scrollContainer && scrollContainer.tabIndex < 0) {
         scrollContainer.focus({ preventScroll: true });

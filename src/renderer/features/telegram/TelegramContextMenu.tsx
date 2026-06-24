@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 interface TelegramContextMenuProps {
+  canEdit: boolean;
   messageId: string;
   onClose(): void;
   onCopy(messageId: string): void;
@@ -14,6 +15,7 @@ interface TelegramContextMenuProps {
 }
 
 export const TelegramContextMenu = ({
+  canEdit,
   messageId,
   onClose,
   onCopy,
@@ -43,14 +45,14 @@ export const TelegramContextMenu = ({
 
   const actions = useMemo(
     () => [
-      { id: 'copy', label: 'Copy', run: () => onCopy(messageId) },
-      { id: 'select', label: 'Select', run: () => onSelect(messageId) },
-      { id: 'edit', label: 'Edit', run: () => onEdit(messageId) },
-      { id: 'forward', label: 'Forward', run: () => onForward(messageId) },
-      { id: 'reply', label: 'Reply', run: () => onReply(messageId) },
-      { id: 'delete', label: 'Delete', run: () => onDelete(messageId) },
-    ],
-    [messageId, onCopy, onDelete, onEdit, onForward, onReply, onSelect],
+      { id: 'copy', label: 'Copy', run: () => onCopy(messageId), visible: true },
+      { id: 'select', label: 'Select', run: () => onSelect(messageId), visible: true },
+      { id: 'edit', label: 'Edit', run: () => onEdit(messageId), visible: canEdit },
+      { id: 'forward', label: 'Forward', run: () => onForward(messageId), visible: true },
+      { id: 'reply', label: 'Reply', run: () => onReply(messageId), visible: true },
+      { id: 'delete', label: 'Delete', run: () => onDelete(messageId), visible: true },
+    ].filter((action) => action.visible),
+    [canEdit, messageId, onCopy, onDelete, onEdit, onForward, onReply, onSelect],
   );
 
   return (

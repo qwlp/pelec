@@ -1,5 +1,16 @@
 import type { AppActivity } from '../../shared/types';
 
+const STATUS_SUCCESS_CLEAR_MS = 1800;
+const STATUS_ERROR_CLEAR_MS = 4200;
+
+export const getStatusToastClearDelay = (activity?: AppActivity | null): number | null => {
+  if (!activity || activity.state === 'running') {
+    return null;
+  }
+
+  return activity.state === 'success' ? STATUS_SUCCESS_CLEAR_MS : STATUS_ERROR_CLEAR_MS;
+};
+
 export const renderStatusToast = (host: HTMLElement, activity?: AppActivity | null): void => {
   host.replaceChildren();
   host.classList.toggle('hidden', !activity);

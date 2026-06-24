@@ -24,6 +24,7 @@ export type TdMessage = {
   id?: number | string | bigint;
   media_album_id?: string;
   date?: number;
+  can_be_edited?: boolean;
   is_outgoing?: boolean;
   forward_info?: {
     origin?: {

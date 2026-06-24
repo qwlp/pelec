@@ -178,9 +178,16 @@ export const AppShell = () => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const telegramSidebarResizerRef = useRef<HTMLDivElement | null>(null);
   const telegramSidebarPointerRef = useRef<number | null>(null);
   const telegramSidebarWidthRef = useRef(telegramSidebarWidth);
-  const telegramSidebarDragBoundsRef = useRef<{ left: number; width: number } | null>(null);
+  const telegramSidebarDragBoundsRef = useRef<{
+    left: number;
+    width: number;
+    initialSidebarWidth: number;
+  } | null>(null);
+  const telegramSidebarResizeFrameRef = useRef<number | null>(null);
+  const pendingTelegramSidebarClientXRef = useRef<number | null>(null);
   const telegramChatListRef = useRef<HTMLElement | null>(null);
   const telegramSearchInputRef = useRef<HTMLInputElement | null>(null);
   const telegramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -244,6 +251,9 @@ export const AppShell = () => {
     () => () => {
       if (imageActionToastTimerRef.current !== null) {
         window.clearTimeout(imageActionToastTimerRef.current);
+      }
+      if (telegramSidebarResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(telegramSidebarResizeFrameRef.current);
       }
     },
     [],
@@ -549,9 +559,10 @@ export const AppShell = () => {
     }
   });
 
-  const resizeTelegramSidebar = (clientX: number): number | null => {
+  const previewTelegramSidebarResize = (clientX: number): number | null => {
     const dragBounds = telegramSidebarDragBoundsRef.current;
-    if (!dragBounds || !workspaceRef.current) {
+    const resizer = telegramSidebarResizerRef.current;
+    if (!dragBounds || !resizer) {
       return null;
     }
 
@@ -560,8 +571,29 @@ export const AppShell = () => {
       dragBounds.width,
     );
     telegramSidebarWidthRef.current = nextWidth;
-    workspaceRef.current.style.setProperty('--telegram-sidebar-width', `${nextWidth}px`);
+    const offset = nextWidth - dragBounds.initialSidebarWidth;
+    resizer.style.transform = `translate3d(${offset}px, 0, 0)`;
     return nextWidth;
+  };
+
+  const flushTelegramSidebarResize = () => {
+    telegramSidebarResizeFrameRef.current = null;
+    const clientX = pendingTelegramSidebarClientXRef.current;
+    pendingTelegramSidebarClientXRef.current = null;
+    if (clientX !== null) {
+      previewTelegramSidebarResize(clientX);
+    }
+  };
+
+  const scheduleTelegramSidebarResize = (clientX: number) => {
+    pendingTelegramSidebarClientXRef.current = clientX;
+    if (telegramSidebarResizeFrameRef.current !== null) {
+      return;
+    }
+
+    telegramSidebarResizeFrameRef.current = window.requestAnimationFrame(
+      flushTelegramSidebarResize,
+    );
   };
 
   const handleTelegramSidebarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -578,11 +610,12 @@ export const AppShell = () => {
     telegramSidebarDragBoundsRef.current = {
       left: workspaceBounds.left,
       width: workspaceBounds.width,
+      initialSidebarWidth: telegramSidebarWidthRef.current,
     };
     telegramSidebarPointerRef.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
     workspaceRef.current?.classList.add('telegram-sidebar-resizing');
-    resizeTelegramSidebar(event.clientX);
+    previewTelegramSidebarResize(event.clientX);
   };
 
   const handleTelegramSidebarPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -590,7 +623,7 @@ export const AppShell = () => {
       return;
     }
 
-    resizeTelegramSidebar(event.clientX);
+    scheduleTelegramSidebarResize(event.clientX);
   };
 
   const finishTelegramSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -598,9 +631,24 @@ export const AppShell = () => {
       return;
     }
 
+    const finalClientX =
+      event.type === 'pointercancel'
+        ? (pendingTelegramSidebarClientXRef.current ?? event.clientX)
+        : event.clientX;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (telegramSidebarResizeFrameRef.current !== null) {
+      window.cancelAnimationFrame(telegramSidebarResizeFrameRef.current);
+      telegramSidebarResizeFrameRef.current = null;
+    }
+    pendingTelegramSidebarClientXRef.current = null;
+    previewTelegramSidebarResize(finalClientX);
+    workspaceRef.current?.style.setProperty(
+      '--telegram-sidebar-width',
+      `${telegramSidebarWidthRef.current}px`,
+    );
+    telegramSidebarResizerRef.current?.style.removeProperty('transform');
     telegramSidebarPointerRef.current = null;
     telegramSidebarDragBoundsRef.current = null;
     workspaceRef.current?.classList.remove('telegram-sidebar-resizing');
@@ -774,7 +822,6 @@ export const AppShell = () => {
       captureInWebview: userConfig.keyboard.captureInWebview,
       enableCounts: userConfig.keyboard.enableCounts,
     });
-    setSettingsOpen(false);
   });
 
   const handleTelegramClearCache = useEffectEvent(async () => {
@@ -869,6 +916,7 @@ export const AppShell = () => {
         ) : null}
         {showTelegramChatList && telegramMessagesVisible && !telegramCompactLayout ? (
           <div
+            ref={telegramSidebarResizerRef}
             className="telegram-sidebar-resizer"
             role="separator"
             aria-label="Resize Telegram chat sidebar"
@@ -929,6 +977,8 @@ export const AppShell = () => {
             replyPreview={telegramSnapshot.replyPreview}
             sendBehavior={state.config.userConfig?.keyboard.sendBehavior ?? 'enter'}
             target={telegramComposerTarget}
+            vimCountsEnabled={state.config.userConfig?.keyboard.enableCounts ?? true}
+            vimModeEnabled={state.config.userConfig?.keyboard.enableVimMode ?? true}
             voiceRecorderState={telegramSnapshot.voiceRecorderState}
           />
         ) : null}

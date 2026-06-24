@@ -41,7 +41,10 @@ export const TelegramImagePreviewDialog = ({
   const sender = meta?.sender.trim();
   const timestamp = hasValidTimestamp(meta?.timestamp) ? formatFullDateTime(meta.timestamp) : '';
   const senderAvatarUrl = meta?.senderAvatarUrl?.trim();
-  const imageName = useMemo(() => resolveImageName(imageUrl), [imageUrl]);
+  const imageName = useMemo(
+    () => meta?.imageName?.trim() || resolveImageName(imageUrl),
+    [imageUrl, meta?.imageName],
+  );
   const aspectRatio = naturalSize ? formatAspectRatio(naturalSize.width, naturalSize.height) : '';
   const fileSize = formatImageFileSize(meta?.imageSizeBytes);
   const imageStyle = resolvePreviewImageStyle(zoom, offset, rotation);
@@ -132,6 +135,10 @@ export const TelegramImagePreviewDialog = ({
   const handleModalClick = (event: MouseEvent<HTMLDivElement>): void => {
     const target = event.target as Element;
     if (target.closest?.('[data-image-preview-content]')) {
+      return;
+    }
+
+    if (zoom > 1 && target === previewBodyRef.current) {
       return;
     }
 

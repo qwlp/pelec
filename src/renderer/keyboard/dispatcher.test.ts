@@ -41,6 +41,7 @@ const buildContext = () => {
         activeChatCanSend: true,
         chatListMinimized: false,
         contextMenu: {
+          canEdit: false,
           messageId: null,
           visible: false,
           x: 0,

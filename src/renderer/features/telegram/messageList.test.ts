@@ -1,6 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ChatMessage } from '../../../shared/connectors';
 import { installDom } from '../../test/dom';
-import { syncTelegramMessageListNodes } from './messageList';
+import { replaceTelegramMessageText, syncTelegramMessageListNodes } from './messageList';
+
+describe('telegram message updates', () => {
+  it('replaces the edited message without mutating the existing snapshot', () => {
+    const originalMessage: ChatMessage = {
+      id: 'message-1',
+      sender: 'You',
+      text: 'before',
+      textEntities: [{ offset: 0, length: 6, type: 'bold' }],
+      timestamp: 1,
+    };
+    const messages = [originalMessage];
+
+    const nextMessages = replaceTelegramMessageText(messages, 'message-1', 'after');
+
+    expect(nextMessages).not.toBe(messages);
+    expect(nextMessages[0]).not.toBe(originalMessage);
+    expect(nextMessages[0]).toMatchObject({
+      id: 'message-1',
+      text: 'after',
+      textEntities: undefined,
+    });
+    expect(originalMessage.text).toBe('before');
+  });
+
+  it('reuses the message list when the edited message is not loaded', () => {
+    const messages = [{ id: 'message-1', sender: 'You', text: 'before', timestamp: 1 }];
+
+    expect(replaceTelegramMessageText(messages, 'missing', 'after')).toBe(messages);
+  });
+});
 
 describe('telegram message list sync', () => {
   let cleanupDom: (() => void) | undefined;

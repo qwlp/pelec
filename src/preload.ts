@@ -21,6 +21,8 @@ const api = {
   getConfig: () => ipcRenderer.invoke('app:get-config') as Promise<AppConfig>,
   saveConfig: (config: UserConfig) =>
     ipcRenderer.invoke('app:save-config', config) as Promise<AppConfig>,
+  listInstalledFonts: () =>
+    ipcRenderer.invoke('app:list-installed-fonts') as Promise<string[]>,
   getRuntimeDiagnostics: () =>
     ipcRenderer.invoke('app:get-runtime-diagnostics') as Promise<RuntimeDiagnostics | null>,
   showNotification: (title: string, body: string, silent?: boolean) =>
