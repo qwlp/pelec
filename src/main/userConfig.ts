@@ -168,6 +168,56 @@ delete_message = "d"
 refresh = "r"
 `;
 
+const quoteTomlString = (value: string): string =>
+  `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+
+export const serializeUserConfig = (config: UserConfig): string => `# PELEC user config
+# Managed by the in-app settings panel. Manual edits are also supported.
+
+[telegram]
+ghost_mode = ${String(config.telegram.ghostMode)}
+selectable_message_text = ${String(config.telegram.selectableMessageText)}
+
+[appearance]
+window_padding = ${config.appearance.windowPadding}
+window_border_radius = ${config.appearance.windowBorderRadius}
+font_family = ${quoteTomlString(config.appearance.fontFamily)}
+font_size = ${config.appearance.fontSize}
+background_opacity = ${config.appearance.backgroundOpacity}
+text_opacity = ${config.appearance.textOpacity}
+
+[keyboard]
+show_hints = ${String(config.keyboard.showHints)}
+send_behavior = ${quoteTomlString(config.keyboard.sendBehavior)}
+capture_in_webview = ${String(config.keyboard.captureInWebview)}
+enable_counts = ${String(config.keyboard.enableCounts)}
+
+[shortcuts]
+force_normal_mode = ${quoteTomlString(config.shortcuts.forceNormalMode)}
+open_command_palette = ${quoteTomlString(config.shortcuts.openCommandPalette)}
+open_keyboard_help = ${quoteTomlString(config.shortcuts.openKeyboardHelp)}
+focus_search = ${quoteTomlString(config.shortcuts.focusSearch)}
+next_pane = ${quoteTomlString(config.shortcuts.nextPane)}
+previous_pane = ${quoteTomlString(config.shortcuts.previousPane)}
+telegram_network = ${quoteTomlString(config.shortcuts.telegramNetwork)}
+
+[keymap]
+${Object.entries(config.keyboard.keymap)
+  .map(([key, value]) => {
+    const tomlKey = Object.entries(TOML_KEY_TO_KEYMAP_ACTION).find(([, action]) => action === key)?.[0];
+    return tomlKey && value ? `${tomlKey} = ${quoteTomlString(value)}` : '';
+  })
+  .filter(Boolean)
+  .join('\n')}
+`;
+
+export const saveUserConfig = async (
+  configPath: string,
+  userConfig: UserConfig,
+): Promise<void> => {
+  await writeFile(configPath, serializeUserConfig(userConfig), 'utf8');
+};
+
 const clampNumber = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 

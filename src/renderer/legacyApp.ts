@@ -2311,11 +2311,6 @@ export const bootLegacyApp = async (
       render();
       return;
     }
-    if (!message.outgoing) {
-      statusBar.textContent = 'Only your messages can be edited.';
-      render();
-      return;
-    }
     const originalText = safeText(message.text).trim();
     if (!originalText || message.serviceEvent || message.call || message.poll || message.document || message.hasAudio) {
       statusBar.textContent = 'This message cannot be edited here.';

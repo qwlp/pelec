@@ -1,10 +1,21 @@
-import { startTransition, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
-import type { AppActivity, ShortcutConfig } from '../../shared/types';
+import {
+  startTransition,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import type { AppActivity, ShortcutConfig, UserConfig } from '../../shared/types';
 import { useKeyboardBindings } from '../keyboard/useKeyboardBindings';
 import type { LegacyAppBridgeApi } from '../legacyBridge';
 import { applyUserTheme } from '../lib/theme';
 import type { CommandPaletteItem } from '../features/commandPalette/CommandPalette';
 import { TelegramChatList } from '../features/telegram/TelegramChatList';
+import { AboutDialog, SettingsDialog } from '../features/settings/SettingsDialog';
 import { TelegramComposer, type TelegramMentionSuggestion } from '../features/telegram/TelegramComposer';
 import { TelegramConversationErrorBoundary } from '../features/telegram/TelegramConversationErrorBoundary';
 import { TelegramMessageList } from '../features/telegram/TelegramMessageList';
@@ -20,6 +31,39 @@ import { WebviewHost } from './WebviewHost';
 
 const TELEGRAM_COMPACT_BREAKPOINT_PX = 820;
 const IMAGE_ACTION_TOAST_CLEAR_MS = 2600;
+const TELEGRAM_SIDEBAR_DEFAULT_WIDTH_PX = 340;
+const TELEGRAM_SIDEBAR_MIN_WIDTH_PX = 260;
+const TELEGRAM_CONVERSATION_MIN_WIDTH_PX = 320;
+const TELEGRAM_SIDEBAR_MAX_WIDTH_PX = 640;
+const TELEGRAM_SIDEBAR_STORAGE_KEY = 'pelec.telegramSidebarWidth';
+
+const getTelegramSidebarBounds = (workspaceWidth: number) => ({
+  min: TELEGRAM_SIDEBAR_MIN_WIDTH_PX,
+  max: Math.max(
+    TELEGRAM_SIDEBAR_MIN_WIDTH_PX,
+    Math.min(TELEGRAM_SIDEBAR_MAX_WIDTH_PX, workspaceWidth - TELEGRAM_CONVERSATION_MIN_WIDTH_PX),
+  ),
+});
+
+const clampTelegramSidebarWidth = (width: number, workspaceWidth: number): number => {
+  const bounds = getTelegramSidebarBounds(workspaceWidth);
+  return Math.min(bounds.max, Math.max(bounds.min, width));
+};
+
+const readTelegramSidebarWidth = (): number => {
+  if (typeof window === 'undefined') {
+    return TELEGRAM_SIDEBAR_DEFAULT_WIDTH_PX;
+  }
+
+  try {
+    const storedWidth = Number(window.localStorage.getItem(TELEGRAM_SIDEBAR_STORAGE_KEY));
+    return Number.isFinite(storedWidth) && storedWidth > 0
+      ? storedWidth
+      : TELEGRAM_SIDEBAR_DEFAULT_WIDTH_PX;
+  } catch {
+    return TELEGRAM_SIDEBAR_DEFAULT_WIDTH_PX;
+  }
+};
 
 const buildMentionFallback = (displayName: string): string | null => {
   const normalized = displayName
@@ -130,6 +174,13 @@ export const AppShell = () => {
   const [windowWidth, setWindowWidth] = useState<number>(() =>
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
   );
+  const [telegramSidebarWidth, setTelegramSidebarWidth] = useState(readTelegramSidebarWidth);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const telegramSidebarPointerRef = useRef<number | null>(null);
+  const telegramSidebarWidthRef = useRef(telegramSidebarWidth);
+  const telegramSidebarDragBoundsRef = useRef<{ left: number; width: number } | null>(null);
   const telegramChatListRef = useRef<HTMLElement | null>(null);
   const telegramSearchInputRef = useRef<HTMLInputElement | null>(null);
   const telegramComposerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -167,6 +218,27 @@ export const AppShell = () => {
       window.removeEventListener('resize', handleResize);
     };
   }, []);
+
+  useEffect(() => {
+    if (windowWidth < TELEGRAM_COMPACT_BREAKPOINT_PX) {
+      return;
+    }
+
+    const workspaceWidth = workspaceRef.current?.getBoundingClientRect().width ?? windowWidth;
+    setTelegramSidebarWidth((width) => {
+      const nextWidth = clampTelegramSidebarWidth(width, workspaceWidth);
+      telegramSidebarWidthRef.current = nextWidth;
+      return nextWidth;
+    });
+  }, [windowWidth]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TELEGRAM_SIDEBAR_STORAGE_KEY, String(telegramSidebarWidth));
+    } catch {
+      // Persistence is optional when storage is unavailable.
+    }
+  }, [telegramSidebarWidth]);
 
   useEffect(
     () => () => {
@@ -477,6 +549,89 @@ export const AppShell = () => {
     }
   });
 
+  const resizeTelegramSidebar = (clientX: number): number | null => {
+    const dragBounds = telegramSidebarDragBoundsRef.current;
+    if (!dragBounds || !workspaceRef.current) {
+      return null;
+    }
+
+    const nextWidth = clampTelegramSidebarWidth(
+      clientX - dragBounds.left,
+      dragBounds.width,
+    );
+    telegramSidebarWidthRef.current = nextWidth;
+    workspaceRef.current.style.setProperty('--telegram-sidebar-width', `${nextWidth}px`);
+    return nextWidth;
+  };
+
+  const handleTelegramSidebarPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const workspaceBounds = workspaceRef.current?.getBoundingClientRect();
+    if (!workspaceBounds) {
+      return;
+    }
+
+    telegramSidebarDragBoundsRef.current = {
+      left: workspaceBounds.left,
+      width: workspaceBounds.width,
+    };
+    telegramSidebarPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    workspaceRef.current?.classList.add('telegram-sidebar-resizing');
+    resizeTelegramSidebar(event.clientX);
+  };
+
+  const handleTelegramSidebarPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (telegramSidebarPointerRef.current !== event.pointerId) {
+      return;
+    }
+
+    resizeTelegramSidebar(event.clientX);
+  };
+
+  const finishTelegramSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (telegramSidebarPointerRef.current !== event.pointerId) {
+      return;
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    telegramSidebarPointerRef.current = null;
+    telegramSidebarDragBoundsRef.current = null;
+    workspaceRef.current?.classList.remove('telegram-sidebar-resizing');
+    setTelegramSidebarWidth(telegramSidebarWidthRef.current);
+  };
+
+  const handleTelegramSidebarKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const workspaceWidth = workspaceRef.current?.getBoundingClientRect().width ?? windowWidth;
+    const bounds = getTelegramSidebarBounds(workspaceWidth);
+    let nextWidth: number | null = null;
+
+    if (event.key === 'ArrowLeft') {
+      nextWidth = telegramSidebarWidthRef.current - 16;
+    } else if (event.key === 'ArrowRight') {
+      nextWidth = telegramSidebarWidthRef.current + 16;
+    } else if (event.key === 'Home') {
+      nextWidth = bounds.min;
+    } else if (event.key === 'End') {
+      nextWidth = bounds.max;
+    }
+
+    if (nextWidth === null) {
+      return;
+    }
+
+    event.preventDefault();
+    const clampedWidth = clampTelegramSidebarWidth(nextWidth, workspaceWidth);
+    telegramSidebarWidthRef.current = clampedWidth;
+    setTelegramSidebarWidth(clampedWidth);
+  };
+
   const handleEscape = useEffectEvent((): boolean => {
     if (
       state.appShell.activeNetwork !== 'telegram' ||
@@ -609,6 +764,19 @@ export const AppShell = () => {
     await window.pelec.openPath(configPath);
   });
 
+  const handleSaveSettings = useEffectEvent(async (userConfig: UserConfig) => {
+    const appConfig = await window.pelec.saveConfig(userConfig);
+    applyUserTheme(userConfig);
+    dispatch(configLoaded(appConfig, state.config.runtimeDiagnostics));
+    dispatch({
+      type: 'keyboard/config',
+      showHints: userConfig.keyboard.showHints,
+      captureInWebview: userConfig.keyboard.captureInWebview,
+      enableCounts: userConfig.keyboard.enableCounts,
+    });
+    setSettingsOpen(false);
+  });
+
   const handleTelegramClearCache = useEffectEvent(async () => {
     await window.pelec.clearAppCache();
     legacyApi?.refresh();
@@ -661,6 +829,7 @@ export const AppShell = () => {
   return (
     <div className="modern-app-shell">
       <div
+        ref={workspaceRef}
         className={`modern-workspace${
           showTelegramChatList ? ' react-telegram-chat-list' : ''
         }${showTelegramComposer ? ' react-telegram-composer' : ''}${
@@ -668,6 +837,7 @@ export const AppShell = () => {
         }${telegramCompactShowChats ? ' telegram-compact-show-chats' : ''}${
           telegramCompactShowMessages ? ' telegram-compact-show-messages' : ''
         }`}
+        style={{ '--telegram-sidebar-width': `${telegramSidebarWidth}px` } as CSSProperties}
       >
         <WebviewHost>
           <LegacyWorkspaceAdapter bridge={bridge} />
@@ -684,7 +854,9 @@ export const AppShell = () => {
             onClearSearch={handleTelegramClearSearch}
             onLogin={() => void handleTelegramLogin()}
             onLogout={() => void handleTelegramLogout()}
+            onOpenAbout={() => setAboutOpen(true)}
             onOpenConfig={() => void handleTelegramOpenConfig()}
+            onOpenSettings={() => setSettingsOpen(true)}
             onRefresh={() => void handleTelegramRefresh()}
             onSearchQueryChange={(query) => legacyApi?.setTelegramSearchQuery(query)}
             onSelectChat={(chatId) => handleTelegramChatSelect(chatId)}
@@ -693,6 +865,23 @@ export const AppShell = () => {
             selectedChatId={
               state.appShell.activePane === 'telegram-chats' ? telegramSnapshot.selectedChatId : null
             }
+          />
+        ) : null}
+        {showTelegramChatList && telegramMessagesVisible && !telegramCompactLayout ? (
+          <div
+            className="telegram-sidebar-resizer"
+            role="separator"
+            aria-label="Resize Telegram chat sidebar"
+            aria-orientation="vertical"
+            aria-valuemin={getTelegramSidebarBounds(windowWidth).min}
+            aria-valuemax={getTelegramSidebarBounds(windowWidth).max}
+            aria-valuenow={Math.round(telegramSidebarWidth)}
+            tabIndex={0}
+            onKeyDown={handleTelegramSidebarKeyDown}
+            onPointerCancel={finishTelegramSidebarResize}
+            onPointerDown={handleTelegramSidebarPointerDown}
+            onPointerMove={handleTelegramSidebarPointerMove}
+            onPointerUp={finishTelegramSidebarResize}
           />
         ) : null}
         {state.appShell.activeNetwork === 'telegram' && telegramSnapshot && !telegramCompactShowChats ? (
@@ -744,6 +933,20 @@ export const AppShell = () => {
           />
         ) : null}
       </div>
+      {settingsOpen && state.config.userConfig ? (
+        <SettingsDialog
+          config={state.config.userConfig}
+          onClose={() => setSettingsOpen(false)}
+          onOpenConfigFile={() => void handleTelegramOpenConfig()}
+          onSave={handleSaveSettings}
+        />
+      ) : null}
+      {aboutOpen ? (
+        <AboutDialog
+          version={state.config.appConfig?.version ?? '1.0.0'}
+          onClose={() => setAboutOpen(false)}
+        />
+      ) : null}
       <ModalLayer
         authPrompt={state.legacy.snapshot?.authPrompt ?? null}
         commandItems={commandItems}

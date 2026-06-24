@@ -15,10 +15,12 @@ import type {
   TelegramStickerSetSource,
   TelegramStickerSetSummary,
 } from './shared/connectors';
-import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from './shared/types';
+import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics, UserConfig } from './shared/types';
 
 const api = {
   getConfig: () => ipcRenderer.invoke('app:get-config') as Promise<AppConfig>,
+  saveConfig: (config: UserConfig) =>
+    ipcRenderer.invoke('app:save-config', config) as Promise<AppConfig>,
   getRuntimeDiagnostics: () =>
     ipcRenderer.invoke('app:get-runtime-diagnostics') as Promise<RuntimeDiagnostics | null>,
   showNotification: (title: string, body: string, silent?: boolean) =>

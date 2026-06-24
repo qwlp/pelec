@@ -48,6 +48,9 @@ export const bootstrapApp = (): void => {
     getAppConfig: () => appConfig,
     getConnectorManager: () => connectorManager,
     getMainWindow: () => mainWindow,
+    setAppConfig: (config) => {
+      appConfig = config;
+    },
     emitAppActivity,
   });
 

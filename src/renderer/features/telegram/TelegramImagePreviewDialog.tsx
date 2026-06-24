@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent,
   type ReactNode,
   type PointerEvent,
   type WheelEvent,
@@ -128,9 +129,18 @@ export const TelegramImagePreviewDialog = ({
     setDragStart(null);
   };
 
+  const handleModalClick = (event: MouseEvent<HTMLDivElement>): void => {
+    const target = event.target as Element;
+    if (target.closest?.('[data-image-preview-content]')) {
+      return;
+    }
+
+    onClose();
+  };
+
   return (
-    <div className="qr-modal" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="telegram-image-modal-details">
+    <div className="qr-modal" onClick={handleModalClick}>
+      <div className="telegram-image-modal-details" data-image-preview-content>
         <div className="telegram-image-modal-details-title">{imageName}</div>
         <div className="telegram-image-modal-details-row">
           <span>Resolution</span>
@@ -148,7 +158,7 @@ export const TelegramImagePreviewDialog = ({
         ) : null}
       </div>
       {sender || timestamp ? (
-        <div className="telegram-image-modal-meta">
+        <div className="telegram-image-modal-meta" data-image-preview-content>
           {senderAvatarUrl ? (
             <img
               className="telegram-image-modal-avatar"
@@ -169,7 +179,7 @@ export const TelegramImagePreviewDialog = ({
       ) : null}
       <div className="telegram-image-modal-card">
         <header className="telegram-image-modal-header">
-          <div className="telegram-image-modal-actions">
+          <div className="telegram-image-modal-actions" data-image-preview-content>
             <button
               type="button"
               className="ghost-button"
@@ -230,6 +240,7 @@ export const TelegramImagePreviewDialog = ({
         >
           <img
             className="telegram-image-preview"
+            data-image-preview-content
             src={imageUrl}
             alt="Telegram image preview"
             style={imageStyle}

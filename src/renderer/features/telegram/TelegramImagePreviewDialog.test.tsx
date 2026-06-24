@@ -39,6 +39,35 @@ describe('TelegramImagePreviewDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('closes when clicking outside the image and keeps preview content interactive', () => {
+    const onClose = vi.fn();
+    const view = render(
+      <TelegramImagePreviewDialog
+        imageUrl="data:image/png;base64,abc"
+        meta={{ sender: 'Alice', timestamp: 1_750_000_000 }}
+        onClose={onClose}
+        onCopy={vi.fn()}
+        onDownload={vi.fn()}
+      />,
+    );
+    const modal = view.container.querySelector('.qr-modal');
+    const previewBody = view.container.querySelector('.telegram-image-modal-body');
+
+    expect(modal).not.toBeNull();
+    expect(previewBody).not.toBeNull();
+
+    fireEvent.click(view.getByAltText('Telegram image preview'));
+    fireEvent.click(view.getByText('Alice'));
+    fireEvent.click(view.getByRole('button', { name: 'Copy' }));
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(previewBody as Element);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(modal as Element);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it('rotates the preview with buttons and the r key', () => {
     const view = render(
       <TelegramImagePreviewDialog

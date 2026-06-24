@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
+import { Download, Image as ImageIcon, LoaderCircle } from 'lucide-react';
 import type { ChatMessage, ChatServiceEvent } from '../../../shared/connectors';
 import type { LegacyAppBridgeApi, LegacyRenderableTelegramMessage } from '../../legacyBridge';
 import { describeTelegramCall } from './calls';
@@ -1459,11 +1460,18 @@ function TelegramDeferredImage({
 
   return (
     <div className="telegram-deferred-image">
-      <strong>Large image</strong>
-      <span>{formatFileSize(message.imageSizeBytes) || 'Over 10 MB'}</span>
+      <div className="telegram-deferred-image-icon" aria-hidden="true">
+        <ImageIcon size={22} strokeWidth={1.7} />
+      </div>
+      <div className="telegram-deferred-image-copy">
+        <strong>Image</strong>
+        <span>{formatFileSize(message.imageSizeBytes) || '10+ MB'}</span>
+      </div>
       <button
         type="button"
+        className="telegram-deferred-image-action"
         disabled={loading || !activeChatId}
+        aria-busy={loading}
         onClick={async (event) => {
           event.stopPropagation();
           if (!activeChatId || loading) {
@@ -1488,7 +1496,12 @@ function TelegramDeferredImage({
           }
         }}
       >
-        {loading ? 'Downloading…' : 'Download and view'}
+        {loading ? (
+          <LoaderCircle className="telegram-deferred-image-spinner" size={15} aria-hidden="true" />
+        ) : (
+          <Download size={15} aria-hidden="true" />
+        )}
+        <span>{loading ? 'Loading…' : 'View'}</span>
       </button>
       {error ? <span className="telegram-deferred-image-error">{error}</span> : null}
     </div>
@@ -1532,7 +1545,9 @@ const TelegramMessageRow = memo(
       previousMessage.outgoing === primaryMessage.outgoing;
 
     const suppressImageFallbackText =
-      !shouldCollapseAlbum && !!primaryMessage.imageUrl && isTelegramImageFallbackText(primaryMessage);
+      !shouldCollapseAlbum &&
+      !!(primaryMessage.imageUrl || primaryMessage.imageDeferred) &&
+      isTelegramImageFallbackText(primaryMessage, true);
     const suppressVideoFallbackText =
       !shouldCollapseAlbum &&
       !!(primaryMessage.videoUrl || primaryMessage.hasVideo) &&

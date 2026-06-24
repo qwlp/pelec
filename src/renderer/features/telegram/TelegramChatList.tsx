@@ -13,7 +13,9 @@ interface TelegramChatListProps {
   onClearSearch?(): void;
   onLogin?(): void | Promise<void>;
   onLogout?(): void | Promise<void>;
+  onOpenAbout?(): void;
   onOpenConfig?(): void | Promise<void>;
+  onOpenSettings?(): void;
   onRefresh?(): void | Promise<void>;
   onSearchQueryChange(query: string): void;
   onSelectChat(chatId: string): void;
@@ -128,14 +130,18 @@ const TelegramChatSettingsMenu = ({
   configPath,
   onClearCache,
   onClearSearch,
+  onOpenAbout,
   onOpenConfig,
+  onOpenSettings,
   onRefresh,
   searchQuery,
 }: {
   configPath?: string | null;
   onClearCache?(): void | Promise<void>;
   onClearSearch?(): void;
+  onOpenAbout?(): void;
   onOpenConfig?(): void | Promise<void>;
+  onOpenSettings?(): void;
   onRefresh?(): void | Promise<void>;
   searchQuery: string;
 }) => {
@@ -229,6 +235,16 @@ const TelegramChatSettingsMenu = ({
           <div className="telegram-settings-meta">{formatCacheSizeLabel(cacheSizeBytes)}</div>
           <button
             type="button"
+            className="telegram-settings-item primary"
+            onClick={() => {
+              onOpenSettings?.();
+              setOpen(false);
+            }}
+          >
+            Settings
+          </button>
+          <button
+            type="button"
             className="telegram-settings-item"
             disabled={!!busyAction}
             onClick={() => void runAction('clear-cache', onClearCache)}
@@ -261,6 +277,16 @@ const TelegramChatSettingsMenu = ({
             onClick={() => void runAction('open-config', onOpenConfig)}
           >
             Open Config
+          </button>
+          <button
+            type="button"
+            className="telegram-settings-item"
+            onClick={() => {
+              onOpenAbout?.();
+              setOpen(false);
+            }}
+          >
+            About
           </button>
           {configPath ? <div className="telegram-settings-path">{configPath}</div> : null}
         </div>
@@ -560,7 +586,9 @@ export const TelegramChatList = ({
   onClearSearch,
   onLogin,
   onLogout,
+  onOpenAbout,
   onOpenConfig,
+  onOpenSettings,
   onRefresh,
   onSearchQueryChange,
   onSelectChat,
@@ -675,7 +703,9 @@ export const TelegramChatList = ({
           configPath={configPath}
           onClearCache={onClearCache}
           onClearSearch={onClearSearch}
+          onOpenAbout={onOpenAbout}
           onOpenConfig={onOpenConfig}
+          onOpenSettings={onOpenSettings}
           onRefresh={onRefresh}
           searchQuery={searchQuery}
         />

@@ -27,11 +27,13 @@ import {
 } from './documents';
 import { PELEC_MEDIA_SCHEME } from './config';
 import { showLinuxNotification } from './platform';
+import { saveUserConfig } from './userConfig';
 
 type IpcRegistrationContext = {
   getAppConfig: () => AppConfig | null;
   getConnectorManager: () => ConnectorManager | null;
   getMainWindow: () => BrowserWindow | null;
+  setAppConfig: (config: AppConfig) => void;
   emitAppActivity: (activity: AppActivity) => void;
 };
 
@@ -68,6 +70,7 @@ export const registerIpcHandlers = ({
   getAppConfig,
   getConnectorManager,
   getMainWindow,
+  setAppConfig,
   emitAppActivity,
 }: IpcRegistrationContext): void => {
   ipcMain.handle('app:get-config', async (): Promise<AppConfig> => {
@@ -76,6 +79,17 @@ export const registerIpcHandlers = ({
       throw new Error('App config not ready');
     }
     return appConfig;
+  });
+
+  ipcMain.handle('app:save-config', async (_event, userConfig: AppConfig['userConfig']) => {
+    const current = getAppConfig();
+    if (!current) {
+      throw new Error('App config not ready');
+    }
+    await saveUserConfig(current.configPath, userConfig);
+    const next = { ...current, shortcuts: userConfig.shortcuts, userConfig };
+    setAppConfig(next);
+    return next;
   });
 
   ipcMain.handle('app:get-runtime-diagnostics', async (): Promise<RuntimeDiagnostics | null> => {
