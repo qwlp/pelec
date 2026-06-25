@@ -1,5 +1,5 @@
-import { app, BrowserWindow, globalShortcut } from 'electron';
-import type { ConnectorUpdateEvent } from '../shared/connectors';
+import { app, BrowserWindow, globalShortcut, Notification } from 'electron';
+import type { ConnectorUpdateEvent, TelegramCallUpdate } from '../shared/connectors';
 import type { AppConfig } from '../shared/types';
 import { emitAppActivity } from './activity';
 import { buildAppConfig } from './config';
@@ -16,6 +16,7 @@ export const bootstrapApp = (): void => {
   let mainWindow: BrowserWindow | null = null;
   let appShutdownStarted = false;
   let appConfig: AppConfig | null = null;
+  const notifiedCallSessions = new Set<string>();
 
   const activateNetwork = (network: AppConfig['networks'][number]['id']): void => {
     mainWindow?.webContents.send('app:activate-network', network);
@@ -70,6 +71,38 @@ export const bootstrapApp = (): void => {
       connectorManager.onConnectorUpdate((event: ConnectorUpdateEvent) => {
         for (const window of BrowserWindow.getAllWindows()) {
           window.webContents.send('connector:update', event);
+        }
+      });
+      connectorManager.onTelegramCallUpdate((event: TelegramCallUpdate) => {
+        if (event.kind === 'terminal') {
+          notifiedCallSessions.delete(event.sessionId);
+        }
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.webContents.send('telegram-call:update', event);
+          if (
+            event.kind === 'session' &&
+            event.session?.direction === 'incoming' &&
+            event.session.phase === 'ringing'
+          ) {
+            window.show();
+            window.focus();
+            if (
+              Notification.isSupported() &&
+              !notifiedCallSessions.has(event.session.sessionId)
+            ) {
+              notifiedCallSessions.add(event.session.sessionId);
+              const notification = new Notification({
+                title: `Incoming Telegram ${event.session.isVideo ? 'video' : 'voice'} call`,
+                body: event.session.peerLabel,
+                silent: false,
+              });
+              notification.on('click', () => {
+                window.show();
+                window.focus();
+              });
+              notification.show();
+            }
+          }
         }
       });
       void connectorManager.initAll();

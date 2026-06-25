@@ -19,6 +19,10 @@ import type {
   ResolvedDocument,
   TelegramPickerItem,
   TelegramPickerQuery,
+  TelegramCallDevice,
+  TelegramCallState,
+  TelegramCallUpdate,
+  TelegramCallVideoFrame,
   TelegramStickerSetSource,
   TelegramStickerSetSummary,
 } from '../../shared/connectors';
@@ -77,6 +81,7 @@ import {
   resolveUploadFileName,
   TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES,
 } from './telegram/uploads';
+import { TelegramCallService } from './telegram/callService';
 import type {
   AuthorizationState,
   TdBasicGroup,
@@ -131,6 +136,11 @@ export class TelegramConnector implements Connector {
   private updateListeners = new Set<(event: ConnectorUpdateEvent) => void>();
   private tdlibInitPromise: Promise<void> | null = null;
   private tdlibRecoveryPromise: Promise<void> | null = null;
+  private readonly callService: TelegramCallService;
+  private readonly callCapabilityCache = new Map<
+    number,
+    { callable: boolean; supportsVideo: boolean }
+  >();
 
   constructor(
     private readonly network: NetworkDefinition,
@@ -151,6 +161,24 @@ export class TelegramConnector implements Connector {
       details: 'Preparing Telegram TDLib connector.',
       qrLink: null,
     };
+    this.callService = new TelegramCallService({
+      config: this.userConfig.calls,
+      getClient: () => this.tdClient,
+      invoke: async <T>(request: Record<string, unknown>, label: string) => {
+        const client = this.tdClient;
+        if (!client) {
+          throw new Error('TDLib client is unavailable.');
+        }
+        return this.invokeWithTimeout<T>(client, request, label);
+      },
+      resolveUserLabel: async (userId) => {
+        const client = this.tdClient;
+        if (!client) {
+          return `User ${userId}`;
+        }
+        return this.resolveUserLabel(client, userId);
+      },
+    });
   }
 
   async init(): Promise<void> {
@@ -172,6 +200,7 @@ export class TelegramConnector implements Connector {
     }
     const tempDirs = [...this.uploadTempCleanupTimers.keys()];
     this.uploadTempCleanupTimers.clear();
+    await this.callService.shutdown();
     await Promise.allSettled(
       tempDirs.map(async (dir) => rm(dir, { recursive: true, force: true })),
     );
@@ -211,6 +240,68 @@ export class TelegramConnector implements Connector {
     return () => {
       this.updateListeners.delete(handler);
     };
+  }
+
+  onTelegramCallUpdate(handler: (event: TelegramCallUpdate) => void): () => void {
+    return this.callService.onUpdate(handler);
+  }
+
+  onTelegramCallVideoFrame(handler: (frame: TelegramCallVideoFrame) => void): () => void {
+    return this.callService.onVideoFrame(handler);
+  }
+
+  async getTelegramCallState(): Promise<TelegramCallState> {
+    return this.callService.getState();
+  }
+
+  async startTelegramCall(chatId: string, isVideo: boolean): Promise<TelegramCallState> {
+    return this.callService.startPrivateCall(chatId, isVideo);
+  }
+
+  async answerTelegramCall(isVideo: boolean): Promise<TelegramCallState> {
+    return this.callService.answerPrivateCall(isVideo);
+  }
+
+  async declineTelegramCall(): Promise<TelegramCallState> {
+    return this.callService.decline();
+  }
+
+  async hangUpTelegramCall(): Promise<TelegramCallState> {
+    return this.callService.hangUp();
+  }
+
+  async joinTelegramGroupCall(chatId: string, isVideo: boolean): Promise<TelegramCallState> {
+    return this.callService.joinGroupCall(chatId, isVideo);
+  }
+
+  async leaveTelegramGroupCall(): Promise<TelegramCallState> {
+    return this.callService.leaveGroupCall();
+  }
+
+  async setTelegramCallMuted(muted: boolean): Promise<TelegramCallState> {
+    return this.callService.setMuted(muted);
+  }
+
+  async setTelegramCallVideoEnabled(enabled: boolean): Promise<TelegramCallState> {
+    return this.callService.setVideoEnabled(enabled);
+  }
+
+  async setTelegramCallDevice(
+    kind: TelegramCallDevice['kind'],
+    deviceId: string,
+  ): Promise<TelegramCallState> {
+    return this.callService.setDevice(kind, deviceId);
+  }
+
+  async setTelegramParticipantVolume(
+    participantId: string,
+    volume: number,
+  ): Promise<TelegramCallState> {
+    return this.callService.setParticipantVolume(participantId, volume);
+  }
+
+  async setTelegramVisibleVideoEndpoints(endpointIds: string[]): Promise<void> {
+    this.callService.setVisibleVideoEndpoints(endpointIds);
   }
 
   async startAuth(): Promise<AuthStartResult> {
@@ -295,6 +386,7 @@ export class TelegramConnector implements Connector {
   }
 
   async resetAuth(): Promise<ConnectorStatus> {
+    await this.callService.shutdown();
     if (!this.tdClient) {
       this.status.authState = 'unauthenticated';
       this.status.details = 'Telegram auth was reset. Start auth again to log in.';
@@ -500,6 +592,7 @@ export class TelegramConnector implements Connector {
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
             isMuted,
             canSend: await this.canSendToChat(client, chat),
+            telegramCallCapabilities: await this.resolveCallCapabilities(client, chat),
           } as ChatSummary;
         }),
       );
@@ -1682,6 +1775,7 @@ export class TelegramConnector implements Connector {
     }
 
     if (state._ === 'authorizationStateClosed') {
+      void this.callService.shutdown();
       this.status.authState = 'unauthenticated';
       this.status.details = 'TDLib authorization state is closed. Reinitializing Telegram...';
       this.status.lastError = undefined;
@@ -2724,6 +2818,26 @@ export class TelegramConnector implements Connector {
           return;
         }
 
+        if (update._ === 'updateCall' && update.call) {
+          void this.callService.handleTdCall(update.call);
+          return;
+        }
+
+        if (update._ === 'updateNewCallSignalingData') {
+          this.callService.handleSignalingData(update.call_id, update.data);
+          return;
+        }
+
+        if (update._ === 'updateGroupCall' && update.group_call) {
+          void this.callService.handleGroupCall(update.group_call);
+          return;
+        }
+
+        if (update._ === 'updateGroupCallParticipant' && update.participant) {
+          void this.callService.handleGroupParticipant(update.participant);
+          return;
+        }
+
         if (update._ === 'updateNewMessage' || update._ === 'updateMessageContent') {
           this.emitUpdate({
             network: this.network.id,
@@ -2755,7 +2869,8 @@ export class TelegramConnector implements Connector {
           update._ === 'updateChatTitle' ||
           update._ === 'updateChatPhoto' ||
           update._ === 'updateChatReadInbox' ||
-          update._ === 'updateChatDraftMessage'
+          update._ === 'updateChatDraftMessage' ||
+          update._ === 'updateChatVideoChat'
         ) {
           this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
         }
@@ -2954,6 +3069,58 @@ export class TelegramConnector implements Connector {
     }
 
     return true;
+  }
+
+  private async resolveCallCapabilities(
+    client: TdClient,
+    chat: TdChat,
+  ): Promise<ChatSummary['telegramCallCapabilities']> {
+    const groupCallId = chat.video_chat?.group_call_id;
+    if (groupCallId && this.userConfig.calls.group) {
+      return {
+        callable: false,
+        supportsVideo: false,
+        activeGroupCallId: groupCallId,
+      };
+    }
+
+    const userId = chat.type?._ === 'chatTypePrivate' ? chat.type.user_id : undefined;
+    if (!userId || !this.userConfig.calls.privateVoice) {
+      return {
+        callable: false,
+        supportsVideo: false,
+      };
+    }
+
+    const cached = this.callCapabilityCache.get(userId);
+    if (cached) {
+      return { ...cached };
+    }
+
+    try {
+      const fullInfo = await this.invokeWithTimeout<{
+        can_be_called?: boolean;
+        supports_video_calls?: boolean;
+        has_private_calls?: boolean;
+      }>(
+        client,
+        { _: 'getUserFullInfo', user_id: userId },
+        'getUserFullInfo for call capabilities',
+      );
+      const capabilities = {
+        callable: Boolean(fullInfo.can_be_called && !fullInfo.has_private_calls),
+        supportsVideo: Boolean(
+          this.userConfig.calls.privateVideo && fullInfo.supports_video_calls,
+        ),
+      };
+      this.callCapabilityCache.set(userId, capabilities);
+      return { ...capabilities };
+    } catch {
+      return {
+        callable: false,
+        supportsVideo: false,
+      };
+    }
   }
 
   private canSendForMemberStatus(

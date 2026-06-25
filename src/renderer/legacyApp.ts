@@ -1347,7 +1347,10 @@ export const bootLegacyApp = async (
       <section id="telegram-chat-list" class="telegram-chat-list"></section>
     </aside>
     <section class="telegram-chat-pane">
-      <header id="telegram-chat-title" class="telegram-chat-title">Telegram</header>
+      <header class="telegram-chat-title">
+        <span id="telegram-chat-title">Telegram</span>
+        <div id="telegram-call-actions-root" class="telegram-call-actions-root"></div>
+      </header>
       <div id="telegram-message-list" class="telegram-message-list">
         <div id="telegram-message-legacy-root" class="telegram-message-root"></div>
         <div id="telegram-message-react-root" class="telegram-message-root"></div>
@@ -2998,7 +3001,13 @@ export const bootLegacyApp = async (
         a[i].unreadCount !== b[i].unreadCount ||
         a[i].avatarUrl !== b[i].avatarUrl ||
         a[i].isMuted !== b[i].isMuted ||
-        a[i].canSend !== b[i].canSend
+        a[i].canSend !== b[i].canSend ||
+        a[i].telegramCallCapabilities?.callable !==
+          b[i].telegramCallCapabilities?.callable ||
+        a[i].telegramCallCapabilities?.supportsVideo !==
+          b[i].telegramCallCapabilities?.supportsVideo ||
+        a[i].telegramCallCapabilities?.activeGroupCallId !==
+          b[i].telegramCallCapabilities?.activeGroupCallId
       ) {
         return false;
       }

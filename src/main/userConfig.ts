@@ -12,6 +12,9 @@ type RawUserConfig = {
   telegram?: {
     ghostMode?: unknown;
     selectableMessageText?: unknown;
+    privateVoiceCalls?: unknown;
+    privateVideoCalls?: unknown;
+    groupCalls?: unknown;
   };
   appearance?: {
     windowPadding?: unknown;
@@ -91,6 +94,11 @@ export const DEFAULT_USER_CONFIG: UserConfig = {
   telegram: {
     ghostMode: false,
     selectableMessageText: false,
+    calls: {
+      privateVoice: false,
+      privateVideo: false,
+      group: false,
+    },
   },
   appearance: {
     windowPadding: 12,
@@ -127,6 +135,11 @@ ghost_mode = false
 
 # When true, message text can be selected and copied with the mouse.
 selectable_message_text = false
+
+# Experimental Telegram calling features. The native call engine must be installed.
+private_voice_calls = false
+private_video_calls = false
+group_calls = false
 
 [appearance]
 # Padding around the main app frame in pixels.
@@ -180,6 +193,9 @@ export const serializeUserConfig = (config: UserConfig): string => `# PELEC user
 [telegram]
 ghost_mode = ${String(config.telegram.ghostMode)}
 selectable_message_text = ${String(config.telegram.selectableMessageText)}
+private_voice_calls = ${String(config.telegram.calls.privateVoice)}
+private_video_calls = ${String(config.telegram.calls.privateVideo)}
+group_calls = ${String(config.telegram.calls.group)}
 
 [appearance]
 window_padding = ${config.appearance.windowPadding}
@@ -319,6 +335,12 @@ const parseUserConfigToml = (source: string): ParsedUserConfig => {
         rawConfig.telegram.ghostMode = value;
       } else if (key === 'selectable_message_text') {
         rawConfig.telegram.selectableMessageText = value;
+      } else if (key === 'private_voice_calls') {
+        rawConfig.telegram.privateVoiceCalls = value;
+      } else if (key === 'private_video_calls') {
+        rawConfig.telegram.privateVideoCalls = value;
+      } else if (key === 'group_calls') {
+        rawConfig.telegram.groupCalls = value;
       } else {
         warnings.push(`Ignoring unknown telegram key "${key}" on line ${lineIndex + 1}.`);
       }
@@ -609,6 +631,26 @@ const resolveUserConfig = (rawConfig: RawUserConfig, warnings: string[]): UserCo
         'telegram.selectable_message_text',
         warnings,
       ),
+      calls: {
+        privateVoice: coerceBoolean(
+          rawConfig.telegram?.privateVoiceCalls,
+          DEFAULT_USER_CONFIG.telegram.calls.privateVoice,
+          'telegram.private_voice_calls',
+          warnings,
+        ),
+        privateVideo: coerceBoolean(
+          rawConfig.telegram?.privateVideoCalls,
+          DEFAULT_USER_CONFIG.telegram.calls.privateVideo,
+          'telegram.private_video_calls',
+          warnings,
+        ),
+        group: coerceBoolean(
+          rawConfig.telegram?.groupCalls,
+          DEFAULT_USER_CONFIG.telegram.calls.group,
+          'telegram.group_calls',
+          warnings,
+        ),
+      },
     },
     appearance: {
       windowPadding,

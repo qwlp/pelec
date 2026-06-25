@@ -26,6 +26,18 @@ describe('user config Vim mode setting', () => {
     expect(serializeUserConfig(config)).toContain('enable_vim_mode = false');
   });
 
+  it('keeps experimental Telegram call flags disabled by default', () => {
+    expect(DEFAULT_USER_CONFIG.telegram.calls).toEqual({
+      privateVoice: false,
+      privateVideo: false,
+      group: false,
+    });
+    const serialized = serializeUserConfig(DEFAULT_USER_CONFIG);
+    expect(serialized).toContain('private_voice_calls = false');
+    expect(serialized).toContain('private_video_calls = false');
+    expect(serialized).toContain('group_calls = false');
+  });
+
   it('loads the composer Vim mode toggle and defaults existing configs to enabled', async () => {
     const userDataPath = await mkdtemp(path.join(os.tmpdir(), 'pelec-user-config-'));
     temporaryDirectories.push(userDataPath);

@@ -18,6 +18,12 @@ export type AuthorizationUpdate = {
 export type TdUpdateWithChatContext = AuthorizationUpdate & {
   chat_id?: number;
   message?: { chat_id?: number };
+  call?: TdCall;
+  call_id?: number;
+  data?: string;
+  group_call?: TdGroupCall;
+  group_call_id?: number;
+  participant?: TdGroupCallParticipant;
 };
 
 export type TdMessage = {
@@ -63,6 +69,7 @@ export type TdChat = {
   title?: string;
   type?: {
     _: string;
+    user_id?: number;
     basic_group_id?: number;
     supergroup_id?: number;
     is_channel?: boolean;
@@ -81,6 +88,86 @@ export type TdChat = {
     use_default_mute_for?: boolean;
     mute_for?: number;
   };
+  video_chat?: {
+    group_call_id?: number;
+    has_participants?: boolean;
+  };
+};
+
+export type TdCallProtocol = {
+  _: 'callProtocol';
+  udp_p2p?: boolean;
+  udp_reflector?: boolean;
+  min_layer?: number;
+  max_layer?: number;
+  library_versions?: string[];
+};
+
+export type TdCallState =
+  | { _: 'callStatePending'; is_created?: boolean; is_received?: boolean }
+  | { _: 'callStateExchangingKeys' }
+  | {
+      _: 'callStateReady';
+      protocol?: TdCallProtocol;
+      servers?: unknown[];
+      config?: string;
+      encryption_key?: string;
+      emojis?: string[];
+      allow_p2p?: boolean;
+      custom_parameters?: string;
+    }
+  | { _: 'callStateHangingUp' }
+  | {
+      _: 'callStateDiscarded';
+      reason?: { _?: string };
+      need_rating?: boolean;
+      need_debug_information?: boolean;
+      need_log?: boolean;
+    }
+  | { _: 'callStateError'; error?: { code?: number; message?: string } };
+
+export type TdCall = {
+  id?: number;
+  unique_id?: string;
+  user_id?: number;
+  is_outgoing?: boolean;
+  is_video?: boolean;
+  state?: TdCallState;
+};
+
+export type TdGroupCallParticipant = {
+  participant_id?: { _?: string; user_id?: number; chat_id?: number };
+  audio_source_id?: number;
+  is_current_user?: boolean;
+  is_speaking?: boolean;
+  is_muted_for_all_users?: boolean;
+  is_muted_for_current_user?: boolean;
+  volume_level?: number;
+  order?: string;
+  video_info?: {
+    endpoint_id?: string;
+    is_paused?: boolean;
+    source_groups?: Array<{ semantics?: string; source_ids?: number[] }>;
+  };
+  screen_sharing_video_info?: {
+    endpoint_id?: string;
+    is_paused?: boolean;
+    source_groups?: Array<{ semantics?: string; source_ids?: number[] }>;
+  };
+};
+
+export type TdGroupCall = {
+  id?: number;
+  title?: string;
+  is_active?: boolean;
+  is_joined?: boolean;
+  need_rejoin?: boolean;
+  can_be_managed?: boolean;
+  participant_count?: number;
+  loaded_all_participants?: boolean;
+  is_my_video_enabled?: boolean;
+  is_my_video_paused?: boolean;
+  can_enable_video?: boolean;
 };
 
 export type TdBasicGroup = {

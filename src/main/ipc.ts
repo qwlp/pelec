@@ -3,6 +3,7 @@ import {
   clipboard,
   ipcMain,
   nativeImage,
+  MessageChannelMain,
   Notification,
   shell,
   type BrowserWindow,
@@ -16,6 +17,8 @@ import type {
   OutgoingAttachmentDocument,
   TelegramPickerItem,
   TelegramPickerQuery,
+  TelegramCallDevice,
+  TelegramCallVideoFrame,
   TelegramStickerSetSource,
 } from '../shared/connectors';
 import type { AppActivity, AppConfig, NetworkId, RuntimeDiagnostics } from '../shared/types';
@@ -74,6 +77,58 @@ export const registerIpcHandlers = ({
   setAppConfig,
   emitAppActivity,
 }: IpcRegistrationContext): void => {
+  ipcMain.on('telegram-call:open-video-channel', (event, requestId: string) => {
+    const manager = getConnectorManager();
+    if (!manager) {
+      return;
+    }
+    const { port1, port2 } = new MessageChannelMain();
+    let inFlight = false;
+    let latestFrame: TelegramCallVideoFrame | null = null;
+
+    const sendFrame = (frame: TelegramCallVideoFrame) => {
+      const data = frame.data.buffer.slice(
+        frame.data.byteOffset,
+        frame.data.byteOffset + frame.data.byteLength,
+      );
+      inFlight = true;
+      port1.postMessage({
+        endpointId: frame.endpointId,
+        width: frame.width,
+        height: frame.height,
+        timestamp: frame.timestamp,
+        data,
+      });
+    };
+
+    const unsubscribe = manager.onTelegramCallVideoFrame((frame) => {
+      if (inFlight) {
+        latestFrame = frame;
+        return;
+      }
+      sendFrame(frame);
+    });
+
+    port1.on('message', ({ data }) => {
+      if (data !== 'ack') {
+        return;
+      }
+      inFlight = false;
+      if (latestFrame) {
+        const frame = latestFrame;
+        latestFrame = null;
+        sendFrame(frame);
+      }
+    });
+    port1.on('close', unsubscribe);
+    port1.start();
+    event.senderFrame.postMessage(
+      'telegram-call:video-channel',
+      requestId,
+      [port2],
+    );
+  });
+
   ipcMain.handle('app:get-config', async (): Promise<AppConfig> => {
     const appConfig = getAppConfig();
     if (!appConfig) {
@@ -139,6 +194,89 @@ export const registerIpcHandlers = ({
   ipcMain.handle('connector:get-statuses', async () => {
     return getConnectorManager()?.getAllStatuses() ?? [];
   });
+
+  ipcMain.handle('telegram-call:get-state', async () => {
+    return getConnectorManager()?.getTelegramCallState();
+  });
+
+  ipcMain.handle(
+    'telegram-call:start',
+    async (_event, chatId: string, isVideo: boolean) => {
+      const manager = getConnectorManager();
+      if (!manager) throw new Error('Connector manager not ready');
+      return manager.startTelegramCall(chatId, isVideo);
+    },
+  );
+
+  ipcMain.handle('telegram-call:answer', async (_event, isVideo: boolean) => {
+    const manager = getConnectorManager();
+    if (!manager) throw new Error('Connector manager not ready');
+    return manager.answerTelegramCall(isVideo);
+  });
+
+  ipcMain.handle('telegram-call:decline', async () => {
+    const manager = getConnectorManager();
+    if (!manager) throw new Error('Connector manager not ready');
+    return manager.declineTelegramCall();
+  });
+
+  ipcMain.handle('telegram-call:hang-up', async () => {
+    const manager = getConnectorManager();
+    if (!manager) throw new Error('Connector manager not ready');
+    return manager.hangUpTelegramCall();
+  });
+
+  ipcMain.handle(
+    'telegram-call:join-group',
+    async (_event, chatId: string, isVideo: boolean) => {
+      const manager = getConnectorManager();
+      if (!manager) throw new Error('Connector manager not ready');
+      return manager.joinTelegramGroupCall(chatId, isVideo);
+    },
+  );
+
+  ipcMain.handle('telegram-call:leave-group', async () => {
+    const manager = getConnectorManager();
+    if (!manager) throw new Error('Connector manager not ready');
+    return manager.leaveTelegramGroupCall();
+  });
+
+  ipcMain.handle('telegram-call:set-muted', async (_event, muted: boolean) => {
+    const manager = getConnectorManager();
+    if (!manager) throw new Error('Connector manager not ready');
+    return manager.setTelegramCallMuted(muted);
+  });
+
+  ipcMain.handle('telegram-call:set-video', async (_event, enabled: boolean) => {
+    const manager = getConnectorManager();
+    if (!manager) throw new Error('Connector manager not ready');
+    return manager.setTelegramCallVideoEnabled(enabled);
+  });
+
+  ipcMain.handle(
+    'telegram-call:set-device',
+    async (_event, kind: TelegramCallDevice['kind'], deviceId: string) => {
+      const manager = getConnectorManager();
+      if (!manager) throw new Error('Connector manager not ready');
+      return manager.setTelegramCallDevice(kind, deviceId);
+    },
+  );
+
+  ipcMain.handle(
+    'telegram-call:set-participant-volume',
+    async (_event, participantId: string, volume: number) => {
+      const manager = getConnectorManager();
+      if (!manager) throw new Error('Connector manager not ready');
+      return manager.setTelegramParticipantVolume(participantId, volume);
+    },
+  );
+
+  ipcMain.handle(
+    'telegram-call:set-visible-video-endpoints',
+    async (_event, endpointIds: string[]) => {
+      await getConnectorManager()?.setTelegramVisibleVideoEndpoints(endpointIds);
+    },
+  );
 
   ipcMain.handle('connector:get-profile', async (_event, network: NetworkId) => {
     return (await getConnectorManager()?.getProfile(network)) ?? null;

@@ -50,6 +50,11 @@ export interface NetworkDefinition {
 export interface TelegramUserConfig {
   ghostMode: boolean;
   selectableMessageText: boolean;
+  calls: {
+    privateVoice: boolean;
+    privateVideo: boolean;
+    group: boolean;
+  };
 }
 
 export interface AppearanceUserConfig {

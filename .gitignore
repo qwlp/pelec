@@ -102,3 +102,4 @@ out/
 
 # Other dist
 dist/
+bazel-*

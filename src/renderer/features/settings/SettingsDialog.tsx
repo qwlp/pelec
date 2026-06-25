@@ -345,6 +345,68 @@ export const SettingsDialog = ({
                 }))}
               />
             </label>
+            <h3>Experimental calls</h3>
+            <label className="settings-toggle">
+              <span>Private voice calls</span>
+              <input
+                type="checkbox"
+                checked={draft.telegram.calls.privateVoice}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    telegram: {
+                      ...current.telegram,
+                      calls: {
+                        ...current.telegram.calls,
+                        privateVoice: event.target.checked,
+                        privateVideo: event.target.checked
+                          ? current.telegram.calls.privateVideo
+                          : false,
+                      },
+                    },
+                  }))
+                }
+              />
+            </label>
+            <label className="settings-toggle">
+              <span>Private video calls</span>
+              <input
+                type="checkbox"
+                checked={draft.telegram.calls.privateVideo}
+                disabled={!draft.telegram.calls.privateVoice}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    telegram: {
+                      ...current.telegram,
+                      calls: {
+                        ...current.telegram.calls,
+                        privateVideo: event.target.checked,
+                      },
+                    },
+                  }))
+                }
+              />
+            </label>
+            <label className="settings-toggle">
+              <span>Group voice and video chats</span>
+              <input
+                type="checkbox"
+                checked={draft.telegram.calls.group}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    telegram: {
+                      ...current.telegram,
+                      calls: {
+                        ...current.telegram.calls,
+                        group: event.target.checked,
+                      },
+                    },
+                  }))
+                }
+              />
+            </label>
           </section>
         </div>
 

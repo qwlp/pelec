@@ -1,0 +1,3 @@
+module(name = "pelec_telegram_calls", version = "1.0.0")
+
+bazel_dep(name = "nlohmann_json", version = "3.11.3")

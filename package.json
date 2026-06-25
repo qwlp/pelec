@@ -11,9 +11,12 @@
   },
   "scripts": {
     "start": "bun scripts/run-forge.js start",
+    "postinstall": "bun scripts/install-telegram-call-lib.js",
+    "calls:install": "bun scripts/install-telegram-call-lib.js",
     "rebuild:start": "bun scripts/rebuild-start.js",
     "package": "bun scripts/run-forge.js package",
     "linux:native": "CSC_IDENTITY_AUTO_DISCOVERY=false bun scripts/build-linux-native.js",
+    "calls:build-host": "bun scripts/build-telegram-call-host.js",
     "appimage": "bun scripts/build-appimage.js",
     "appimage:fresh": "bun scripts/build-appimage.js --fresh",
     "make": "bun scripts/run-forge.js make",

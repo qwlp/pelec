@@ -13,13 +13,23 @@ const linuxTdjsonPath = path.resolve(
   __dirname,
   'node_modules/@prebuilt-tdlib/linux-x64-glibc/libtdjson.so',
 );
+const telegramCallResourceDir = path.resolve(
+  __dirname,
+  'native/telegram-calls/out',
+);
+const extraResources = [
+  fs.existsSync(linuxTdjsonPath) ? linuxTdjsonPath : null,
+  fs.existsSync(path.join(telegramCallResourceDir, 'pelec-call-engine'))
+    ? telegramCallResourceDir
+    : null,
+].filter((resource): resource is string => Boolean(resource));
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: {
       unpackDir: '.vite/node_modules',
     },
-    extraResource: fs.existsSync(linuxTdjsonPath) ? [linuxTdjsonPath] : [],
+    extraResource: extraResources,
   },
   rebuildConfig: {},
   makers: [

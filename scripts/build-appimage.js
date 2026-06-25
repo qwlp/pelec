@@ -17,6 +17,7 @@ const tdjsonSourcePath = path.join(
   'linux-x64-glibc',
   'libtdjson.so',
 );
+const telegramCallSourceDir = path.join(rootDir, 'native', 'telegram-calls', 'out');
 
 const fail = (message) => {
   console.error(`[appimage] ${message}`);
@@ -90,6 +91,28 @@ const ensureTdlibResource = (prepackagedPath) => {
   console.log('[appimage] Injected TDLib shared library into prepackaged resources.');
 };
 
+const ensureTelegramCallResources = (prepackagedPath) => {
+  const engineSource = path.join(telegramCallSourceDir, 'pelec-call-engine');
+  if (!fs.existsSync(engineSource)) {
+    return;
+  }
+  const targetDir = path.join(prepackagedPath, 'resources', 'telegram-calls');
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const fileName of [
+    'pelec-call-engine',
+    'libpelec-tgcalls.so',
+    'libntgcalls.so',
+    'LICENSE.ntgcalls.txt',
+    'installation.json',
+  ]) {
+    const source = path.join(telegramCallSourceDir, fileName);
+    if (fs.existsSync(source)) {
+      fs.copyFileSync(source, path.join(targetDir, fileName));
+    }
+  }
+  console.log('[appimage] Injected Telegram call engine resources.');
+};
+
 const runBuilder = (prepackagedPath, appName) => {
   const builderArgs = [
     '--linux',
@@ -133,6 +156,7 @@ if (args.has('--fresh') || !prepackagedPath) {
 
 if (prepackagedPath) {
   ensureTdlibResource(prepackagedPath);
+  ensureTelegramCallResources(prepackagedPath);
   console.log(`[appimage] Using prepackaged app: ${path.relative(rootDir, prepackagedPath)}`);
 } else {
   console.warn('[appimage] Could not find a prepackaged Linux app under out/. Building directly.');

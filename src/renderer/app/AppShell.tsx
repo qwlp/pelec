@@ -15,6 +15,7 @@ import type { LegacyAppBridgeApi } from '../legacyBridge';
 import { applyUserTheme } from '../lib/theme';
 import type { CommandPaletteItem } from '../features/commandPalette/CommandPalette';
 import { TelegramChatList } from '../features/telegram/TelegramChatList';
+import { TelegramCallLayer } from '../features/telegram/TelegramCallLayer';
 import { AboutDialog, SettingsDialog } from '../features/settings/SettingsDialog';
 import { TelegramComposer, type TelegramMentionSuggestion } from '../features/telegram/TelegramComposer';
 import { TelegramConversationErrorBoundary } from '../features/telegram/TelegramConversationErrorBoundary';
@@ -170,6 +171,7 @@ export const AppShell = () => {
   const [legacyApi, setLegacyApi] = useState<LegacyAppBridgeApi | null>(null);
   const [telegramMessageTarget, setTelegramMessageTarget] = useState<HTMLElement | null>(null);
   const [telegramComposerTarget, setTelegramComposerTarget] = useState<HTMLElement | null>(null);
+  const [telegramCallHeaderTarget, setTelegramCallHeaderTarget] = useState<HTMLElement | null>(null);
   const [telegramCompactView, setTelegramCompactView] = useState<'chats' | 'messages'>('chats');
   const [windowWidth, setWindowWidth] = useState<number>(() =>
     typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
@@ -709,11 +711,13 @@ export const AppShell = () => {
     if (!state.appShell.legacyReady) {
       setTelegramMessageTarget(null);
       setTelegramComposerTarget(null);
+      setTelegramCallHeaderTarget(null);
       return;
     }
 
     setTelegramMessageTarget(document.querySelector<HTMLElement>('#telegram-message-react-root'));
     setTelegramComposerTarget(document.querySelector<HTMLElement>('#telegram-compose-react-root'));
+    setTelegramCallHeaderTarget(document.querySelector<HTMLElement>('#telegram-call-actions-root'));
   }, [state.appShell.legacyReady]);
 
   useEffect(() => {
@@ -1036,6 +1040,15 @@ export const AppShell = () => {
         telegramForward={telegramSnapshot?.forward ?? null}
         telegramImagePreviewMeta={telegramSnapshot?.imagePreviewMeta ?? null}
         telegramImagePreviewUrl={telegramSnapshot?.imagePreviewUrl ?? null}
+      />
+      <TelegramCallLayer
+        activeChatId={telegramSnapshot?.activeChatId ?? null}
+        capabilities={
+          telegramSnapshot?.filteredChats.find(
+            (chat) => chat.id === telegramSnapshot.activeChatId,
+          )?.telegramCallCapabilities
+        }
+        headerTarget={telegramCallHeaderTarget}
       />
       <StatusLayer />
     </div>

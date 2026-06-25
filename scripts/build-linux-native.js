@@ -68,6 +68,25 @@ if (!fs.existsSync(path.join(builderOutputPath, 'pelec'))) {
   fail('electron-builder did not produce out/linux-unpacked/pelec.');
 }
 
+const telegramCallSourceDir = path.join(rootDir, 'native', 'telegram-calls', 'out');
+const telegramCallEngine = path.join(telegramCallSourceDir, 'pelec-call-engine');
+if (fs.existsSync(telegramCallEngine)) {
+  const targetDir = path.join(builderOutputPath, 'resources', 'telegram-calls');
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const fileName of [
+    'pelec-call-engine',
+    'libpelec-tgcalls.so',
+    'libntgcalls.so',
+    'LICENSE.ntgcalls.txt',
+    'installation.json',
+  ]) {
+    const source = path.join(telegramCallSourceDir, fileName);
+    if (fs.existsSync(source)) {
+      fs.copyFileSync(source, path.join(targetDir, fileName));
+    }
+  }
+}
+
 fs.rmSync(path.join(builderOutputPath, 'resources', 'default_app.asar'), { force: true });
 fs.renameSync(builderOutputPath, finalOutputPath);
 console.log(`[linux-native] Done. Executable: ${path.relative(rootDir, path.join(finalOutputPath, 'pelec'))}`);

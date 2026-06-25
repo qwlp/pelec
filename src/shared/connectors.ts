@@ -77,6 +77,7 @@ export interface ChatSummary {
   avatarUrl?: string;
   isMuted?: boolean;
   canSend?: boolean;
+  telegramCallCapabilities?: TelegramCallCapabilities;
 }
 
 export interface ChatReaction {
@@ -139,6 +140,101 @@ export interface ChatCall {
   isVideo?: boolean;
   durationSeconds?: number;
   discardReason?: 'missed' | 'declined' | 'disconnected' | 'hung_up' | 'empty';
+}
+
+export type TelegramCallKind = 'private' | 'group';
+export type TelegramCallDirection = 'incoming' | 'outgoing' | 'joined';
+export type TelegramCallPhase =
+  | 'idle'
+  | 'ringing'
+  | 'connecting'
+  | 'established'
+  | 'reconnecting'
+  | 'hanging-up'
+  | 'ended'
+  | 'failed';
+
+export interface TelegramCallCapabilities {
+  callable: boolean;
+  supportsVideo: boolean;
+  activeGroupCallId?: number;
+  canManageGroupCall?: boolean;
+}
+
+export interface TelegramCallSession {
+  sessionId: string;
+  kind: TelegramCallKind;
+  chatId?: string;
+  userId?: number;
+  groupCallId?: number;
+  peerLabel: string;
+  direction: TelegramCallDirection;
+  isVideo: boolean;
+  phase: TelegramCallPhase;
+  startedAt?: number;
+  durationSeconds: number;
+  microphoneMuted: boolean;
+  cameraEnabled: boolean;
+  encryptionEmojis: string[];
+  error?: string;
+}
+
+export interface TelegramCallParticipant {
+  id: string;
+  displayName: string;
+  audioSourceId?: number;
+  speaking: boolean;
+  muted: boolean;
+  volume: number;
+  isCurrentUser: boolean;
+  videoEndpointId?: string;
+  videoSourceGroups?: Array<{
+    semantics: string;
+    sourceIds: number[];
+  }>;
+  screenEndpointId?: string;
+  videoPaused?: boolean;
+}
+
+export interface TelegramCallDevice {
+  id: string;
+  label: string;
+  kind: 'audio-input' | 'audio-output' | 'camera';
+  selected?: boolean;
+}
+
+export interface TelegramCallMetrics {
+  signalBars?: number;
+  audioLevel?: number;
+  bytesSent?: number;
+  bytesReceived?: number;
+}
+
+export interface TelegramCallVideoFrame {
+  endpointId: string;
+  width: number;
+  height: number;
+  timestamp: number;
+  data: Uint8Array;
+}
+
+export type TelegramCallUpdate =
+  | { kind: 'session'; session: TelegramCallSession | null }
+  | { kind: 'participants'; participants: TelegramCallParticipant[] }
+  | { kind: 'devices'; devices: TelegramCallDevice[] }
+  | { kind: 'metrics'; metrics: TelegramCallMetrics }
+  | {
+      kind: 'terminal';
+      sessionId: string;
+      reason: 'declined' | 'missed' | 'hung-up' | 'disconnected' | 'busy' | 'error';
+      error?: string;
+    };
+
+export interface TelegramCallState {
+  session: TelegramCallSession | null;
+  participants: TelegramCallParticipant[];
+  devices: TelegramCallDevice[];
+  metrics: TelegramCallMetrics;
 }
 
 export interface ChatServiceEvent {
@@ -300,5 +396,25 @@ export interface Connector {
   editMessage?(chatId: string, messageId: string, text: string): Promise<boolean>;
   forwardMessage?(fromChatId: string, toChatId: string, messageId: string): Promise<boolean>;
   deleteMessage?(chatId: string, messageId: string): Promise<boolean>;
+  getTelegramCallState?(): Promise<TelegramCallState>;
+  startTelegramCall?(chatId: string, isVideo: boolean): Promise<TelegramCallState>;
+  answerTelegramCall?(isVideo: boolean): Promise<TelegramCallState>;
+  declineTelegramCall?(): Promise<TelegramCallState>;
+  hangUpTelegramCall?(): Promise<TelegramCallState>;
+  joinTelegramGroupCall?(chatId: string, isVideo: boolean): Promise<TelegramCallState>;
+  leaveTelegramGroupCall?(): Promise<TelegramCallState>;
+  setTelegramCallMuted?(muted: boolean): Promise<TelegramCallState>;
+  setTelegramCallVideoEnabled?(enabled: boolean): Promise<TelegramCallState>;
+  setTelegramCallDevice?(
+    kind: TelegramCallDevice['kind'],
+    deviceId: string,
+  ): Promise<TelegramCallState>;
+  setTelegramParticipantVolume?(
+    participantId: string,
+    volume: number,
+  ): Promise<TelegramCallState>;
+  setTelegramVisibleVideoEndpoints?(endpointIds: string[]): Promise<void>;
+  onTelegramCallUpdate?(handler: (event: TelegramCallUpdate) => void): () => void;
+  onTelegramCallVideoFrame?(handler: (frame: TelegramCallVideoFrame) => void): () => void;
   onUpdate?(handler: (event: ConnectorUpdateEvent) => void): () => void;
 }

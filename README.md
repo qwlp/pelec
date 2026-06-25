@@ -160,6 +160,10 @@ bun run publish
 - Supports QR-based login
 - Supports 2FA password completion when Telegram requires it
 - Requires valid `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` for a clean setup
+- Experimental private and group call controls are disabled by default
+- Call signaling uses TDLib and live media uses the LGPL NTgCalls engine
+- `bun install` installs the pinned Linux x64 shared libraries and bridge
+- Reinstall the call runtime with `bun run calls:install`
 
 ### Instagram
 

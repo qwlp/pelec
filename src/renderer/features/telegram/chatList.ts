@@ -23,6 +23,9 @@ export const getTelegramChatRenderSignature = (chat: ChatSummary): string =>
     chat.unreadCount,
     chat.avatarUrl ?? '',
     chat.isMuted ? '1' : '0',
+    chat.telegramCallCapabilities?.callable ? 'call' : '',
+    chat.telegramCallCapabilities?.supportsVideo ? 'video-call' : '',
+    chat.telegramCallCapabilities?.activeGroupCallId ?? '',
   ].join('::');
 
 export const createTelegramChatListItem = (
