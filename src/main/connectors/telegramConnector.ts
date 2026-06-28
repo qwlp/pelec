@@ -948,6 +948,53 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async setReaction(chatId: string, messageId: string, reaction: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    const emoji = reaction.trim();
+    if (!tdMessageId || !emoji) {
+      return false;
+    }
+
+    const reactionType = {
+      _: 'reactionTypeEmoji',
+      emoji,
+    };
+
+    try {
+      const message = await this.loadMessageById(this.tdClient, chatId, messageId);
+      const chosen = extractTelegramReactions(message?.interaction_info)?.some(
+        (candidate) => candidate.value === emoji && candidate.chosen === true,
+      );
+
+      await this.tdClient.invoke({
+        _: chosen ? 'removeMessageReaction' : 'addMessageReaction',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        reaction_type: reactionType,
+        ...(chosen
+          ? {}
+          : {
+              is_big: false,
+              update_recent_reactions: true,
+            }),
+      });
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'messages', chatId });
+      this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown reaction error';
+      this.status.details = `Failed updating reaction: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return false;
+    }
+  }
+
   async sendImageMessage(
     chatId: string,
     dataUrl: string,

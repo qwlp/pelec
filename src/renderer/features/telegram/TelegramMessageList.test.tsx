@@ -1,6 +1,8 @@
+import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LegacyAppBridgeApi } from '../../legacyBridge';
+import { formatMessageTimestamp } from '../../lib/format';
 import { installDom } from '../../test/dom';
 import { TelegramMessageList } from './TelegramMessageList';
 
@@ -169,7 +171,7 @@ describe('TelegramMessageList', () => {
       'DMUC Student Services created the group',
     );
     expect(createMessage?.querySelector('.telegram-service-time')?.textContent).toBe(
-      'Jan 1, 1970, 07:00 AM',
+      formatMessageTimestamp(1),
     );
     expect(createMessage?.querySelector('.telegram-message-footer')).toBeNull();
     expect(createMessage?.textContent).not.toContain('[messageBasicGroupChatCreate]');

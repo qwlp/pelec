@@ -139,6 +139,80 @@ describe('TelegramConnector picker methods', () => {
     });
   });
 
+  it('adds an emoji reaction through TDLib', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      setReaction: TelegramConnector['setReaction'];
+    };
+    const invoke = vi.fn().mockResolvedValueOnce({
+      id: 55,
+      interaction_info: {
+        reactions: {
+          reactions: [],
+        },
+      },
+    }).mockResolvedValueOnce({});
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(connector.setReaction('100', '55', '🔥')).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenNthCalledWith(2, {
+      _: 'addMessageReaction',
+      chat_id: 100,
+      message_id: 55,
+      reaction_type: {
+        _: 'reactionTypeEmoji',
+        emoji: '🔥',
+      },
+      is_big: false,
+      update_recent_reactions: true,
+    });
+  });
+
+  it('removes an already chosen emoji reaction through TDLib', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      setReaction: TelegramConnector['setReaction'];
+    };
+    const invoke = vi.fn().mockResolvedValueOnce({
+      id: 55,
+      interaction_info: {
+        reactions: {
+          reactions: [
+            {
+              type: { _: 'reactionTypeEmoji', emoji: '🔥' },
+              total_count: 1,
+              is_chosen: true,
+            },
+          ],
+        },
+      },
+    }).mockResolvedValueOnce({});
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(connector.setReaction('100', '55', '🔥')).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenNthCalledWith(2, {
+      _: 'removeMessageReaction',
+      chat_id: 100,
+      message_id: 55,
+      reaction_type: {
+        _: 'reactionTypeEmoji',
+        emoji: '🔥',
+      },
+    });
+  });
+
   it('sends stickers and GIFs using TDLib inputFileId payloads', async () => {
     const connector = createConnector() as unknown as {
       status: { authState: string };

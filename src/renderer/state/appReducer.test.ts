@@ -17,6 +17,7 @@ describe('appReducer', () => {
       contextMenu: {
         canEdit: false,
         messageId: null,
+        reactions: [],
         visible: false,
         x: 0,
         y: 0,

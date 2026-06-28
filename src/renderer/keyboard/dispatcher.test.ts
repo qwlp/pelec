@@ -43,6 +43,7 @@ const buildContext = () => {
         contextMenu: {
           canEdit: false,
           messageId: null,
+          reactions: [],
           visible: false,
           x: 0,
           y: 0,
@@ -90,6 +91,7 @@ const buildContext = () => {
     refreshQrAuth: vi.fn(),
     removeTelegramAttachment: vi.fn(),
     setTelegramAttachmentSendAs: vi.fn(),
+    setTelegramMessageReaction: vi.fn(),
     revealQrPassword: vi.fn(),
     reply: vi.fn(),
     selectTelegramMessage: vi.fn(),

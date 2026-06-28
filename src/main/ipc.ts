@@ -666,6 +666,13 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:set-reaction',
+    async (_event, network: NetworkId, chatId: string, messageId: string, reaction: string) => {
+      return (await getConnectorManager()?.setReaction(network, chatId, messageId, reaction)) ?? false;
+    },
+  );
+
+  ipcMain.handle(
     'connector:send-image',
     async (
       _event,

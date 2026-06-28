@@ -37,7 +37,28 @@ export const installDom = (): (() => void) => {
     });
   }
 
+  const previousAttachEvent = Object.getOwnPropertyDescriptor(dom.window.Element.prototype, 'attachEvent');
+  const previousDetachEvent = Object.getOwnPropertyDescriptor(dom.window.Element.prototype, 'detachEvent');
+  Object.defineProperty(dom.window.Element.prototype, 'attachEvent', {
+    configurable: true,
+    value: () => undefined,
+  });
+  Object.defineProperty(dom.window.Element.prototype, 'detachEvent', {
+    configurable: true,
+    value: () => undefined,
+  });
+
   return () => {
+    if (previousAttachEvent) {
+      Object.defineProperty(dom.window.Element.prototype, 'attachEvent', previousAttachEvent);
+    } else {
+      delete (dom.window.Element.prototype as Element & { attachEvent?: unknown }).attachEvent;
+    }
+    if (previousDetachEvent) {
+      Object.defineProperty(dom.window.Element.prototype, 'detachEvent', previousDetachEvent);
+    } else {
+      delete (dom.window.Element.prototype as Element & { detachEvent?: unknown }).detachEvent;
+    }
     for (const key of DOM_GLOBAL_KEYS) {
       const descriptor = previousDescriptors.get(key);
       if (descriptor) {

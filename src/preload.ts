@@ -228,6 +228,19 @@ const api = {
     ) as Promise<boolean>,
   editConnectorMessage: (network: NetworkId, chatId: string, messageId: string, text: string) =>
     ipcRenderer.invoke('connector:edit-message', network, chatId, messageId, text) as Promise<boolean>,
+  setConnectorReaction: (
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    reaction: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:set-reaction',
+      network,
+      chatId,
+      messageId,
+      reaction,
+    ) as Promise<boolean>,
   sendConnectorImage: (
     network: NetworkId,
     chatId: string,

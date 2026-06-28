@@ -147,7 +147,7 @@ describe('TelegramComposer', () => {
         attachments={[]}
         canSend
         editing={{ messageId: null, originalText: '' }}
-        draftText=""
+        draftText="edited text"
         legacyApi={legacyApi}
         replyPreview={null}
         sendBehavior="enter"
@@ -663,7 +663,7 @@ describe('TelegramComposer', () => {
     await waitFor(() => {
       expect(legacyApi.appendTelegramFiles).toHaveBeenCalledTimes(1);
     });
-    const pastedFile = vi.mocked(legacyApi.appendTelegramFiles).mock.calls[0]?.[0]?.[0];
+    const pastedFile = (legacyApi.appendTelegramFiles as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.[0];
     expect(pastedFile?.name).toBe('clipboard-image.png');
     expect(pastedFile?.type).toBe('image/png');
     expect(pastedFile?.size).toBe(5);
@@ -828,7 +828,7 @@ describe('TelegramComposer', () => {
         attachments={[]}
         canSend
         editing={{ messageId: null, originalText: '' }}
-        draftText=""
+        draftText=":sob:"
         legacyApi={legacyApi}
         replyPreview={null}
         sendBehavior="enter"
@@ -840,12 +840,8 @@ describe('TelegramComposer', () => {
     const textarea = target.querySelector<HTMLTextAreaElement>('#telegram-compose-input');
     expect(textarea).toBeTruthy();
 
-    fireEvent.focus(textarea as HTMLTextAreaElement);
-    fireEvent.change(textarea as HTMLTextAreaElement, {
-      target: { value: ':sob:' },
-    });
     (textarea as HTMLTextAreaElement).setSelectionRange(5, 5);
-    fireEvent.select(textarea as HTMLTextAreaElement);
+    fireEvent.focus(textarea as HTMLTextAreaElement);
 
     await waitFor(() => {
       expect(target.textContent).toContain(':sob:');

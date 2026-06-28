@@ -2,6 +2,7 @@ import '../index.css';
 import type {
   AuthStartResult,
   ChatMessage,
+  ChatReaction,
   ChatSummary,
   ConnectorUpdateEvent,
   ConnectorStatus,
@@ -154,6 +155,7 @@ type TelegramEmojiCompletionState = {
 
 type TelegramContextMenuState = {
   canEdit: boolean;
+  reactions: ChatReaction[];
   visible: boolean;
   messageId: string | null;
   x: number;
@@ -1774,6 +1776,7 @@ export const bootLegacyApp = async (
   let telegramContextMenuOpenedAt = 0;
   let telegramContextMenuState: TelegramContextMenuState = {
     canEdit: false,
+    reactions: [],
     visible: false,
     messageId: null,
     x: 0,
@@ -2121,6 +2124,7 @@ export const bootLegacyApp = async (
     }
     telegramContextMenuState = {
       canEdit: false,
+      reactions: [],
       visible: false,
       messageId: null,
       x: 0,
@@ -2161,6 +2165,7 @@ export const bootLegacyApp = async (
     telegramContextMenuOpenedAt = performance.now();
     telegramContextMenuState = {
       canEdit: message?.canBeEdited ?? message?.outgoing === true,
+      reactions: message?.reactions ?? [],
       visible: true,
       messageId,
       x,
@@ -4913,6 +4918,37 @@ export const bootLegacyApp = async (
     return true;
   };
 
+  const setTelegramMessageReaction = async (
+    messageId: string,
+    reaction: string,
+  ): Promise<boolean> => {
+    if (state.activeNetwork !== 'telegram' || !state.activeTelegramChatId) {
+      return false;
+    }
+
+    const chatId = state.activeTelegramChatId;
+    const message = findTelegramMessageById(messageId);
+    if (!message || isPendingTelegramMessage(message)) {
+      statusBar.textContent = 'Wait for the message to finish sending.';
+      return false;
+    }
+
+    statusBar.textContent = 'Updating reaction...';
+    const updated = await window.pelec.setConnectorReaction('telegram', chatId, messageId, reaction);
+    if (!updated) {
+      await refreshConnectorStatuses();
+      const status = getStatusByNetwork('telegram');
+      statusBar.textContent = `Reaction failed: ${status.lastError ?? status.details}`;
+      render();
+      return false;
+    }
+
+    scheduleTelegramMessagesRefresh(chatId, 120);
+    scheduleTelegramChatsRefresh(300, false);
+    statusBar.textContent = 'Reaction updated.';
+    return true;
+  };
+
   const deleteSelectedTelegramMessage = async (): Promise<void> => {
     if (state.activeNetwork !== 'telegram' || !state.activeTelegramChatId) {
       return;
@@ -7057,6 +7093,7 @@ export const bootLegacyApp = async (
       }
     },
     reply: beginReplyToSelectedTelegramMessage,
+    setTelegramMessageReaction,
     selectTelegramMessage: (messageId) => {
       selectTelegramMessage(messageId);
       render();

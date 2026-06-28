@@ -288,6 +288,19 @@ export class ConnectorManager {
     return connector.editMessage(chatId, messageId, text);
   }
 
+  async setReaction(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    reaction: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.setReaction) {
+      return false;
+    }
+    return connector.setReaction(chatId, messageId, reaction);
+  }
+
   async sendImageMessage(
     network: NetworkId,
     chatId: string,

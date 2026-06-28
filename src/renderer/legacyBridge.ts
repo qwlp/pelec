@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatSummary } from '../shared/connectors';
+import type { ChatMessage, ChatReaction, ChatSummary } from '../shared/connectors';
 import type { AppActivity, AppMode, AppPane, NetworkId } from '../shared/types';
 import type { PendingTelegramAttachment } from './features/telegram/media';
 
@@ -28,6 +28,7 @@ export interface LegacyTelegramForwardState {
 export interface LegacyTelegramContextMenuState {
   canEdit: boolean;
   messageId: string | null;
+  reactions: ChatReaction[];
   visible: boolean;
   x: number;
   y: number;
@@ -122,6 +123,7 @@ export interface LegacyAppBridgeApi {
   openBrowser(): void;
   refresh(): void;
   reply(): void;
+  setTelegramMessageReaction(messageId: string, reaction: string): Promise<boolean>;
   openTelegramContextMenu(messageId: string, x: number, y: number): void;
   openTelegramImagePreview(url: string, meta?: LegacyTelegramImagePreviewMeta): void;
   appendTelegramFiles(files: File[]): void;

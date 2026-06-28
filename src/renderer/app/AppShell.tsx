@@ -877,6 +877,10 @@ export const AppShell = () => {
     legacyApi?.editTelegramMessage(messageId);
   });
 
+  const handleTelegramContextReact = useEffectEvent((messageId: string, reaction: string) => {
+    void legacyApi?.setTelegramMessageReaction(messageId, reaction);
+  });
+
   return (
     <div className="modern-app-shell">
       <div
@@ -1023,6 +1027,7 @@ export const AppShell = () => {
         onExecuteCommand={executeCommand}
         onForwardTelegramMessage={(chatId) => legacyApi?.forwardTelegramMessageToChat(chatId)}
         onOpenTelegramForwardMenu={(messageId) => legacyApi?.openTelegramForwardMenu(messageId)}
+        onReactToTelegramMessage={handleTelegramContextReact}
         onRefreshQrAuth={() => legacyApi?.refreshQrAuth()}
         onRevealQrPassword={() => legacyApi?.revealQrPassword()}
         onReplyToTelegramMessage={(messageId) => {

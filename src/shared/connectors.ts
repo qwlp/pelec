@@ -399,6 +399,7 @@ export interface Connector {
   ): Promise<boolean>;
   sendMessage?(chatId: string, text: string, replyToMessageId?: string): Promise<boolean>;
   editMessage?(chatId: string, messageId: string, text: string): Promise<boolean>;
+  setReaction?(chatId: string, messageId: string, reaction: string): Promise<boolean>;
   forwardMessage?(fromChatId: string, toChatId: string, messageId: string): Promise<boolean>;
   deleteMessage?(chatId: string, messageId: string): Promise<boolean>;
   getTelegramCallState?(): Promise<TelegramCallState>;

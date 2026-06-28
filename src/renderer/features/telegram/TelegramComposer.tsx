@@ -586,10 +586,10 @@ const hasClipboardImageData = (clipboardData: DataTransfer | null): boolean => {
 
   return (
     Array.from(clipboardData.items ?? []).some((item) =>
-      item.type.toLowerCase().startsWith('image/'),
+      typeof item.type === 'string' && item.type.toLowerCase().startsWith('image/'),
     ) ||
     Array.from(clipboardData.types ?? []).some((type) =>
-      type.toLowerCase().startsWith('image/'),
+      typeof type === 'string' && type.toLowerCase().startsWith('image/'),
     )
   );
 };
@@ -1015,6 +1015,37 @@ export const TelegramComposer = ({
     };
     syncDraftValue(nextValue);
     setEmojiCompletion(null);
+    setTextExpansionCompletion(null);
+    textareaRef.current?.focus();
+    return true;
+  };
+
+  const applyEmojiSuggestionAtCursor = (
+    selectionStart: number | null,
+    selectionEnd: number | null,
+  ): boolean => {
+    const tokenMatch = getTelegramEmojiTokenMatch(value, selectionStart, selectionEnd);
+    if (!tokenMatch) {
+      return false;
+    }
+
+    const activeSuggestion = buildTelegramEmojiSuggestions(tokenMatch.query)[0];
+    if (!activeSuggestion) {
+      return false;
+    }
+
+    const before = value.slice(0, tokenMatch.tokenStart);
+    const after = value.slice(tokenMatch.tokenEnd);
+    const nextValue = `${before}${activeSuggestion.emoji}${after}`;
+    const nextSelection = before.length + activeSuggestion.emoji.length;
+
+    pendingSelectionRef.current = {
+      start: nextSelection,
+      end: nextSelection,
+    };
+    syncDraftValue(nextValue);
+    setEmojiCompletion(null);
+    setMentionCompletion(null);
     setTextExpansionCompletion(null);
     textareaRef.current?.focus();
     return true;
@@ -2616,6 +2647,22 @@ export const TelegramComposer = ({
             ) {
               event.preventDefault();
               applyEmojiSuggestion();
+              return;
+            }
+
+            if (
+              !emojiCompletion &&
+              event.key === 'Enter' &&
+              !event.shiftKey &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              applyEmojiSuggestionAtCursor(
+                event.currentTarget.selectionStart,
+                event.currentTarget.selectionEnd,
+              )
+            ) {
+              event.preventDefault();
               return;
             }
 
