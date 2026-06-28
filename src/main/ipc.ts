@@ -497,6 +497,19 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:add-poll-option',
+    async (
+      _event,
+      network: NetworkId,
+      chatId: string,
+      messageId: string,
+      text: string,
+    ) => {
+      return (await getConnectorManager()?.addPollOption(network, chatId, messageId, text)) ?? false;
+    },
+  );
+
+  ipcMain.handle(
     'connector:list-telegram-sticker-sets',
     async (_event, network: NetworkId, source: TelegramStickerSetSource) => {
       return (await getConnectorManager()?.listTelegramStickerSets(network, source)) ?? [];
@@ -773,6 +786,15 @@ export const registerIpcHandlers = ({
       return true;
     } catch {
       return false;
+    }
+  });
+
+  ipcMain.handle('app:read-clipboard-image', async (): Promise<string | undefined> => {
+    try {
+      const image = clipboard.readImage();
+      return image.isEmpty() ? undefined : image.toDataURL();
+    } catch {
+      return undefined;
     }
   });
 

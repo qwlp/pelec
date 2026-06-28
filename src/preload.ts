@@ -41,6 +41,8 @@ const api = {
     ipcRenderer.invoke('app:copy-image', dataUrl) as Promise<boolean>,
   copyTextToClipboard: (text: string) =>
     ipcRenderer.invoke('app:copy-text', text) as Promise<boolean>,
+  readClipboardImage: () =>
+    ipcRenderer.invoke('app:read-clipboard-image') as Promise<string | undefined>,
   getConnectorStatuses: () =>
     ipcRenderer.invoke('connector:get-statuses') as Promise<ConnectorStatus[]>,
   getTelegramCallState: () =>
@@ -172,6 +174,19 @@ const api = {
       chatId,
       messageId,
       optionIds,
+    ) as Promise<boolean>,
+  addConnectorPollOption: (
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    text: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:add-poll-option',
+      network,
+      chatId,
+      messageId,
+      text,
     ) as Promise<boolean>,
   listTelegramStickerSets: (network: NetworkId, source: TelegramStickerSetSource) =>
     ipcRenderer.invoke(

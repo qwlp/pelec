@@ -21,6 +21,7 @@ describe('TelegramMessageList', () => {
     originalCancelAnimationFrame = window.cancelAnimationFrame;
     window.pelec = {
       answerConnectorPoll: vi.fn(),
+      addConnectorPollOption: vi.fn(),
       resolveConnectorAudioUrl: vi.fn(),
       resolveConnectorImageUrl: vi.fn(),
       resolveConnectorVideoUrl: vi.fn(),
@@ -758,6 +759,7 @@ describe('TelegramMessageList', () => {
     expect(target.textContent).toContain('Best editor?');
     expect(target.textContent).toContain('58%');
     expect(target.textContent).toContain('12 votes');
+    expect(target.textContent).not.toContain('58% · 7');
   });
 
   it('does not render fake zero counts when poll option results are unavailable', () => {
@@ -796,7 +798,7 @@ describe('TelegramMessageList', () => {
 
     expect(target.textContent).toContain('Saturday morning run');
     expect(target.textContent).toContain('9 votes');
-    expect(target.textContent).toContain('Results hidden until you vote');
+    expect(target.textContent).toContain('Vote to see results');
     expect(target.textContent).not.toContain('0% · 0');
   });
 
@@ -954,6 +956,60 @@ describe('TelegramMessageList', () => {
 
     await waitFor(() => {
       expect(window.pelec.answerConnectorPoll).toHaveBeenCalledWith('telegram', 'chat-1', 'poll-4', [0, 1, 2]);
+    });
+  });
+
+  it('adds an option to an extensible poll', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    window.pelec.addConnectorPollOption =
+      vi.fn<typeof window.pelec.addConnectorPollOption>().mockResolvedValue(true);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'poll-extensible',
+            sender: 'Ada',
+            text: 'Poll: When are we going?',
+            timestamp: 1,
+            poll: {
+              question: 'When are we going?',
+              description: 'Pick the best time.',
+              kind: 'regular',
+              canAddOption: true,
+              canSeeResults: false,
+              options: [
+                { text: 'Friday', voterCount: 0 },
+                { text: 'Saturday', voterCount: 0 },
+              ],
+            },
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(target.textContent).toContain('Pick the best time.');
+    expect(target.textContent).toContain('Results hidden');
+    fireEvent.click(target.querySelector('.telegram-poll-add-trigger') as HTMLButtonElement);
+    const optionInput = target.querySelector('.telegram-poll-add-input') as HTMLTextAreaElement;
+    optionInput.value = 'Sunday';
+    fireEvent.submit(target.querySelector('.telegram-poll-add-form') as HTMLFormElement);
+
+    await waitFor(() => {
+      expect(window.pelec.addConnectorPollOption).toHaveBeenCalledWith(
+        'telegram',
+        'chat-1',
+        'poll-extensible',
+        'Sunday',
+      );
     });
   });
 

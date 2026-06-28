@@ -95,11 +95,15 @@ export interface ChatPollOption {
 
 export interface ChatPoll {
   question: string;
+  description?: string;
   options: ChatPollOption[];
   totalVoterCount?: number;
   isAnonymous?: boolean;
   isClosed?: boolean;
   allowsMultipleAnswers?: boolean;
+  allowsRevoting?: boolean;
+  canAddOption?: boolean;
+  canSeeResults?: boolean;
   kind: 'regular' | 'quiz';
   correctOptionIndex?: number;
 }
@@ -366,6 +370,7 @@ export interface Connector {
   resolveVideoUrl?(chatId: string, messageId: string): Promise<string | undefined>;
   resolveDocument?(chatId: string, messageId: string): Promise<ResolvedDocument | undefined>;
   answerPoll?(chatId: string, messageId: string, optionIds: number[]): Promise<boolean>;
+  addPollOption?(chatId: string, messageId: string, text: string): Promise<boolean>;
   listTelegramStickerSets?(
     source: TelegramStickerSetSource,
   ): Promise<TelegramStickerSetSummary[]>;

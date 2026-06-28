@@ -11,7 +11,7 @@
         "ffprobe-static": "^3.1.0",
         "instagram-private-api": "^1.46.1",
         "lucide-react": "^1.21.0",
-        "prebuilt-tdlib": "^0.1008062.0",
+        "prebuilt-tdlib": "0.1008065.0",
         "qrcode": "^1.5.4",
         "react": "^19.2.4",
         "react-dom": "^19.2.4",
@@ -319,17 +319,21 @@
 
     "@oxc-project/types": ["@oxc-project/types@0.122.0", "", {}, "sha512-oLAl5kBpV4w69UtFZ9xqcmTi+GENWOcPF7FCrczTiBbmC0ibXxCwyvZGbO39rCVEuLGAZM84DH0pUIyyv/YJzA=="],
 
-    "@prebuilt-tdlib/darwin-arm64": ["@prebuilt-tdlib/darwin-arm64@0.1008062.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-84Uo5ycivvbh9Emn+3zeCp5lU0p6vVRDY+e0EPpy/myNTwWqAFMk72RTUByUSB69ZAt6kbrZsi/jHWBa4GG5ig=="],
+    "@prebuilt-tdlib/darwin-arm64": ["@prebuilt-tdlib/darwin-arm64@0.1008065.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-5A6p2YSDURtAOCcoBN2tCfIhOTG2RYgozeAp/cp2qd1+owERvqx4Wy5xutiwmq1b/AZ4naOTjgH9t9BCQl1RJQ=="],
 
-    "@prebuilt-tdlib/darwin-x64": ["@prebuilt-tdlib/darwin-x64@0.1008062.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-d9ZiIPZCMutpcqJ9cEfKZaeiLesil7/V5aMnai7Olg3QXMYxdvQicMjmY1qqKFi0bcMXqwA+x+Ywv3tejFCnaw=="],
+    "@prebuilt-tdlib/darwin-x64": ["@prebuilt-tdlib/darwin-x64@0.1008065.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-FroEodjiKIqGhuv3ZWyBt6saifKuiClIaqZgors048TB7t73TWKw2MJ17DD0g+ybfxkdZj1bxLdOGoNC5H7yCQ=="],
 
-    "@prebuilt-tdlib/linux-arm64-glibc": ["@prebuilt-tdlib/linux-arm64-glibc@0.1008062.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-yyuMo4Tnz+xlIq2ANT+Gd+7m8/hawobwMTcX9M49DjiUyt8zQXn7i+zN1Fw808qGVy5yVntn7gOBtFiAgsU3GQ=="],
+    "@prebuilt-tdlib/linux-arm64-glibc": ["@prebuilt-tdlib/linux-arm64-glibc@0.1008065.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-hjsShSo3cyrwzjBEgJIGPbKkhFX5iht0s221vPCYJ8GExqJ/KJm1bjFLSkF02FyLQYl5d41lAJtMFKLG/yQ9wA=="],
 
-    "@prebuilt-tdlib/linux-x64-glibc": ["@prebuilt-tdlib/linux-x64-glibc@0.1008062.0", "", { "os": "linux", "cpu": "x64" }, "sha512-k3HOrD1akh6SrSwFKpjFjlHoRBQlUJl2x0u1MonE0431lO0gNPkh/EVq7s3ur2couwwcwcQ+YhBzRzOtiDGuag=="],
+    "@prebuilt-tdlib/linux-arm64-musl": ["@prebuilt-tdlib/linux-arm64-musl@0.1008065.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-9VS3MW2sqXfFr28ZsFgGuRUkwo+vb/xfJfySGo8D+uBjbe/wysitgFpBlS/J3wB8eRsiCjPUWg/fo6VkIBfKxA=="],
 
-    "@prebuilt-tdlib/types": ["@prebuilt-tdlib/types@0.1008062.0", "", {}, "sha512-DOxf6p/ZubYYZIbx+h7sPxpvyaywG3vWeKvJeSZBH9kqmPsFOxwTDY6q0wch7m0hMvw9BGz1uW1dsH0ZE/7rNA=="],
+    "@prebuilt-tdlib/linux-x64-glibc": ["@prebuilt-tdlib/linux-x64-glibc@0.1008065.0", "", { "os": "linux", "cpu": "x64" }, "sha512-Y72TtxX33TjfpvNxUyzS/3FdtJXia2nSCt5G61sOeiv6J4rehbQs7SRim86Jcn2/N5uEUA3eIwUBEVVOWKowJw=="],
 
-    "@prebuilt-tdlib/win32-x64": ["@prebuilt-tdlib/win32-x64@0.1008062.0", "", { "os": "win32", "cpu": "x64" }, "sha512-YT7HpSKMWVqbYlGtFsiekyfMxsirv07HCsR053dmAbaYNBaNtc/Co3ZzfCR5dITx6KyBzysD3DmXeIA4ck4/GA=="],
+    "@prebuilt-tdlib/linux-x64-musl": ["@prebuilt-tdlib/linux-x64-musl@0.1008065.0", "", { "os": "linux", "cpu": "x64" }, "sha512-ij3U9h4JV9wvXoSV2TFNzKw3Fu6OYUhDMw3LYd7qlCdUxrslb8bvBOGetJzRgMP92nDXSogDBMwlCh1ZNQRr1w=="],
+
+    "@prebuilt-tdlib/types": ["@prebuilt-tdlib/types@0.1008065.0", "", {}, "sha512-CxABWxZbcwPX7S+6jfjD16Ed1J2j/VsjVtjiBJLVdB2zZhrL9JHM/0yCBDJYNAKdnaJDkVsBd3b0rmy+mm1lDQ=="],
+
+    "@prebuilt-tdlib/win32-x64": ["@prebuilt-tdlib/win32-x64@0.1008065.0", "", { "os": "win32", "cpu": "x64" }, "sha512-f4DTpOVAKLdI4ZEL5W0BtS9/zGWEBjX8Ev2iIJTShg4LYH+51gTUhsbvORRAZECGskrQrFl+tTiQ617q8yTqLw=="],
 
     "@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.0.0-rc.12", "", { "os": "android", "cpu": "arm64" }, "sha512-pv1y2Fv0JybcykuiiD3qBOBdz6RteYojRFY1d+b95WVuzx211CRh+ytI/+9iVyWQ6koTh5dawe4S/yRfOFjgaA=="],
 
@@ -1461,7 +1465,7 @@
 
     "postject": ["postject@1.0.0-alpha.6", "", { "dependencies": { "commander": "^9.4.0" }, "bin": { "postject": "dist/cli.js" } }, "sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A=="],
 
-    "prebuilt-tdlib": ["prebuilt-tdlib@0.1008062.0", "", { "optionalDependencies": { "@prebuilt-tdlib/darwin-arm64": "0.1008062.0", "@prebuilt-tdlib/darwin-x64": "0.1008062.0", "@prebuilt-tdlib/linux-arm64-glibc": "0.1008062.0", "@prebuilt-tdlib/linux-x64-glibc": "0.1008062.0", "@prebuilt-tdlib/types": "0.1008062.0", "@prebuilt-tdlib/win32-x64": "0.1008062.0" } }, "sha512-vFn12SteQvAtaA/M9C34gFwXaiUgjuohrmyyD1RAAKPY+8L90TkmaqksdviDUiI2ot2V2kEM0nhi++n5HJLbqQ=="],
+    "prebuilt-tdlib": ["prebuilt-tdlib@0.1008065.0", "", { "optionalDependencies": { "@prebuilt-tdlib/darwin-arm64": "0.1008065.0", "@prebuilt-tdlib/darwin-x64": "0.1008065.0", "@prebuilt-tdlib/linux-arm64-glibc": "0.1008065.0", "@prebuilt-tdlib/linux-arm64-musl": "0.1008065.0", "@prebuilt-tdlib/linux-x64-glibc": "0.1008065.0", "@prebuilt-tdlib/linux-x64-musl": "0.1008065.0", "@prebuilt-tdlib/types": "0.1008065.0", "@prebuilt-tdlib/win32-x64": "0.1008065.0" } }, "sha512-i30D0JSgV6ltHGH1K1NZYyYbZW1UEva5hKZ2GRKxfBfU9Pq8lLFFr84pa1FL3uW9Jw+zOxwWOeK5DbyF+ApRVw=="],
 
     "prelude-ls": ["prelude-ls@1.2.1", "", {}, "sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g=="],
 

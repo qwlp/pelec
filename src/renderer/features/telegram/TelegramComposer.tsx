@@ -579,6 +579,44 @@ const getClipboardFiles = (clipboardData: DataTransfer | null): File[] => {
   return Array.from(clipboardData.files ?? []);
 };
 
+const hasClipboardImageData = (clipboardData: DataTransfer | null): boolean => {
+  if (!clipboardData) {
+    return false;
+  }
+
+  return (
+    Array.from(clipboardData.items ?? []).some((item) =>
+      item.type.toLowerCase().startsWith('image/'),
+    ) ||
+    Array.from(clipboardData.types ?? []).some((type) =>
+      type.toLowerCase().startsWith('image/'),
+    )
+  );
+};
+
+const readNativeClipboardImageFile = async (): Promise<File | null> => {
+  const dataUrl = await window.pelec.readClipboardImage?.();
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/iu.exec(dataUrl ?? '');
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const mimeType = match[1]?.toLowerCase() ?? 'image/png';
+    const decoded = window.atob((match[2] ?? '').replace(/\s/gu, ''));
+    const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+    const extension =
+      mimeType === 'image/jpeg'
+        ? 'jpg'
+        : mimeType === 'image/svg+xml'
+          ? 'svg'
+          : mimeType.split('/')[1]?.replace(/[^a-z0-9]/gu, '') || 'png';
+    return new File([bytes], `clipboard-image.${extension}`, { type: mimeType });
+  } catch {
+    return null;
+  }
+};
+
 const formatRecordingDuration = (durationMs: number): string => {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -2327,15 +2365,31 @@ export const TelegramComposer = ({
           }}
           onPaste={(event) => {
             const files = getClipboardFiles(event.clipboardData);
+            const hasRawClipboardImage =
+              files.length < 1 && hasClipboardImageData(event.clipboardData);
             if (composerMode !== 'insert') {
               event.preventDefault();
               if (files.length > 0) {
                 legacyApi?.appendTelegramFiles(files);
+              } else if (hasRawClipboardImage) {
+                void readNativeClipboardImageFile().then((file) => {
+                  if (file) {
+                    legacyApi?.appendTelegramFiles([file]);
+                  }
+                });
               }
               return;
             }
 
             if (files.length < 1) {
+              if (hasRawClipboardImage) {
+                event.preventDefault();
+                void readNativeClipboardImageFile().then((file) => {
+                  if (file) {
+                    legacyApi?.appendTelegramFiles([file]);
+                  }
+                });
+              }
               return;
             }
 

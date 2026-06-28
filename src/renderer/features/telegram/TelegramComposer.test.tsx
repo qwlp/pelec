@@ -614,6 +614,61 @@ describe('TelegramComposer', () => {
     expect(legacyApi.appendTelegramFiles).toHaveBeenCalledWith([file]);
   });
 
+  it('reads raw clipboard images when the paste event has no file entry', async () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+    window.pelec = {
+      readClipboardImage: vi.fn().mockResolvedValue('data:image/png;base64,aW1hZ2U='),
+    } as unknown as typeof window.pelec;
+
+    render(
+      <TelegramComposer
+        attachments={[]}
+        canSend
+        editing={{ messageId: null, originalText: '' }}
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    fireEvent.paste(target.querySelector('#telegram-compose-input') as HTMLTextAreaElement, {
+      clipboardData: {
+        files: [],
+        items: [
+          {
+            kind: 'string',
+            type: 'image/png',
+            getAsFile: (): File | null => null,
+          },
+        ],
+        types: ['image/png'],
+      },
+    });
+
+    await waitFor(() => {
+      expect(legacyApi.appendTelegramFiles).toHaveBeenCalledTimes(1);
+    });
+    const pastedFile = vi.mocked(legacyApi.appendTelegramFiles).mock.calls[0]?.[0]?.[0];
+    expect(pastedFile?.name).toBe('clipboard-image.png');
+    expect(pastedFile?.type).toBe('image/png');
+    expect(pastedFile?.size).toBe(5);
+  });
+
   it('keeps normal text paste behavior when no files are present', () => {
     const target = document.createElement('div');
     document.body.append(target);
@@ -706,6 +761,51 @@ describe('TelegramComposer', () => {
 
     fireEvent.click(fileButton as HTMLButtonElement);
     expect(legacyApi.setTelegramAttachmentSendAs).toHaveBeenCalledWith('image-1', 'document');
+  });
+
+  it('sends an attachment without requiring caption text when Enter is pressed', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      appendTelegramFiles: vi.fn(),
+      cancelTelegramVoiceRecording: vi.fn(),
+      clearTelegramReply: vi.fn(),
+      focusTelegramComposer: vi.fn(),
+      removeTelegramAttachment: vi.fn(),
+      sendTelegramMessage: vi.fn(),
+      setTelegramDraftValue: vi.fn(),
+      startTelegramVoiceRecording: vi.fn(),
+      stopTelegramVoiceRecording: vi.fn(),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramComposer
+        attachments={[
+          {
+            id: 'clipboard-image',
+            kind: 'image',
+            name: 'clipboard-image.png',
+            mimeType: 'image/png',
+            dataUrl: 'data:image/png;base64,aW1hZ2U=',
+            sendAs: 'image',
+          },
+        ]}
+        canSend
+        editing={{ messageId: null, originalText: '' }}
+        draftText=""
+        legacyApi={legacyApi}
+        replyPreview={null}
+        sendBehavior="enter"
+        target={target}
+        voiceRecorderState="idle"
+      />,
+    );
+
+    const textarea = target.querySelector('#telegram-compose-input') as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(legacyApi.sendTelegramMessage).toHaveBeenCalledTimes(1);
   });
 
   it('completes the active emoji suggestion before sending on Enter', async () => {

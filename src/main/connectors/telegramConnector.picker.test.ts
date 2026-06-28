@@ -193,17 +193,91 @@ describe('TelegramConnector picker methods', () => {
       input_message_content: {
         _: 'inputMessageAnimation',
         animation: {
-          _: 'inputFileId',
-          id: 21,
+          _: 'inputAnimation',
+          animation: {
+            _: 'inputFileId',
+            id: 21,
+          },
+          thumbnail: null,
+          added_sticker_file_ids: [],
+          duration: 0,
+          width: 320,
+          height: 240,
         },
-        thumbnail: null,
-        added_sticker_file_ids: [],
-        duration: 0,
-        width: 320,
-        height: 240,
         caption: {
           _: 'formattedText',
           text: '',
+          entities: [],
+        },
+      },
+    });
+  });
+
+  it('sends clipboard images using the current nested TDLib media schema', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      sendImageMessage: TelegramConnector['sendImageMessage'];
+    };
+    const invoke = vi.fn(async () => ({}));
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(
+      connector.sendImageMessage('100', 'data:image/png;base64,aW1hZ2U='),
+    ).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith({
+      _: 'sendMessage',
+      chat_id: 100,
+      input_message_content: {
+        _: 'inputMessagePhoto',
+        photo: {
+          _: 'inputPhoto',
+          photo: {
+            _: 'inputFileLocal',
+            path: expect.stringMatching(/clipboard-image\.png$/u),
+          },
+          thumbnail: null,
+        },
+        caption: {
+          _: 'formattedText',
+          text: '',
+          entities: [],
+        },
+      },
+    });
+  });
+
+  it('adds options to extensible polls through TDLib', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      addPollOption: TelegramConnector['addPollOption'];
+    };
+    const invoke = vi.fn(async () => ({}));
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(connector.addPollOption('100', '55', '  Sunday  ')).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledWith({
+      _: 'addPollOption',
+      chat_id: 100,
+      message_id: 55,
+      option: {
+        _: 'inputPollOption',
+        text: {
+          _: 'formattedText',
+          text: 'Sunday',
+          entities: [],
         },
       },
     });

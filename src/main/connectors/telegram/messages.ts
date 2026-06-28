@@ -179,6 +179,8 @@ export const extractTelegramPollInfo = (content: unknown): ChatPoll | undefined 
 
   const container = content as {
     _?: string;
+    description?: unknown;
+    can_add_option?: boolean;
     poll?: {
       question?: unknown;
       options?: Array<{
@@ -191,10 +193,14 @@ export const extractTelegramPollInfo = (content: unknown): ChatPoll | undefined 
       total_voter_count?: number;
       is_anonymous?: boolean;
       is_closed?: boolean;
+      allows_multiple_answers?: boolean;
+      allows_revoting?: boolean;
+      can_see_results?: boolean;
       type?: {
         _?: string;
         allow_multiple_answers?: boolean;
         correct_option_id?: number;
+        correct_option_ids?: number[];
       };
     };
   };
@@ -225,19 +231,32 @@ export const extractTelegramPollInfo = (content: unknown): ChatPoll | undefined 
 
   return {
     question: readTelegramInlineText(poll.question) ?? 'Poll',
+    description: readTelegramInlineText(container.description),
     options,
     totalVoterCount: Math.max(0, Math.floor(Number(poll.total_voter_count ?? 0))) || undefined,
     isAnonymous:
       typeof poll.is_anonymous === 'boolean' ? poll.is_anonymous : undefined,
     isClosed: typeof poll.is_closed === 'boolean' ? poll.is_closed : undefined,
     allowsMultipleAnswers:
-      typeof poll.type?.allow_multiple_answers === 'boolean'
+      typeof poll.allows_multiple_answers === 'boolean'
+        ? poll.allows_multiple_answers
+        : typeof poll.type?.allow_multiple_answers === 'boolean'
         ? poll.type.allow_multiple_answers
         : undefined,
+    allowsRevoting:
+      typeof poll.allows_revoting === 'boolean' ? poll.allows_revoting : undefined,
+    canAddOption:
+      typeof container.can_add_option === 'boolean' ? container.can_add_option : undefined,
+    canSeeResults:
+      typeof poll.can_see_results === 'boolean' ? poll.can_see_results : undefined,
     kind: type === 'pollTypeQuiz' ? 'quiz' : 'regular',
     correctOptionIndex:
-      type === 'pollTypeQuiz' && typeof poll.type?.correct_option_id === 'number'
-        ? Math.max(0, Math.floor(poll.type.correct_option_id))
+      type === 'pollTypeQuiz'
+        ? typeof poll.type?.correct_option_id === 'number'
+          ? Math.max(0, Math.floor(poll.type.correct_option_id))
+          : typeof poll.type?.correct_option_ids?.[0] === 'number'
+            ? Math.max(0, Math.floor(poll.type.correct_option_ids[0]))
+            : undefined
         : undefined,
   };
 };

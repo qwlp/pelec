@@ -977,12 +977,17 @@ export class TelegramConnector implements Connector {
         input_message_content: {
           _: 'inputMessagePhoto',
           photo: {
-            _: 'inputFileLocal',
-            path: upload.filePath,
+            _: 'inputPhoto',
+            photo: {
+              _: 'inputFileLocal',
+              path: upload.filePath,
+            },
+            thumbnail: null,
           },
           caption: {
             _: 'formattedText',
             text: caption?.trim() ?? '',
+            entities: [],
           },
         },
       } as Record<string, unknown>;
@@ -1035,12 +1040,18 @@ export class TelegramConnector implements Connector {
         input_message_content: {
           _: 'inputMessageDocument',
           document: {
-            _: 'inputFileLocal',
-            path: upload.filePath,
+            _: 'inputDocument',
+            document: {
+              _: 'inputFileLocal',
+              path: upload.filePath,
+            },
+            thumbnail: null,
+            disable_content_type_detection: false,
           },
           caption: {
             _: 'formattedText',
             text: caption?.trim() ?? '',
+            entities: [],
           },
         },
       } as Record<string, unknown>;
@@ -1306,6 +1317,44 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async addPollOption(chatId: string, messageId: string, text: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    const normalizedText = text.trim();
+    if (!tdMessageId || !normalizedText || normalizedText.length > 100) {
+      return false;
+    }
+
+    try {
+      await this.tdClient.invoke({
+        _: 'addPollOption',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        option: {
+          _: 'inputPollOption',
+          text: {
+            _: 'formattedText',
+            text: normalizedText,
+            entities: [],
+          },
+        },
+      });
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'messages', chatId });
+      this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown poll option error';
+      this.status.details = `Failed adding poll option: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return false;
+    }
+  }
+
   async listTelegramStickerSets(
     source: TelegramStickerSetSource,
   ): Promise<TelegramStickerSetSummary[]> {
@@ -1441,15 +1490,19 @@ export class TelegramConnector implements Connector {
           item.kind === 'gif'
             ? {
                 _: 'inputMessageAnimation',
-                animation: inputFile,
-                thumbnail: null,
-                added_sticker_file_ids: [],
-                duration: 0,
-                width: item.width ?? 0,
-                height: item.height ?? 0,
+                animation: {
+                  _: 'inputAnimation',
+                  animation: inputFile,
+                  thumbnail: null,
+                  added_sticker_file_ids: [],
+                  duration: 0,
+                  width: item.width ?? 0,
+                  height: item.height ?? 0,
+                },
                 caption: {
                   _: 'formattedText',
                   text: '',
+                  entities: [],
                 },
               }
             : {

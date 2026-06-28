@@ -74,7 +74,7 @@
     "ffprobe-static": "^3.1.0",
     "instagram-private-api": "^1.46.1",
     "lucide-react": "^1.21.0",
-    "prebuilt-tdlib": "^0.1008062.0",
+    "prebuilt-tdlib": "0.1008065.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

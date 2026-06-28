@@ -116,6 +116,7 @@ describe('telegram message helpers', () => {
       }),
     ).toEqual({
       question: 'Best editor?',
+      description: undefined,
       options: [
         { text: 'Vim', voterCount: 5, votePercentage: 42, chosen: undefined },
         { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: true },
@@ -124,8 +125,59 @@ describe('telegram message helpers', () => {
       isAnonymous: false,
       isClosed: true,
       allowsMultipleAnswers: undefined,
+      allowsRevoting: undefined,
+      canAddOption: undefined,
+      canSeeResults: undefined,
       kind: 'quiz',
       correctOptionIndex: 1,
+    });
+  });
+
+  it('extracts extensible poll metadata from the current TDLib schema', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        description: { text: 'Pick the best time.' },
+        can_add_option: true,
+        poll: {
+          question: { text: 'When are we going?' },
+          total_voter_count: 2,
+          is_anonymous: false,
+          is_closed: false,
+          allows_multiple_answers: true,
+          allows_revoting: true,
+          can_see_results: false,
+          type: { _: 'pollTypeRegular' },
+          options: [
+            {
+              text: { text: 'Friday' },
+              voter_count: 0,
+              vote_percentage: 0,
+            },
+            {
+              text: { text: 'Saturday' },
+              voter_count: 0,
+              vote_percentage: 0,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'When are we going?',
+      description: 'Pick the best time.',
+      options: [
+        { text: 'Friday', voterCount: 0, votePercentage: 0, chosen: undefined },
+        { text: 'Saturday', voterCount: 0, votePercentage: 0, chosen: undefined },
+      ],
+      totalVoterCount: 2,
+      isAnonymous: false,
+      isClosed: false,
+      allowsMultipleAnswers: true,
+      allowsRevoting: true,
+      canAddOption: true,
+      canSeeResults: false,
+      kind: 'regular',
+      correctOptionIndex: undefined,
     });
   });
 
@@ -151,6 +203,7 @@ describe('telegram message helpers', () => {
       }),
     ).toEqual({
       question: 'Best editor?',
+      description: undefined,
       options: [
         { text: 'Vim', voterCount: 5, votePercentage: 42, chosen: undefined },
         { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: undefined },
@@ -159,6 +212,9 @@ describe('telegram message helpers', () => {
       isAnonymous: undefined,
       isClosed: undefined,
       allowsMultipleAnswers: undefined,
+      allowsRevoting: undefined,
+      canAddOption: undefined,
+      canSeeResults: undefined,
       kind: 'regular',
       correctOptionIndex: undefined,
     });
@@ -190,6 +246,7 @@ describe('telegram message helpers', () => {
       }),
     ).toEqual({
       question: 'Poll',
+      description: undefined,
       options: [
         { text: 'Option 1', voterCount: 7, votePercentage: 58, chosen: undefined },
       ],
@@ -197,6 +254,9 @@ describe('telegram message helpers', () => {
       isAnonymous: undefined,
       isClosed: undefined,
       allowsMultipleAnswers: undefined,
+      allowsRevoting: undefined,
+      canAddOption: undefined,
+      canSeeResults: undefined,
       kind: 'regular',
       correctOptionIndex: undefined,
     });

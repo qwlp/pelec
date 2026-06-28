@@ -1249,11 +1249,16 @@ const TelegramPollCard = ({
   const [draftOptionIds, setDraftOptionIds] = useState<number[]>(chosenOptionIds);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [addingOption, setAddingOption] = useState(false);
+  const [addOptionOpen, setAddOptionOpen] = useState(false);
+  const addOptionInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     setDraftOptionIds(chosenOptionIds);
     setSubmitting(false);
     setSubmitError(null);
+    setAddingOption(false);
+    setAddOptionOpen(false);
   }, [
     message.id,
     poll?.question,
@@ -1269,13 +1274,6 @@ const TelegramPollCard = ({
     return null;
   }
 
-  const badges = [
-    poll.kind === 'quiz' ? 'Quiz' : 'Poll',
-    poll.isClosed ? 'Closed' : null,
-    poll.isAnonymous === false ? 'Public' : null,
-    poll.allowsMultipleAnswers ? 'Multi-select' : null,
-  ].filter((badge): badge is string => !!badge);
-
   const totalVoters = poll.totalVoterCount ?? poll.options.reduce((sum, option) => sum + option.voterCount, 0);
   const hasPerOptionResults = poll.options.some(
     (option) =>
@@ -1284,23 +1282,16 @@ const TelegramPollCard = ({
       (typeof option.votePercentage === 'number' && option.votePercentage > 0),
   );
   const shouldHideOptionResults =
-    totalVoters > 0 && !poll.isClosed && !hasPerOptionResults;
-  const footerParts =
+    !poll.isClosed &&
+    (poll.canSeeResults === false || (totalVoters > 0 && !hasPerOptionResults));
+  const pollLabel = `${poll.isAnonymous === false ? 'Public ' : poll.isAnonymous ? 'Anonymous ' : ''}${
+    poll.kind === 'quiz' ? 'quiz' : 'poll'
+  }`;
+  const voteCountLabel =
     totalVoters > 0
-      ? [`${formatTelegramPollCount(totalVoters)} vote${totalVoters === 1 ? '' : 's'}`]
-      : ['No votes yet'];
-
-  if (poll.isAnonymous !== undefined) {
-    footerParts.push(poll.isAnonymous ? 'Anonymous' : 'Public votes');
-  }
-
-  if (poll.allowsMultipleAnswers) {
-    footerParts.push('Multiple answers');
-  }
-
-  if (shouldHideOptionResults) {
-    footerParts.push('Results hidden until you vote');
-  }
+      ? `${formatTelegramPollCount(totalVoters)} vote${totalVoters === 1 ? '' : 's'}`
+      : 'No votes';
+  const statusLabel = poll.isClosed ? `Closed · ${voteCountLabel}` : voteCountLabel;
 
   const canVote =
     !!activeChatId &&
@@ -1327,16 +1318,39 @@ const TelegramPollCard = ({
     setDraftOptionIds(normalizedOptionIds);
   };
 
+  const submitAddedOption = async (optionText: string): Promise<void> => {
+    const normalizedText = optionText.trim();
+    if (!activeChatId || addingOption || !normalizedText) {
+      return;
+    }
+
+    setAddingOption(true);
+    setSubmitError(null);
+    const added = await window.pelec.addConnectorPollOption(
+      'telegram',
+      activeChatId,
+      message.id,
+      normalizedText,
+    );
+    setAddingOption(false);
+    if (!added) {
+      setSubmitError('Could not add option');
+      return;
+    }
+    if (addOptionInputRef.current) {
+      addOptionInputRef.current.value = '';
+    }
+    setAddOptionOpen(false);
+  };
+
   return (
     <section className={`telegram-poll-card${poll.kind === 'quiz' ? ' is-quiz' : ''}${poll.isClosed ? ' is-closed' : ''}`}>
-      <div className="telegram-poll-badges" aria-label="Telegram poll details">
-        {badges.map((badge) => (
-          <span key={badge} className="telegram-poll-badge">
-            {badge}
-          </span>
-        ))}
+      <div className="telegram-poll-header" aria-label="Telegram poll details">
+        <span className="telegram-poll-kind">{pollLabel}</span>
+        <span className="telegram-poll-count">{statusLabel}</span>
       </div>
       <div className="telegram-poll-question">{poll.question}</div>
+      {poll.description ? <div className="telegram-poll-description">{poll.description}</div> : null}
       <div className="telegram-poll-options">
         {poll.options.map((option, index) => {
           const votePercentage =
@@ -1378,17 +1392,74 @@ const TelegramPollCard = ({
                 style={{ width: `${showOptionResults ? Math.min(100, Math.max(0, votePercentage)) : 0}%` }}
               />
               <div className="telegram-poll-option-content">
+                <span
+                  className={`telegram-poll-option-control${
+                    poll.allowsMultipleAnswers ? ' is-checkbox' : ' is-radio'
+                  }${selected ? ' is-selected' : ''}`}
+                  aria-hidden="true"
+                />
                 <span className="telegram-poll-option-label">{option.text}</span>
-                <span className="telegram-poll-option-meta">
-                  {showOptionResults
-                    ? `${votePercentage}% · ${formatTelegramPollCount(option.voterCount)}`
-                    : 'Results hidden'}
-                </span>
+                {showOptionResults && totalVoters > 0 ? (
+                  <span className="telegram-poll-option-meta">{votePercentage}%</span>
+                ) : null}
               </div>
             </button>
           );
         })}
       </div>
+      {poll.canAddOption && activeChatId && !poll.isClosed ? (
+        addOptionOpen ? (
+          <form
+            className="telegram-poll-add-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void submitAddedOption(addOptionInputRef.current?.value ?? '');
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <textarea
+              ref={addOptionInputRef}
+              className="telegram-poll-add-input"
+              maxLength={100}
+              rows={1}
+              required
+              disabled={addingOption}
+              aria-label="New poll option"
+              placeholder="New option"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.currentTarget.value = '';
+                  setAddOptionOpen(false);
+                } else if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  void submitAddedOption(event.currentTarget.value);
+                }
+              }}
+            />
+            <button
+              type="submit"
+              className="telegram-poll-add-submit"
+              disabled={addingOption}
+            >
+              {addingOption ? 'Adding…' : 'Add'}
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="telegram-poll-add-trigger"
+            onClick={(event) => {
+              event.stopPropagation();
+              setAddOptionOpen(true);
+              setSubmitError(null);
+            }}
+          >
+            <span aria-hidden="true">+</span>
+            <span>Add option</span>
+          </button>
+        )
+      ) : null}
       {poll.allowsMultipleAnswers && canVote ? (
         <div className="telegram-poll-actions">
           <button
@@ -1417,7 +1488,11 @@ const TelegramPollCard = ({
         </div>
       ) : null}
       {submitError ? <div className="telegram-poll-submit-error">{submitError}</div> : null}
-      <div className="telegram-poll-footer">{footerParts.join(' · ')}</div>
+      {shouldHideOptionResults ? (
+        <div className="telegram-poll-footer">
+          {poll.canSeeResults === false ? 'Results hidden' : 'Vote to see results'}
+        </div>
+      ) : null}
     </section>
   );
 };

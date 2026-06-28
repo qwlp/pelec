@@ -214,6 +214,19 @@ export class ConnectorManager {
     return connector.answerPoll(chatId, messageId, optionIds);
   }
 
+  async addPollOption(
+    network: NetworkId,
+    chatId: string,
+    messageId: string,
+    text: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.addPollOption) {
+      return false;
+    }
+    return connector.addPollOption(chatId, messageId, text);
+  }
+
   async listTelegramStickerSets(
     network: NetworkId,
     source: TelegramStickerSetSource,
