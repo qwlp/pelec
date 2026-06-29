@@ -3001,8 +3001,11 @@ export const bootLegacyApp = async (
       if (
         a[i].id !== b[i].id ||
         a[i].title !== b[i].title ||
+        a[i].lastMessageSender !== b[i].lastMessageSender ||
         a[i].lastMessagePreview !== b[i].lastMessagePreview ||
         a[i].lastMessageTimestamp !== b[i].lastMessageTimestamp ||
+        a[i].lastMessageOutgoing !== b[i].lastMessageOutgoing ||
+        a[i].lastMessageReadByPeer !== b[i].lastMessageReadByPeer ||
         a[i].unreadCount !== b[i].unreadCount ||
         a[i].avatarUrl !== b[i].avatarUrl ||
         a[i].isMuted !== b[i].isMuted ||
@@ -4456,26 +4459,55 @@ export const bootLegacyApp = async (
             replyToMessageId,
           );
         }
-        for (let index = 0; index < attachments.length; index += 1) {
-          if (!sent) {
-            break;
-          }
-          const attachment = attachments[index];
-          if (!attachment) {
-            continue;
-          }
-          const caption = !hasVoiceAttachments && index === 0 ? text : '';
-          const attachmentSent =
-            attachment.kind === 'image' && attachment.sendAs !== 'document'
-              ? await window.pelec.sendConnectorImage(
-                  'telegram',
-                  chatId,
-                  attachment.dataUrl,
-                  caption,
-                  replyToMessageId,
-                )
-              : attachment.kind === 'voice'
-                ? await window.pelec.sendConnectorVoice(
+        const imageAlbumAttachments = attachments.filter(
+          (attachment) => attachment.kind === 'image' && attachment.sendAs !== 'document',
+        );
+        const canSendImageAlbum =
+          sent && !hasVoiceAttachments && imageAlbumAttachments.length > 1 &&
+          imageAlbumAttachments.length === attachments.length;
+        if (canSendImageAlbum) {
+          sent = await window.pelec.sendConnectorImageAlbum(
+            'telegram',
+            chatId,
+            imageAlbumAttachments.map((attachment) => ({
+              dataUrl: attachment.dataUrl,
+              fileName: attachment.name,
+              mimeType: attachment.mimeType,
+            })),
+            text,
+            replyToMessageId,
+          );
+        } else {
+          for (let index = 0; index < attachments.length; index += 1) {
+            if (!sent) {
+              break;
+            }
+            const attachment = attachments[index];
+            if (!attachment) {
+              continue;
+            }
+            const caption = !hasVoiceAttachments && index === 0 ? text : '';
+            const attachmentSent =
+              attachment.kind === 'image' && attachment.sendAs !== 'document'
+                ? await window.pelec.sendConnectorImage(
+                    'telegram',
+                    chatId,
+                    attachment.dataUrl,
+                    caption,
+                    replyToMessageId,
+                  )
+                : attachment.kind === 'voice'
+                  ? await window.pelec.sendConnectorVoice(
+                      'telegram',
+                      chatId,
+                      {
+                        dataUrl: attachment.dataUrl,
+                        fileName: attachment.name,
+                        mimeType: attachment.mimeType,
+                      },
+                      replyToMessageId,
+                    )
+                : await window.pelec.sendConnectorDocument(
                     'telegram',
                     chatId,
                     {
@@ -4483,22 +4515,13 @@ export const bootLegacyApp = async (
                       fileName: attachment.name,
                       mimeType: attachment.mimeType,
                     },
+                    caption,
                     replyToMessageId,
-                  )
-              : await window.pelec.sendConnectorDocument(
-                  'telegram',
-                  chatId,
-                  {
-                    dataUrl: attachment.dataUrl,
-                    fileName: attachment.name,
-                    mimeType: attachment.mimeType,
-                  },
-                  caption,
-                  replyToMessageId,
-                );
-          if (!attachmentSent) {
-            sent = false;
-            break;
+                  );
+            if (!attachmentSent) {
+              sent = false;
+              break;
+            }
           }
         }
       } else {

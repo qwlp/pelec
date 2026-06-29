@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, Image as ImageIcon, LoaderCircle, Pause, Play } from 'lucide-react';
-import type { ChatMessage, ChatServiceEvent } from '../../../shared/connectors';
+import type { ChatMessage, ChatReaction, ChatServiceEvent } from '../../../shared/connectors';
 import type { LegacyAppBridgeApi, LegacyRenderableTelegramMessage } from '../../legacyBridge';
 import { describeTelegramCall } from './calls';
 import { renderTelegramRichText } from './links';
@@ -61,6 +61,11 @@ interface TelegramVoicePlaybackCoordinator {
   isCurrentRequest(requestId: number): boolean;
   release(audio: HTMLAudioElement): void;
   stopActive(): void;
+}
+
+interface RenderableTelegramReaction {
+  messageId: string;
+  reaction: ChatReaction;
 }
 
 const TELEGRAM_VOICE_PLAYBACK_RATES = [1, 1.5, 2] as const;
@@ -273,6 +278,19 @@ const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): Messa
   }
 
   return bundles;
+};
+
+const getRenderableTelegramReactions = (
+  messages: LegacyRenderableTelegramMessage[],
+): RenderableTelegramReaction[] => {
+  const messageWithReactions = messages.find((message) => (message.reactions?.length ?? 0) > 0);
+  if (!messageWithReactions) {
+    return [];
+  }
+  return (messageWithReactions.reactions ?? []).map((reaction) => ({
+    messageId: messageWithReactions.id,
+    reaction,
+  }));
 };
 
 const useStableMessageBundles = (
@@ -1603,6 +1621,7 @@ const TelegramMessageRow = memo(
   }) => {
     const { albumCaption, previousMessage, primaryMessage, renderMessages, shouldCollapseAlbum, showDayDivider } =
       bundle;
+    const renderableReactions = getRenderableTelegramReactions(renderMessages);
     const rawMessageTextValue = shouldCollapseAlbum ? albumCaption : safeText(primaryMessage.text);
     const limitedMessageText = limitTelegramRenderedText(rawMessageTextValue);
     const messageTextValue = limitedMessageText.text;
@@ -1829,18 +1848,25 @@ const TelegramMessageRow = memo(
               ) : null}
             </div>
           ) : null}
-          {primaryMessage.reactions && primaryMessage.reactions.length > 0 ? (
+          {renderableReactions.length > 0 ? (
             <div className="telegram-message-reactions">
-              {primaryMessage.reactions.map((reaction) => (
-                <span
-                  key={`${reaction.value}:${reaction.count}`}
+              {renderableReactions.map(({ messageId, reaction }) => (
+                <button
+                  key={`${messageId}:${reaction.value}:${reaction.count}`}
+                  type="button"
                   className={`telegram-message-reaction${reaction.chosen ? ' chosen' : ''}`}
+                  aria-label={`${reaction.chosen ? 'Remove' : 'Add'} ${safeLabel(reaction.value, '?')} reaction`}
+                  aria-pressed={reaction.chosen === true}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void legacyApi?.setTelegramMessageReaction(messageId, reaction.value);
+                  }}
                 >
                   <span className="telegram-message-reaction-value">
                     {safeLabel(reaction.value, '?')}
                   </span>
                   <span className="telegram-message-reaction-count">{reaction.count}</span>
-                </span>
+                </button>
               ))}
             </div>
           ) : null}

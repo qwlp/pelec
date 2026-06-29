@@ -1058,6 +1058,88 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async sendImageAlbumMessage(
+    chatId: string,
+    images: OutgoingAttachmentDocument[],
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const albumImages = images.filter((image) => image.dataUrl.trim());
+    if (albumImages.length < 1) {
+      return false;
+    }
+    if (albumImages.length === 1) {
+      return this.sendImageMessage(chatId, albumImages[0].dataUrl, caption, replyToMessageId);
+    }
+
+    const uploads: Array<{ filePath: string; tempDir: string }> = [];
+    let shouldCleanupImmediately = true;
+    try {
+      for (const image of albumImages) {
+        const upload = await this.prepareUploadFile(
+          'pelec-telegram-image-',
+          image.dataUrl,
+          image.fileName,
+          (mimeType) => mimeType.startsWith('image/'),
+          'clipboard-image',
+        );
+        if (!upload) {
+          return false;
+        }
+        uploads.push(upload);
+      }
+
+      const trimmedCaption = caption?.trim() ?? '';
+      const baseRequest = {
+        _: 'sendMessageAlbum',
+        chat_id: Number(chatId),
+        input_message_contents: uploads.map<Record<string, unknown>>((upload, index) => ({
+          _: 'inputMessagePhoto',
+          photo: {
+            _: 'inputPhoto',
+            photo: {
+              _: 'inputFileLocal',
+              path: upload.filePath,
+            },
+            thumbnail: null,
+          },
+          caption: {
+            _: 'formattedText',
+            text: index === 0 ? trimmedCaption : '',
+            entities: [],
+          },
+        })),
+      } as Record<string, unknown>;
+
+      await this.sendTdMessage(baseRequest, replyToMessageId);
+
+      shouldCleanupImmediately = false;
+      for (const upload of uploads) {
+        this.scheduleUploadTempCleanup(upload.tempDir);
+      }
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown sendImageAlbumMessage error';
+      this.status.details = `Failed sending image album: ${this.status.lastError}`;
+      return false;
+    } finally {
+      if (shouldCleanupImmediately) {
+        await Promise.all(
+          uploads.map((upload) =>
+            rm(upload.tempDir, { recursive: true, force: true }).catch(() => {
+              // Best-effort temp cleanup.
+            }),
+          ),
+        );
+      }
+    }
+  }
+
   async sendDocumentMessage(
     chatId: string,
     document: OutgoingAttachmentDocument,
@@ -2948,12 +3030,22 @@ export class TelegramConnector implements Connector {
           return;
         }
 
+        if (update._ === 'updateChatReadOutbox') {
+          this.emitUpdate({
+            network: this.network.id,
+            kind: 'messages-invalidated',
+            chatId,
+            reason: 'read-state',
+          });
+          this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+          return;
+        }
+
         if (
           update._ === 'updateDeleteMessages' ||
           update._ === 'updateMessageEdited' ||
           update._ === 'updateMessageSendSucceeded' ||
-          update._ === 'updateMessageSendFailed' ||
-          update._ === 'updateChatReadOutbox'
+          update._ === 'updateMessageSendFailed'
         ) {
           this.emitUpdate({
             network: this.network.id,

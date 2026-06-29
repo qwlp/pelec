@@ -327,6 +327,79 @@ describe('TelegramConnector picker methods', () => {
     });
   });
 
+  it('sends multiple images as one Telegram album', async () => {
+    const connector = createConnector() as unknown as {
+      status: { authState: string };
+      tdClient: TdClient;
+      sendImageAlbumMessage: TelegramConnector['sendImageAlbumMessage'];
+    };
+    const invoke = vi.fn(async () => ({}));
+    connector.status.authState = 'authenticated';
+    connector.tdClient = {
+      invoke,
+      on: vi.fn(),
+    };
+
+    await expect(
+      connector.sendImageAlbumMessage(
+        '100',
+        [
+          {
+            dataUrl: 'data:image/png;base64,aW1hZ2Ux',
+            fileName: 'first.png',
+            mimeType: 'image/png',
+          },
+          {
+            dataUrl: 'data:image/png;base64,aW1hZ2Uy',
+            fileName: 'second.png',
+            mimeType: 'image/png',
+          },
+        ],
+        'Album caption',
+      ),
+    ).resolves.toBe(true);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith({
+      _: 'sendMessageAlbum',
+      chat_id: 100,
+      input_message_contents: [
+        {
+          _: 'inputMessagePhoto',
+          photo: {
+            _: 'inputPhoto',
+            photo: {
+              _: 'inputFileLocal',
+              path: expect.stringMatching(/first\.png$/u),
+            },
+            thumbnail: null,
+          },
+          caption: {
+            _: 'formattedText',
+            text: 'Album caption',
+            entities: [],
+          },
+        },
+        {
+          _: 'inputMessagePhoto',
+          photo: {
+            _: 'inputPhoto',
+            photo: {
+              _: 'inputFileLocal',
+              path: expect.stringMatching(/second\.png$/u),
+            },
+            thumbnail: null,
+          },
+          caption: {
+            _: 'formattedText',
+            text: '',
+            entities: [],
+          },
+        },
+      ],
+    });
+  });
+
   it('adds options to extensible polls through TDLib', async () => {
     const connector = createConnector() as unknown as {
       status: { authState: string };

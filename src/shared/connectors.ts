@@ -386,6 +386,12 @@ export interface Connector {
     caption?: string,
     replyToMessageId?: string,
   ): Promise<boolean>;
+  sendImageAlbumMessage?(
+    chatId: string,
+    images: OutgoingAttachmentDocument[],
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean>;
   sendDocumentMessage?(
     chatId: string,
     document: OutgoingAttachmentDocument,

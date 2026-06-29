@@ -256,6 +256,21 @@ const api = {
       caption,
       replyToMessageId,
     ) as Promise<boolean>,
+  sendConnectorImageAlbum: (
+    network: NetworkId,
+    chatId: string,
+    images: OutgoingAttachmentDocument[],
+    caption?: string,
+    replyToMessageId?: string,
+  ) =>
+    ipcRenderer.invoke(
+      'connector:send-image-album',
+      network,
+      chatId,
+      images,
+      caption,
+      replyToMessageId,
+    ) as Promise<boolean>,
   sendConnectorDocument: (
     network: NetworkId,
     chatId: string,

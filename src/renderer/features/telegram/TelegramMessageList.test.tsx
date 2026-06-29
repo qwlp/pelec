@@ -282,6 +282,89 @@ describe('TelegramMessageList', () => {
     );
   });
 
+  it('toggles an existing reaction without selecting the media message', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      selectTelegramMessage: vi.fn(),
+      setTelegramMessageReaction: vi.fn().mockResolvedValue(true),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: 'photo-1',
+            sender: 'Ada',
+            text: 'Photo',
+            timestamp: 100,
+            imageUrl: 'pelec-media://telegram/photo-1',
+            reactions: [{ value: '✍', count: 1, chosen: true }],
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    fireEvent.click(target.querySelector('.telegram-message-reaction') as HTMLElement);
+
+    expect(legacyApi.setTelegramMessageReaction).toHaveBeenCalledWith('photo-1', '✍');
+    expect(legacyApi.selectTelegramMessage).not.toHaveBeenCalled();
+  });
+
+  it('renders reactions from a collapsed album item that is not the primary message', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+    const legacyApi = {
+      selectTelegramMessage: vi.fn(),
+      setTelegramMessageReaction: vi.fn().mockResolvedValue(true),
+    } as unknown as LegacyAppBridgeApi;
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={legacyApi}
+        loadError={null}
+        messages={[
+          {
+            id: 'album-1-a',
+            sender: 'Ada',
+            text: 'Photo',
+            timestamp: 100,
+            imageUrl: 'pelec-media://telegram/album-1-a',
+            mediaAlbumId: 'album-1',
+            reactions: [{ value: '✍', count: 1, chosen: true }],
+          },
+          {
+            id: 'album-1-b',
+            sender: 'Ada',
+            text: 'Tasks Update',
+            timestamp: 101,
+            imageUrl: 'pelec-media://telegram/album-1-b',
+            mediaAlbumId: 'album-1',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const reaction = target.querySelector('.telegram-message-reaction') as HTMLElement;
+
+    expect(reaction).toHaveTextContent('✍');
+    fireEvent.click(reaction);
+    expect(legacyApi.setTelegramMessageReaction).toHaveBeenCalledWith('album-1-a', '✍');
+    expect(legacyApi.selectTelegramMessage).not.toHaveBeenCalled();
+  });
+
   it('automatically copies selected message text without selecting the message', async () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'telegram-message-list';

@@ -695,6 +695,28 @@ export const registerIpcHandlers = ({
   );
 
   ipcMain.handle(
+    'connector:send-image-album',
+    async (
+      _event,
+      network: NetworkId,
+      chatId: string,
+      images: OutgoingAttachmentDocument[],
+      caption?: string,
+      replyToMessageId?: string,
+    ) => {
+      return (
+        (await getConnectorManager()?.sendImageAlbumMessage(
+          network,
+          chatId,
+          images,
+          caption,
+          replyToMessageId,
+        )) ?? false
+      );
+    },
+  );
+
+  ipcMain.handle(
     'connector:send-document',
     async (
       _event,

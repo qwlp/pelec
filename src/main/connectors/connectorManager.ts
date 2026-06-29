@@ -315,6 +315,20 @@ export class ConnectorManager {
     return connector.sendImageMessage(chatId, dataUrl, caption, replyToMessageId);
   }
 
+  async sendImageAlbumMessage(
+    network: NetworkId,
+    chatId: string,
+    images: OutgoingAttachmentDocument[],
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    const connector = this.getConnector(network);
+    if (!connector.sendImageAlbumMessage) {
+      return false;
+    }
+    return connector.sendImageAlbumMessage(chatId, images, caption, replyToMessageId);
+  }
+
   async sendDocumentMessage(
     network: NetworkId,
     chatId: string,

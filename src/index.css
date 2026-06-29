@@ -3018,6 +3018,7 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
 }
 
 .telegram-message-reaction {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -3026,8 +3027,16 @@ body.telegram-media-picker-open .telegram-jump-latest-button {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.04);
   color: #f3e8fb;
+  cursor: pointer;
+  font-family: inherit;
   font-size: calc(12px * var(--font-scale));
   line-height: 1.2;
+}
+
+.telegram-message-reaction:hover,
+.telegram-message-reaction:focus-visible {
+  border-color: rgba(255, 176, 218, 0.5);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .telegram-message-reaction.chosen {
