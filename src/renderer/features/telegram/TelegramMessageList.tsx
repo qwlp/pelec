@@ -231,6 +231,8 @@ const buildMessageBundles = (messages: LegacyRenderableTelegramMessage[]): Messa
         if (
           !nextMessage ||
           nextMessage.mediaAlbumId !== message.mediaAlbumId ||
+          nextMessage.outgoing !== message.outgoing ||
+          safeText(nextMessage.sender) !== safeText(message.sender) ||
           !isTelegramAlbumEligibleMessage(nextMessage)
         ) {
           break;
@@ -1683,6 +1685,11 @@ const TelegramMessageRow = memo(
       !primaryMessage.stickerUrl &&
       !(primaryMessage.audioUrl || primaryMessage.hasAudio) &&
       !primaryMessage.document;
+    const hasSingleImage =
+      !shouldCollapseAlbum && !!(primaryMessage.imageUrl || primaryMessage.imageDeferred);
+    const hasSingleVideo =
+      !shouldCollapseAlbum && !!(primaryMessage.videoUrl || primaryMessage.hasVideo);
+    const hasWideMedia = shouldCollapseAlbum || hasSingleImage || hasSingleVideo;
 
     return (
       <>
@@ -1698,7 +1705,9 @@ const TelegramMessageRow = memo(
             isDocumentOnlyMessage ? ' document-only' : ''
           }${isPollOnlyMessage ? ' poll-only' : ''}${
             primaryMessage.poll ? ' has-poll' : ''
-          }${
+          }${hasWideMedia ? ' has-wide-media' : ''}${
+            hasSingleImage ? ' has-single-image' : ''
+          }${hasSingleVideo ? ' has-single-video' : ''}${
             messageTextSelectable ? ' selectable-text' : ''
           }`}
           data-message-id={primaryMessage.id}

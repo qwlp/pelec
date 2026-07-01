@@ -41,11 +41,11 @@ export const installDom = (): (() => void) => {
   const previousDetachEvent = Object.getOwnPropertyDescriptor(dom.window.Element.prototype, 'detachEvent');
   Object.defineProperty(dom.window.Element.prototype, 'attachEvent', {
     configurable: true,
-    value: () => undefined,
+    value: (): undefined => undefined,
   });
   Object.defineProperty(dom.window.Element.prototype, 'detachEvent', {
     configurable: true,
-    value: () => undefined,
+    value: (): undefined => undefined,
   });
 
   return () => {

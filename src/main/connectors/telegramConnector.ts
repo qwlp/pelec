@@ -136,6 +136,7 @@ export class TelegramConnector implements Connector {
   private updateListeners = new Set<(event: ConnectorUpdateEvent) => void>();
   private tdlibInitPromise: Promise<void> | null = null;
   private tdlibRecoveryPromise: Promise<void> | null = null;
+  private ownUserId: number | null = null;
   private readonly callService: TelegramCallService;
   private readonly callCapabilityCache = new Map<
     number,
@@ -194,6 +195,7 @@ export class TelegramConnector implements Connector {
     this.tdLibReady = false;
     this.latestQrLink = null;
     this.activeChatId = null;
+    this.ownUserId = null;
     this.resolveQrWaiters(null);
     for (const timer of this.uploadTempCleanupTimers.values()) {
       clearTimeout(timer);
@@ -552,6 +554,7 @@ export class TelegramConnector implements Connector {
 
       const chatIds = (chatsResult.chat_ids ?? []).slice(0, 80);
       const scopeMuteForByType = new Map<string, number>();
+      const ownUserId = await this.resolveOwnUserId(client);
       const summaryResults = await Promise.allSettled(
         chatIds.map(async (chatId) => {
           const chat = await this.invokeWithTimeout<TdChat>(
@@ -563,13 +566,14 @@ export class TelegramConnector implements Connector {
             'getChat',
           );
           const isMuted = await this.isChatMuted(client, chat, scopeMuteForByType);
+          const lastMessageOutgoing = this.isTdMessageOutgoing(chat.last_message, ownUserId);
           const previewText = extractTelegramMessageText(chat.last_message?.content, {
-            outgoing: chat.last_message?.is_outgoing === true,
+            outgoing: lastMessageOutgoing,
           });
           const preview = buildTelegramChatPreview({
             chatTitle: chat.title,
             includeSender: this.shouldIncludeSenderInChatPreview(chat),
-            isOutgoing: chat.last_message?.is_outgoing === true,
+            isOutgoing: lastMessageOutgoing,
             previewText,
             senderLabel:
               chat.last_message?.sender_id
@@ -584,9 +588,9 @@ export class TelegramConnector implements Connector {
             lastMessagePreview: preview.previewText,
             lastMessageSender: preview.senderLabel,
             lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
-            lastMessageOutgoing: chat.last_message?.is_outgoing === true,
+            lastMessageOutgoing,
             lastMessageReadByPeer:
-              chat.last_message?.is_outgoing === true
+              lastMessageOutgoing
                 ? this.isMessageReadByPeer(chat.last_message.id, chat.last_read_outbox_message_id)
                 : undefined,
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
@@ -649,6 +653,7 @@ export class TelegramConnector implements Connector {
         'getChat',
       );
       const lastReadOutboxMessageId = chat.last_read_outbox_message_id;
+      const ownUserId = await this.resolveOwnUserId(client);
 
       const pageLimit = Math.max(1, Math.min(100, Math.floor(options?.limit ?? 80)));
       const beforeMessageId = this.toTdMessageId(options?.beforeMessageId);
@@ -696,10 +701,11 @@ export class TelegramConnector implements Connector {
       for (const replyTargetId of replyTargetIds) {
         const localMessage = uniqueById.get(replyTargetId);
         if (localMessage) {
+          const localMessageOutgoing = this.isTdMessageOutgoing(localMessage, ownUserId);
           replyContextById.set(replyTargetId, {
             sender: await this.resolveSenderLabel(client, localMessage.sender_id),
             text: extractTelegramMessageText(localMessage.content, {
-              outgoing: localMessage.is_outgoing === true,
+              outgoing: localMessageOutgoing,
             }),
           });
           continue;
@@ -709,10 +715,11 @@ export class TelegramConnector implements Connector {
         if (!remoteMessage) {
           continue;
         }
+        const remoteMessageOutgoing = this.isTdMessageOutgoing(remoteMessage, ownUserId);
         replyContextById.set(replyTargetId, {
           sender: await this.resolveSenderLabel(client, remoteMessage.sender_id),
           text: extractTelegramMessageText(remoteMessage.content, {
-            outgoing: remoteMessage.is_outgoing === true,
+            outgoing: remoteMessageOutgoing,
           }),
         });
       }
@@ -723,19 +730,20 @@ export class TelegramConnector implements Connector {
           const replyContext = replyTargetId ? replyContextById.get(replyTargetId) : undefined;
           const videoDimensions = extractTelegramVideoDimensions(message.content);
           const serviceEventDetail = await this.resolveServiceEventDetail(client, message.content);
+          const outgoing = this.isTdMessageOutgoing(message, ownUserId);
           return {
             id: String(message.id ?? ''),
             mediaAlbumId: message.media_album_id ? String(message.media_album_id) : undefined,
             sender: await this.resolveSenderLabel(client, message.sender_id),
             text: extractTelegramMessageText(message.content, {
-              outgoing: message.is_outgoing === true,
+              outgoing,
             }),
             textEntities: extractTelegramMessageEntities(message.content),
             timestamp: (message.date ?? 0) * 1000,
-            outgoing: Boolean(message.is_outgoing),
+            outgoing,
             canBeEdited: message.can_be_edited,
             readByPeer:
-              message.is_outgoing === true
+              outgoing
                 ? this.isMessageReadByPeer(message.id, lastReadOutboxMessageId)
                 : undefined,
             forwardedFrom: await this.resolveForwardOriginLabel(client, message.forward_info),
@@ -2136,6 +2144,49 @@ export class TelegramConnector implements Connector {
     return undefined;
   }
 
+  private async resolveOwnUserId(client: TdClient): Promise<number | null> {
+    if (this.ownUserId !== null) {
+      return this.ownUserId;
+    }
+
+    try {
+      const user = await this.invokeWithTimeout<{ id?: number }>(
+        client,
+        {
+          _: 'getMe',
+        },
+        'getMe',
+      );
+      const userId = Number(user.id ?? 0);
+      this.ownUserId = Number.isFinite(userId) && userId > 0 ? userId : null;
+      return this.ownUserId;
+    } catch {
+      return null;
+    }
+  }
+
+  private isTdMessageOutgoing(
+    message:
+      | {
+          is_outgoing?: boolean;
+          sender_id?: { user_id?: number; _?: string };
+        }
+      | undefined,
+    ownUserId: number | null,
+  ): boolean {
+    if (!message) {
+      return false;
+    }
+    if (typeof message.is_outgoing === 'boolean') {
+      return message.is_outgoing;
+    }
+    return (
+      ownUserId !== null &&
+      message.sender_id?._ === 'messageSenderUser' &&
+      message.sender_id.user_id === ownUserId
+    );
+  }
+
   private async resolveServiceEventDetail(client: TdClient, content: unknown): Promise<string | undefined> {
     if (!content || typeof content !== 'object') {
       return undefined;
@@ -2240,6 +2291,7 @@ export class TelegramConnector implements Connector {
     }).catch((): string | undefined => undefined);
 
     if (user.id && displayName) {
+      this.ownUserId = user.id;
       const label = username ? `${displayName} (@${username})` : displayName;
       this.userLabelCache.set(user.id, label);
       this.userAvatarCache.set(user.id, avatarUrl);

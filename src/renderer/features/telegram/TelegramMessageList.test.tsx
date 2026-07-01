@@ -365,6 +365,79 @@ describe('TelegramMessageList', () => {
     expect(legacyApi.selectTelegramMessage).not.toHaveBeenCalled();
   });
 
+  it('marks single image messages as wide media bubbles', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'photo-wide',
+            sender: 'Ada',
+            text: 'was this big for me',
+            timestamp: 100,
+            outgoing: true,
+            imageUrl: 'pelec-media://telegram/photo-wide',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    const message = target.querySelector<HTMLElement>('[data-message-id="photo-wide"]');
+    expect(message).toHaveClass('outgoing', 'has-wide-media', 'has-single-image');
+    expect(message?.querySelector('.telegram-message-image')).toBeTruthy();
+    expect(message?.textContent).toContain('was this big for me');
+  });
+
+  it('does not collapse album ids across different senders or directions', () => {
+    const target = document.createElement('div');
+    document.body.append(target);
+
+    render(
+      <TelegramMessageList
+        activeChatId="chat-1"
+        activeChatTitle="Ops"
+        legacyApi={null}
+        loadError={null}
+        messages={[
+          {
+            id: 'album-mixed-incoming',
+            sender: 'Ada',
+            text: 'Photo',
+            timestamp: 100,
+            imageUrl: 'pelec-media://telegram/album-mixed-incoming',
+            mediaAlbumId: 'album-mixed',
+          },
+          {
+            id: 'album-mixed-outgoing',
+            sender: 'You',
+            text: 'was this big for me',
+            timestamp: 101,
+            outgoing: true,
+            imageUrl: 'pelec-media://telegram/album-mixed-outgoing',
+            mediaAlbumId: 'album-mixed',
+          },
+        ]}
+        messagesLoading={false}
+        selectedMessageId={null}
+        target={target}
+      />,
+    );
+
+    expect(target.querySelectorAll('[data-message-id]')).toHaveLength(2);
+    expect(target.querySelector('[data-message-id="album-mixed-incoming"]')).toHaveClass('incoming');
+    expect(target.querySelector('[data-message-id="album-mixed-outgoing"]')).toHaveClass('outgoing');
+    expect(target.querySelector('.telegram-message-album')).toBeNull();
+  });
+
   it('automatically copies selected message text without selecting the message', async () => {
     const scrollContainer = document.createElement('div');
     scrollContainer.className = 'telegram-message-list';

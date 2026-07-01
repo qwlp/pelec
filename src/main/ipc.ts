@@ -5,6 +5,7 @@ import {
   nativeImage,
   MessageChannelMain,
   Notification,
+  session as electronSession,
   shell,
   type BrowserWindow,
 } from 'electron';
@@ -31,6 +32,7 @@ import {
 import { PELEC_MEDIA_SCHEME } from './config';
 import { listInstalledFonts } from './installedFonts';
 import { showLinuxNotification } from './platform';
+import { clearTelegramMediaCache, getTelegramMediaCacheSize } from './telegramCache';
 import { saveUserConfig } from './userConfig';
 
 type IpcRegistrationContext = {
@@ -168,27 +170,23 @@ export const registerIpcHandlers = ({
   ipcMain.handle('app:list-installed-fonts', listInstalledFonts);
 
   ipcMain.handle('app:clear-cache', async (): Promise<boolean> => {
-    const mainWindow = getMainWindow();
-    const session = mainWindow?.webContents.session;
-    if (!session) {
-      return false;
-    }
+    const telegramSession = electronSession.fromPartition('persist:telegram');
 
     await Promise.all([
-      session.clearCache(),
-      session.clearStorageData(),
+      telegramSession.clearCache(),
+      clearTelegramMediaCache(app.getPath('userData')),
     ]);
     return true;
   });
 
   ipcMain.handle('app:get-cache-size', async (): Promise<number> => {
-    const mainWindow = getMainWindow();
-    const session = mainWindow?.webContents.session;
-    if (!session) {
-      return 0;
-    }
+    const telegramSession = electronSession.fromPartition('persist:telegram');
+    const [partitionCacheSize, mediaCacheSize] = await Promise.all([
+      telegramSession.getCacheSize(),
+      getTelegramMediaCacheSize(app.getPath('userData')),
+    ]);
 
-    return session.getCacheSize();
+    return partitionCacheSize + mediaCacheSize;
   });
 
   ipcMain.handle('connector:get-statuses', async () => {
