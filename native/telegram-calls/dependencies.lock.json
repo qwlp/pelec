@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "bazel": {
+    "version": "8.4.2",
+    "sha256": {
+      "linux-x86_64": "4dc8e99dfa802e252dac176d08201fd15c542ae78c448c8a89974b6f387c282c"
+    }
+  },
+  "mediaEngine": {
+    "ntgcalls": {
+      "repository": "https://github.com/pytgcalls/ntgcalls.git",
+      "version": "2.2.5",
+      "commit": "1f4e4baadc77ce74753c037741c21ca95b1ca737",
+      "asset": "ntgcalls.linux-x86_64-shared_libs.zip",
+      "url": "https://github.com/pytgcalls/ntgcalls/releases/download/v2.2.5/ntgcalls.linux-x86_64-shared_libs.zip",
+      "sha256": "35ab2eff25e6d64e79b3fc537bca970ad4d9a63f4d7ab893fb0bba7f3c1e3987",
+      "librarySha256": "061479987e2eb981bee4bf9c6dddf71684dcd925d6f156534b1b08b42e9c21c2",
+      "license": "LGPL-3.0",
+      "licenseUrl": "https://raw.githubusercontent.com/pytgcalls/ntgcalls/1f4e4baadc77ce74753c037741c21ca95b1ca737/LICENSE",
+      "licenseSha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118"
+    }
+  },
+  "buildDependencies": {
+    "nlohmannJson": {
+      "version": "3.11.3",
+      "url": "https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp",
+      "sha256": "9bea4c8066ef4a1c206b2be5a36302f8926f7fdc6087af5d20b417d0cf103ea6"
+    }
+  },
+  "bridgeAbi": 1
+}

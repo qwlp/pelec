@@ -15,14 +15,6 @@ export const networks: NetworkDefinition[] = [
     loginHint: 'TDLib native auth: phone number, login code, and 2FA password if needed.',
     supportLevel: 'native-web',
   },
-  {
-    id: 'instagram',
-    name: 'Instagram',
-    partition: 'persist:instagram',
-    homeUrl: 'https://www.instagram.com/direct/inbox/',
-    loginHint: 'Use the embedded Instagram web app for DMs inside the app shell.',
-    supportLevel: 'native-web',
-  },
 ];
 
 export const loadEnv = (): void => {
@@ -58,9 +50,7 @@ export const buildAppConfig = (
 ): AppConfig => ({
   version: app.getVersion(),
   networks,
-  shortcuts: {
-    forceNormalMode: 'CommandOrControl+[',
-  },
+  shortcuts: userConfig.shortcuts,
   userConfig,
   configPath,
 });

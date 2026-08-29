@@ -1,0 +1,361 @@
+import type { ChatMessage } from '../../../shared/connectors';
+
+type RenderableTelegramMessage = ChatMessage & { pendingState?: 'sending' };
+
+interface TelegramVoiceNoteDeps {
+  buildVoiceBarHeights: (seed: string) => number[];
+  formatDuration: (durationSeconds: number) => string;
+  message: RenderableTelegramMessage;
+  messageId: string;
+  renderChatId: string | null;
+  resolveTelegramAudioUrl: (chatId: string, messageId: string) => Promise<string | undefined>;
+}
+
+interface TelegramDocumentCardDeps {
+  chatId: string | null;
+  copyTelegramDocument: (
+    chatId: string,
+    message: RenderableTelegramMessage,
+    button: HTMLButtonElement,
+  ) => Promise<void>;
+  downloadTelegramDocument: (
+    chatId: string,
+    message: RenderableTelegramMessage,
+    button: HTMLButtonElement,
+  ) => Promise<void>;
+  openTelegramDocument: (
+    chatId: string,
+    message: RenderableTelegramMessage,
+    button: HTMLButtonElement,
+  ) => Promise<void>;
+  formatTelegramDocumentKind: (fileName: string, mimeType?: string) => string;
+  formatTelegramDocumentSubtitle: (
+    fileName: string,
+    mimeType?: string,
+    sizeBytes?: number,
+  ) => string;
+  message: RenderableTelegramMessage;
+  safeLabel: (value: string | null | undefined, fallback: string) => string;
+}
+
+interface TelegramMessageFooterDeps {
+  formatFullDateTime: (timestamp: number) => string;
+  formatMessageTimestamp: (timestamp?: number) => string;
+  hasValidTimestamp: (timestamp?: number) => boolean;
+  isPendingTelegramMessage: (message: RenderableTelegramMessage) => boolean;
+  message: RenderableTelegramMessage;
+}
+
+export const createTelegramVoiceNoteNodes = ({
+  buildVoiceBarHeights,
+  formatDuration,
+  message,
+  messageId,
+  renderChatId,
+  resolveTelegramAudioUrl,
+}: TelegramVoiceNoteDeps): HTMLElement[] => {
+  const voiceNote = document.createElement('div');
+  voiceNote.className = 'telegram-voice-note';
+  const playButton = document.createElement('button');
+  playButton.type = 'button';
+  playButton.className = 'telegram-voice-play';
+  const playIcon = document.createElement('span');
+  playIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-play';
+  playIcon.textContent = '▶';
+  const pauseIcon = document.createElement('span');
+  pauseIcon.className = 'telegram-voice-play-icon telegram-voice-play-icon-pause';
+  pauseIcon.setAttribute('aria-hidden', 'true');
+  playButton.replaceChildren(playIcon, pauseIcon);
+  const wave = document.createElement('div');
+  wave.className = 'telegram-voice-wave';
+  const barHeights = buildVoiceBarHeights(messageId);
+  const waveBars: HTMLSpanElement[] = [];
+  for (const height of barHeights) {
+    const bar = document.createElement('span');
+    bar.className = 'telegram-voice-wave-bar';
+    bar.style.height = `${height}%`;
+    wave.append(bar);
+    waveBars.push(bar);
+  }
+  const duration = document.createElement('div');
+  duration.className = 'telegram-voice-duration';
+  duration.textContent = formatDuration(message.audioDurationSeconds ?? 0);
+  const audio = document.createElement('audio');
+  audio.className = 'telegram-message-audio';
+  audio.preload = 'none';
+  let loading = false;
+  let durationSeconds = message.audioDurationSeconds ?? 0;
+
+  const updateWaveState = (): void => {
+    const totalDuration =
+      Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : durationSeconds;
+    const progress = totalDuration > 0 ? Math.min(1, audio.currentTime / totalDuration) : 0;
+    const activeBarCount =
+      totalDuration > 0
+        ? Math.min(
+            waveBars.length,
+            Math.max(
+              !audio.paused && !audio.ended || audio.currentTime > 0 ? 1 : 0,
+              Math.ceil(progress * waveBars.length),
+            ),
+          )
+        : 0;
+    const playheadBarIndex = activeBarCount > 0 ? Math.min(waveBars.length - 1, activeBarCount - 1) : -1;
+
+    waveBars.forEach((bar, index) => {
+      bar.classList.toggle('is-played', index < activeBarCount);
+      bar.classList.toggle('is-current', index === playheadBarIndex);
+    });
+  };
+
+  const updatePlayState = (): void => {
+    const isPlaying = !audio.paused && !audio.ended;
+    playButton.classList.toggle('playing', isPlaying);
+    voiceNote.classList.toggle('playing', isPlaying);
+    updateWaveState();
+  };
+
+  if (message.audioUrl) {
+    const source = document.createElement('source');
+    source.src = message.audioUrl;
+    source.type = 'audio/ogg;codecs=opus';
+    audio.replaceChildren(source);
+  }
+
+  const ensureAudioLoaded = async (): Promise<boolean> => {
+    if (message.audioUrl) {
+      return true;
+    }
+    if (loading || !renderChatId) {
+      return false;
+    }
+    loading = true;
+    playButton.disabled = true;
+    voiceNote.classList.add('loading');
+    const resolved = await resolveTelegramAudioUrl(renderChatId, messageId);
+    loading = false;
+    playButton.disabled = false;
+    voiceNote.classList.remove('loading');
+    if (!resolved) {
+      duration.textContent = 'retry';
+      return false;
+    }
+    message.audioUrl = resolved;
+    duration.textContent = formatDuration(durationSeconds);
+    const source = document.createElement('source');
+    source.src = resolved;
+    source.type = 'audio/ogg;codecs=opus';
+    audio.replaceChildren(source);
+    audio.load();
+    return true;
+  };
+
+  playButton.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    if (!message.audioUrl) {
+      const loaded = await ensureAudioLoaded();
+      if (!loaded) {
+        return;
+      }
+    }
+    if (!audio.paused && !audio.ended) {
+      audio.pause();
+      return;
+    }
+    if (audio.ended) {
+      audio.currentTime = 0;
+      updateWaveState();
+    }
+    void audio.play().catch(() => {
+      // Keep control state if autoplay policy blocks immediate playback.
+    });
+  });
+
+  audio.addEventListener('play', updatePlayState);
+  audio.addEventListener('pause', updatePlayState);
+  audio.addEventListener('ended', () => {
+    updatePlayState();
+    updateWaveState();
+  });
+  audio.addEventListener('loadedmetadata', () => {
+    if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
+      return;
+    }
+    durationSeconds = audio.duration;
+    duration.textContent = formatDuration(audio.duration);
+    updateWaveState();
+  });
+  audio.addEventListener('timeupdate', updateWaveState);
+
+  voiceNote.replaceChildren(playButton, wave, duration);
+  updateWaveState();
+  return [voiceNote, audio];
+};
+
+export const createTelegramDocumentCard = ({
+  chatId,
+  copyTelegramDocument,
+  downloadTelegramDocument,
+  openTelegramDocument,
+  formatTelegramDocumentKind,
+  formatTelegramDocumentSubtitle,
+  message,
+  safeLabel,
+}: TelegramDocumentCardDeps): HTMLElement => {
+  const fileName = safeLabel(message.document?.fileName, 'Document');
+  const documentKind = formatTelegramDocumentKind(fileName, message.document?.mimeType);
+  const documentSubtitle = formatTelegramDocumentSubtitle(
+    fileName,
+    message.document?.mimeType,
+    message.document?.sizeBytes,
+  );
+  const documentCard = document.createElement('section');
+  documentCard.className = 'telegram-message-document';
+  const documentTitle = [fileName, message.document?.mimeType].filter(Boolean).join('\n');
+  if (documentTitle) {
+    documentCard.title = documentTitle;
+  }
+  const main = document.createElement('div');
+  main.className = 'telegram-message-document-main';
+  const icon = document.createElement('div');
+  icon.className = 'telegram-message-document-icon';
+  icon.textContent = documentKind;
+  const info = document.createElement('div');
+  info.className = 'telegram-message-document-info';
+  const name = document.createElement('div');
+  name.className = 'telegram-message-document-title';
+  name.textContent = fileName;
+  name.title = fileName;
+  const documentMeta = document.createElement('div');
+  documentMeta.className = 'telegram-message-document-subtitle';
+  documentMeta.textContent = documentSubtitle;
+  if (message.document?.mimeType) {
+    documentMeta.title = message.document.mimeType;
+  }
+  info.replaceChildren(name, documentMeta);
+  const actions = document.createElement('div');
+  actions.className = 'telegram-message-document-actions';
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'telegram-message-document-action';
+  openButton.textContent = 'Open';
+  openButton.setAttribute('aria-label', `Open ${fileName}`);
+  openButton.title = `Open ${fileName}`;
+  openButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!chatId) {
+      return;
+    }
+    void openTelegramDocument(chatId, message, openButton);
+  });
+  const copyButton = document.createElement('button');
+  copyButton.type = 'button';
+  copyButton.className = 'telegram-message-document-action';
+  copyButton.textContent = 'Copy';
+  copyButton.setAttribute('aria-label', `Copy ${fileName}`);
+  copyButton.title = `Copy ${fileName}`;
+  copyButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!chatId) {
+      return;
+    }
+    void copyTelegramDocument(chatId, message, copyButton);
+  });
+  const downloadButton = document.createElement('button');
+  downloadButton.type = 'button';
+  downloadButton.className = 'telegram-message-document-action';
+  downloadButton.textContent = 'Save';
+  downloadButton.setAttribute('aria-label', `Download ${fileName}`);
+  downloadButton.title = `Download ${fileName}`;
+  downloadButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!chatId) {
+      return;
+    }
+    void downloadTelegramDocument(chatId, message, downloadButton);
+  });
+  actions.replaceChildren(openButton, copyButton, downloadButton);
+  main.replaceChildren(icon, info);
+  documentCard.replaceChildren(main, actions);
+  return documentCard;
+};
+
+export const createTelegramMessageReactions = (
+  message: RenderableTelegramMessage,
+  safeLabel: (value: string | null | undefined, fallback: string) => string,
+): HTMLElement | null => {
+  const messageReactions = message.reactions ?? [];
+  if (messageReactions.length < 1) {
+    return null;
+  }
+
+  const reactions = document.createElement('div');
+  reactions.className = 'telegram-message-reactions';
+  reactions.replaceChildren(
+    ...messageReactions.map((reaction) => {
+      const chip = document.createElement('span');
+      chip.className = 'telegram-message-reaction';
+      if (reaction.chosen) {
+        chip.classList.add('chosen');
+      }
+      const value = document.createElement('span');
+      value.className = 'telegram-message-reaction-value';
+      value.textContent = safeLabel(reaction.value, '?');
+      const count = document.createElement('span');
+      count.className = 'telegram-message-reaction-count';
+      count.textContent = String(reaction.count);
+      chip.replaceChildren(value, count);
+      return chip;
+    }),
+  );
+  return reactions;
+};
+
+export const createTelegramMessageFooter = ({
+  formatFullDateTime,
+  formatMessageTimestamp,
+  hasValidTimestamp,
+  isPendingTelegramMessage,
+  message,
+}: TelegramMessageFooterDeps): HTMLElement => {
+  const footer = document.createElement('div');
+  footer.className = 'telegram-message-footer';
+  const time = document.createElement('span');
+  time.className = 'telegram-message-time';
+  time.textContent = formatMessageTimestamp(message.timestamp);
+  if (hasValidTimestamp(message.timestamp)) {
+    time.title = formatFullDateTime(message.timestamp);
+  }
+  footer.append(time);
+  if (message.outgoing) {
+    const receipt = document.createElement('span');
+    receipt.className = 'telegram-message-receipt';
+    if (isPendingTelegramMessage(message)) {
+      const spinner = document.createElement('span');
+      spinner.className = 'telegram-message-spinner';
+      spinner.setAttribute('aria-hidden', 'true');
+      receipt.classList.add('sending');
+      receipt.title = 'Sending';
+      receipt.append(spinner);
+    } else {
+      const tickSingle = document.createElement('span');
+      tickSingle.className = 'telegram-message-tick';
+      tickSingle.textContent = '✓';
+      if (message.readByPeer) {
+        receipt.classList.add('read');
+        receipt.title = 'Read';
+        tickSingle.classList.add('double');
+        tickSingle.setAttribute('aria-label', 'Read');
+        tickSingle.textContent = '✓✓';
+        receipt.append(tickSingle);
+      } else {
+        receipt.classList.add('sent');
+        receipt.title = 'Sent';
+        tickSingle.setAttribute('aria-label', 'Sent');
+        receipt.append(tickSingle);
+      }
+    }
+    footer.append(receipt);
+  }
+  return footer;
+};

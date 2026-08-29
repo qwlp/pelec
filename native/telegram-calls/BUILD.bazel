@@ -1,0 +1,16 @@
+cc_binary(
+    name = "pelec-call-engine",
+    srcs = [
+        "include/pelec_tgcalls_bridge.h",
+        "src/main.cpp",
+    ],
+    copts = [
+        "-Iinclude",
+        "-std=c++17",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+    linkopts = ["-ldl", "-lpthread"],
+    deps = ["@nlohmann_json//:json"],
+)

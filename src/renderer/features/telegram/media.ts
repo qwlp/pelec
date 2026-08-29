@@ -8,6 +8,7 @@ export type PendingTelegramAttachment = {
   mimeType?: string;
   sizeBytes?: number;
   dataUrl: string;
+  sendAs?: 'image' | 'document';
 };
 
 export const TELEGRAM_MAX_ATTACHMENTS = 10;
@@ -122,8 +123,11 @@ export const isTelegramDocumentFallbackText = (message: ChatMessage): boolean =>
   return text === 'document' || text === `document: ${fileName}`.toLowerCase();
 };
 
-export const isTelegramImageFallbackText = (message: ChatMessage): boolean => {
-  if (!message.imageUrl) {
+export const isTelegramImageFallbackText = (
+  message: ChatMessage,
+  hasImage = !!message.imageUrl,
+): boolean => {
+  if (!hasImage) {
     return false;
   }
 

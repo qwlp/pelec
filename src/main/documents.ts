@@ -1,4 +1,4 @@
-import { app, clipboard } from 'electron';
+import { app, clipboard, shell } from 'electron';
 import fs, { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { mkdir, rm } from 'node:fs/promises';
@@ -6,6 +6,8 @@ import { finished } from 'node:stream/promises';
 import { pathToFileURL } from 'node:url';
 import type { ResolvedDocument } from '../shared/connectors';
 import { writeLinuxClipboardWithUtility } from './platform';
+
+const OPEN_DOCUMENT_HANDOFF_TIMEOUT_MS = 1500;
 
 const sanitizeDownloadFileName = (
   value: string | undefined,
@@ -161,4 +163,27 @@ export const copyResolvedDocumentToClipboard = async (
   } catch {
     return false;
   }
+};
+
+export const openResolvedDocumentInDefaultApp = async (
+  document: ResolvedDocument,
+): Promise<boolean> => {
+  const sourcePath = document.filePath.trim();
+  if (!sourcePath || !fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
+    return false;
+  }
+
+  try {
+    app.addRecentDocument(sourcePath);
+  } catch {
+    // Best-effort OS integration only.
+  }
+
+  const opened = await Promise.race([
+    shell.openPath(sourcePath).then((error) => error.length < 1),
+    new Promise<true>((resolve) => {
+      setTimeout(() => resolve(true), OPEN_DOCUMENT_HANDOFF_TIMEOUT_MS);
+    }),
+  ]);
+  return opened;
 };

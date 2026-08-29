@@ -6,7 +6,6 @@ import type {
   Connector,
   ConnectorUpdateEvent,
   ConnectorStatus,
-  ListMessagesOptions,
 } from '../../shared/connectors';
 import type { NetworkDefinition } from '../../shared/types';
 import { verifyInstagramCapability } from './instagram/capability';
@@ -124,7 +123,7 @@ export class InstagramConnector implements Connector {
   async startAuth(): Promise<AuthStartResult> {
     this.authLog('start-auth:begin', { partition: this.network.partition });
     this.status.authState = 'authenticating';
-    this.emitUpdate('status');
+    this.emitStatusUpdate();
 
     let capability:
       | { ok: boolean; details: string; username?: string; requiresTwoFactor?: boolean; requiresChallenge?: boolean }
@@ -143,7 +142,7 @@ export class InstagramConnector implements Connector {
       this.status.authState = 'unauthenticated';
       this.status.details = 'Instagram auth check timed out. Use web login and retry.';
       this.status.lastError = message;
-      this.emitUpdate('status');
+      this.emitStatusUpdate();
       return {
         network: this.network.id,
         mode: 'browser',
@@ -159,7 +158,7 @@ export class InstagramConnector implements Connector {
         ? `Instagram native mode active for @${capability.username}.`
         : 'Instagram native mode active.';
       this.status.lastError = undefined;
-      this.emitUpdate('status');
+      this.emitStatusUpdate();
       return {
         network: this.network.id,
         mode: 'none',
@@ -176,7 +175,7 @@ export class InstagramConnector implements Connector {
         ? 'Instagram challenge is pending. Submit your security code.'
       : 'Instagram requires username/password for native mode.';
     this.status.lastError = capability.details;
-    this.emitUpdate('status');
+    this.emitStatusUpdate();
 
     if (capability.requiresTwoFactor) {
       return {
@@ -214,7 +213,7 @@ export class InstagramConnector implements Connector {
           this.status.mode = 'web-fallback';
           this.status.details = adopted.details;
           this.status.lastError = adopted.details;
-          this.emitUpdate('status');
+          this.emitStatusUpdate();
           return this.status;
         }
       } else {
@@ -237,13 +236,13 @@ export class InstagramConnector implements Connector {
           this.status.mode = 'web-fallback';
           this.status.details = codeResult.details;
           this.status.lastError = codeResult.details;
-          this.emitUpdate('status');
+          this.emitStatusUpdate();
           return this.status;
         }
       }
 
       await this.detectCapability();
-      this.emitUpdate('status');
+      this.emitStatusUpdate();
       return this.status;
     }
 
@@ -254,7 +253,7 @@ export class InstagramConnector implements Connector {
         this.status.details =
           'Invalid auth payload. Expected JSON {"username","password"} or username:password.';
         this.status.lastError = this.status.details;
-        this.emitUpdate('status');
+        this.emitStatusUpdate();
         return this.status;
       }
 
@@ -277,17 +276,17 @@ export class InstagramConnector implements Connector {
         this.status.mode = 'web-fallback';
         this.status.details = loginResult.details;
         this.status.lastError = loginResult.details;
-        this.emitUpdate('status');
+        this.emitStatusUpdate();
         return this.status;
       }
 
       await this.detectCapability();
-      this.emitUpdate('status');
+      this.emitStatusUpdate();
       return this.status;
     }
 
     await this.detectCapability();
-    this.emitUpdate('status');
+    this.emitStatusUpdate();
     return this.status;
   }
 
@@ -297,7 +296,7 @@ export class InstagramConnector implements Connector {
     this.status.authState = 'unauthenticated';
     this.status.details = 'Instagram auth was reset. Start auth again to enter your username and password.';
     this.status.lastError = undefined;
-    this.emitUpdate('status');
+    this.emitStatusUpdate();
     return this.status;
   }
 
@@ -315,12 +314,12 @@ export class InstagramConnector implements Connector {
       return chats;
     } catch (error) {
       this.markDegraded(error, 'Failed to load Instagram chats. Falling back to web mode.');
-      this.emitUpdate('status');
+      this.emitStatusUpdate();
       return [];
     }
   }
 
-  async listMessages(chatId: string, _options?: ListMessagesOptions): Promise<ChatMessage[]> {
+  async listMessages(chatId: string): Promise<ChatMessage[]> {
     if (!chatId || this.status.mode !== 'native' || this.status.authState !== 'authenticated') {
       return [];
     }
@@ -364,8 +363,8 @@ export class InstagramConnector implements Connector {
         throw new Error('Instagram send did not return ok status');
       }
       this.status.lastError = undefined;
-      this.emitUpdate('messages', chatId);
-      this.emitUpdate('chats');
+      this.emitMessagesInvalidated(chatId, 'outgoing');
+      this.emitChatListInvalidated([chatId]);
       return true;
     } catch (error) {
       this.status.lastError =
@@ -408,12 +407,38 @@ export class InstagramConnector implements Connector {
       error instanceof Error ? error.message : 'Unknown Instagram connector error';
   }
 
-  private emitUpdate(kind: ConnectorUpdateEvent['kind'], chatId?: string): void {
+  private emitStatusUpdate(): void {
     for (const handler of this.updateListeners) {
       handler({
         network: this.network.id,
-        kind,
+        kind: 'status-changed',
+        authState: this.status.authState,
+        mode: this.status.mode,
+        details: this.status.details,
+      });
+    }
+  }
+
+  private emitChatListInvalidated(changedChatIds?: string[]): void {
+    for (const handler of this.updateListeners) {
+      handler({
+        network: this.network.id,
+        kind: 'chat-list-invalidated',
+        changedChatIds,
+      });
+    }
+  }
+
+  private emitMessagesInvalidated(
+    chatId: string,
+    reason: 'incoming' | 'outgoing' | 'history' | 'read-state',
+  ): void {
+    for (const handler of this.updateListeners) {
+      handler({
+        network: this.network.id,
+        kind: 'messages-invalidated',
         chatId,
+        reason,
       });
     }
   }

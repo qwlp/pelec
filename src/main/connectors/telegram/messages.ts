@@ -1,4 +1,115 @@
-import type { ChatCall, ChatReaction } from '../../../shared/connectors';
+import type { ChatCall, ChatPoll, ChatReaction, ChatServiceEvent, ChatTextEntity } from '../../../shared/connectors';
+
+const readTrimmedString = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value.trim() || undefined : undefined;
+
+const readTelegramInlineText = (value: unknown): string | undefined => {
+  const direct = readTrimmedString(value);
+  if (direct) {
+    return direct;
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const container = value as {
+    text?: string;
+    question?: string;
+  };
+
+  return readTrimmedString(container.text) ?? readTrimmedString(container.question);
+};
+
+const extractFormattedTextContainer = (
+  content: unknown,
+): { text?: string; entities?: unknown[] } | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    text?: { text?: string; entities?: unknown[] };
+    caption?: { text?: string; entities?: unknown[] };
+  };
+
+  if (container.text?.text) {
+    return container.text;
+  }
+  if (container.caption?.text) {
+    return container.caption;
+  }
+
+  return undefined;
+};
+
+export const extractTelegramMessageEntities = (content: unknown): ChatTextEntity[] | undefined => {
+  const formatted = extractFormattedTextContainer(content);
+  const rawEntities = formatted?.entities;
+  if (!rawEntities || rawEntities.length < 1) {
+    return undefined;
+  }
+
+  const entities = rawEntities
+    .map<ChatTextEntity | undefined>((entity) => {
+      if (!entity || typeof entity !== 'object') {
+        return undefined;
+      }
+      const container = entity as {
+        offset?: number;
+        length?: number;
+        type?: {
+          _?: string;
+          url?: string;
+          language?: string;
+        };
+      };
+
+      const offset = Math.max(0, Math.floor(Number(container.offset ?? -1)));
+      const length = Math.max(0, Math.floor(Number(container.length ?? 0)));
+      if (offset < 0 || length < 1) {
+        return undefined;
+      }
+
+      switch (container.type?._) {
+        case 'textEntityTypeBold':
+          return { offset, length, type: 'bold' };
+        case 'textEntityTypeItalic':
+          return { offset, length, type: 'italic' };
+        case 'textEntityTypeStrikethrough':
+          return { offset, length, type: 'strikethrough' };
+        case 'textEntityTypeUnderline':
+          return { offset, length, type: 'underline' };
+        case 'textEntityTypeSpoiler':
+          return { offset, length, type: 'spoiler' };
+        case 'textEntityTypeCode':
+          return { offset, length, type: 'code' };
+        case 'textEntityTypePre':
+          return { offset, length, type: 'pre' };
+        case 'textEntityTypePreCode':
+          return {
+            offset,
+            length,
+            type: 'preCode',
+            language: container.type.language?.trim() || undefined,
+          };
+        case 'textEntityTypeTextUrl':
+          return {
+            offset,
+            length,
+            type: 'textUrl',
+            url: container.type.url?.trim() || undefined,
+          };
+        case 'textEntityTypeUrl':
+          return { offset, length, type: 'url' };
+        default:
+          return undefined;
+      }
+    })
+    .filter((entity): entity is ChatTextEntity => entity !== undefined)
+    .sort((a, b) => a.offset - b.offset || b.length - a.length);
+
+  return entities.length > 0 ? entities : undefined;
+};
 
 export const formatTelegramCallDuration = (seconds: number): string => {
   const total = Math.max(0, Math.floor(seconds));
@@ -61,6 +172,95 @@ export const extractTelegramCallInfo = (content: unknown): ChatCall | undefined 
   };
 };
 
+export const extractTelegramPollInfo = (content: unknown): ChatPoll | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    description?: unknown;
+    can_add_option?: boolean;
+    poll?: {
+      question?: unknown;
+      options?: Array<{
+        text?: unknown;
+        voter_count?: number;
+        vote_percentage?: number;
+        is_chosen?: boolean;
+        is_being_chosen?: boolean;
+      }>;
+      total_voter_count?: number;
+      is_anonymous?: boolean;
+      is_closed?: boolean;
+      allows_multiple_answers?: boolean;
+      allows_revoting?: boolean;
+      can_see_results?: boolean;
+      type?: {
+        _?: string;
+        allow_multiple_answers?: boolean;
+        correct_option_id?: number;
+        correct_option_ids?: number[];
+      };
+    };
+  };
+
+  if (container._ !== 'messagePoll' || !container.poll) {
+    return undefined;
+  }
+
+  const poll = container.poll;
+  const type = poll.type?._;
+  const rawOptions = Array.isArray(poll.options) ? poll.options : [];
+  const options = rawOptions
+    .map<ChatPoll['options'][number] | undefined>((option, index) => {
+      const text = readTelegramInlineText(option.text) ?? `Option ${index + 1}`;
+      const voterCount = Math.max(0, Math.floor(Number(option.voter_count ?? 0)));
+      const votePercentage = Number(option.vote_percentage);
+
+      return {
+        text,
+        voterCount,
+        votePercentage: Number.isFinite(votePercentage)
+          ? Math.min(100, Math.max(0, Math.round(votePercentage)))
+          : undefined,
+        chosen: option.is_chosen === true || option.is_being_chosen === true || undefined,
+      };
+    })
+    .filter((option): option is ChatPoll['options'][number] => option !== undefined);
+
+  return {
+    question: readTelegramInlineText(poll.question) ?? 'Poll',
+    description: readTelegramInlineText(container.description),
+    options,
+    totalVoterCount: Math.max(0, Math.floor(Number(poll.total_voter_count ?? 0))) || undefined,
+    isAnonymous:
+      typeof poll.is_anonymous === 'boolean' ? poll.is_anonymous : undefined,
+    isClosed: typeof poll.is_closed === 'boolean' ? poll.is_closed : undefined,
+    allowsMultipleAnswers:
+      typeof poll.allows_multiple_answers === 'boolean'
+        ? poll.allows_multiple_answers
+        : typeof poll.type?.allow_multiple_answers === 'boolean'
+        ? poll.type.allow_multiple_answers
+        : undefined,
+    allowsRevoting:
+      typeof poll.allows_revoting === 'boolean' ? poll.allows_revoting : undefined,
+    canAddOption:
+      typeof container.can_add_option === 'boolean' ? container.can_add_option : undefined,
+    canSeeResults:
+      typeof poll.can_see_results === 'boolean' ? poll.can_see_results : undefined,
+    kind: type === 'pollTypeQuiz' ? 'quiz' : 'regular',
+    correctOptionIndex:
+      type === 'pollTypeQuiz'
+        ? typeof poll.type?.correct_option_id === 'number'
+          ? Math.max(0, Math.floor(poll.type.correct_option_id))
+          : typeof poll.type?.correct_option_ids?.[0] === 'number'
+            ? Math.max(0, Math.floor(poll.type.correct_option_ids[0]))
+            : undefined
+        : undefined,
+  };
+};
+
 export const extractTelegramMessageText = (
   content: unknown,
   options?: {
@@ -72,21 +272,18 @@ export const extractTelegramMessageText = (
   }
   const container = content as {
     _: string;
-    text?: { text?: string };
-    caption?: { text?: string };
     emoji?: string;
     title?: string;
     performer?: string;
     file_name?: string;
+    poll?: { question?: unknown };
     contact?: { first_name?: string; last_name?: string; phone_number?: string };
     location?: { latitude?: number; longitude?: number };
   };
 
-  if (container.text?.text) {
-    return container.text.text;
-  }
-  if (container.caption?.text) {
-    return container.caption.text;
+  const formatted = extractFormattedTextContainer(content);
+  if (formatted?.text) {
+    return formatted.text;
   }
 
   if (container._ === 'messageSticker') {
@@ -179,10 +376,133 @@ export const extractTelegramMessageText = (
     return 'Pinned a message';
   }
   if (container._ === 'messagePoll') {
-    return 'Poll';
+    const question = readTelegramInlineText(container.poll?.question) ?? '';
+    return question ? `Poll: ${question}` : 'Poll';
   }
 
   return `[${container._ ?? 'message'}]`;
+};
+
+export const extractTelegramServiceEvent = (
+  content: unknown,
+  options?: {
+    detail?: string;
+  },
+): ChatServiceEvent | undefined => {
+  if (!content || typeof content !== 'object') {
+    return undefined;
+  }
+
+  const container = content as {
+    _?: string;
+    title?: string;
+    member_user_ids?: unknown[];
+    user_id?: number;
+  };
+
+  const kind = container._?.trim();
+  if (!kind) {
+    return undefined;
+  }
+
+  let title: string | undefined;
+  let detail: string | undefined;
+  switch (kind) {
+    case 'messageBasicGroupChatCreate':
+      title = 'created the group';
+      detail = readTrimmedString(container.title);
+      break;
+    case 'messageSupergroupChatCreate':
+      title = 'created the group';
+      break;
+    case 'messageChatAddMembers': {
+      const count = Array.isArray(container.member_user_ids) ? container.member_user_ids.length : 0;
+      title = count > 1 ? 'added members' : 'added a member';
+      detail = readTrimmedString(options?.detail);
+      break;
+    }
+    case 'messageChatDeleteMember':
+      title = 'removed a member';
+      detail = readTrimmedString(options?.detail);
+      break;
+    case 'messageChatJoinByLink':
+      title = 'Joined via invite link';
+      break;
+    case 'messageChatJoinByRequest':
+      title = 'Join request approved';
+      break;
+    case 'messageChatChangeTitle':
+      title = 'Group title changed';
+      detail = readTrimmedString(container.title);
+      break;
+    case 'messagePinMessage':
+      title = 'Pinned a message';
+      break;
+    case 'messageScreenshotTaken':
+      title = 'Screenshot taken';
+      break;
+    case 'messageChatSetTheme':
+      title = 'Chat theme changed';
+      break;
+    case 'messageChatSetMessageAutoDeleteTime':
+      title = 'Auto-delete timer changed';
+      break;
+    default:
+      return undefined;
+  }
+
+  return {
+    source: 'telegram',
+    kind,
+    title,
+    detail: readTrimmedString(options?.detail) ?? detail,
+  };
+};
+
+export const normalizeTelegramChatPreviewSender = (label: string | undefined): string => {
+  const trimmed = label?.trim() ?? '';
+  if (!trimmed) {
+    return '';
+  }
+
+  return trimmed.replace(/\s+\(@[^)]+\)$/u, '').trim();
+};
+
+export const buildTelegramChatPreview = ({
+  chatTitle,
+  includeSender,
+  isOutgoing,
+  previewText,
+  senderLabel,
+}: {
+  chatTitle?: string;
+  includeSender: boolean;
+  isOutgoing?: boolean;
+  previewText: string;
+  senderLabel?: string;
+}): { previewText: string; senderLabel?: string } => {
+  const normalizedPreviewText = previewText.trim();
+  if (!includeSender || !normalizedPreviewText) {
+    return { previewText: normalizedPreviewText };
+  }
+
+  const normalizedChatTitle = chatTitle?.trim().toLocaleLowerCase() ?? '';
+  const normalizedSenderLabel = isOutgoing
+    ? 'You'
+    : normalizeTelegramChatPreviewSender(senderLabel);
+
+  if (!normalizedSenderLabel) {
+    return { previewText: normalizedPreviewText };
+  }
+
+  if (normalizedSenderLabel.toLocaleLowerCase() === normalizedChatTitle) {
+    return { previewText: normalizedPreviewText };
+  }
+
+  return {
+    previewText: normalizedPreviewText,
+    senderLabel: normalizedSenderLabel,
+  };
 };
 
 export const extractTelegramReactions = (

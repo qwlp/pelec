@@ -1,12 +1,12 @@
-import { app, BrowserWindow, globalShortcut } from 'electron';
-import type { ConnectorUpdateEvent } from '../shared/connectors';
+import { app, BrowserWindow, globalShortcut, Notification } from 'electron';
+import type { ConnectorUpdateEvent, TelegramCallUpdate } from '../shared/connectors';
 import type { AppConfig } from '../shared/types';
 import { emitAppActivity } from './activity';
 import { buildAppConfig } from './config';
 import { ConnectorManager } from './connectors/connectorManager';
 import { registerIpcHandlers } from './ipc';
 import { registerMediaProtocol } from './mediaProtocol';
-import { wireNetworkShortcutHandling } from './shortcuts';
+import { wireAppShortcutHandling } from './shortcuts';
 import { loadUserConfig } from './userConfig';
 import { installWebviewContextMenu } from './webviewContextMenu';
 import { createMainWindow } from './window';
@@ -16,9 +16,16 @@ export const bootstrapApp = (): void => {
   let mainWindow: BrowserWindow | null = null;
   let appShutdownStarted = false;
   let appConfig: AppConfig | null = null;
+  const notifiedCallSessions = new Set<string>();
 
   const activateNetwork = (network: AppConfig['networks'][number]['id']): void => {
     mainWindow?.webContents.send('app:activate-network', network);
+  };
+  const openCommandPalette = (): void => {
+    mainWindow?.webContents.send('app:open-command-palette');
+  };
+  const openKeyboardHelp = (): void => {
+    mainWindow?.webContents.send('app:open-keyboard-help');
   };
 
   const shutdownApp = async (): Promise<void> => {
@@ -42,6 +49,9 @@ export const bootstrapApp = (): void => {
     getAppConfig: () => appConfig,
     getConnectorManager: () => connectorManager,
     getMainWindow: () => mainWindow,
+    setAppConfig: (config) => {
+      appConfig = config;
+    },
     emitAppActivity,
   });
 
@@ -63,17 +73,53 @@ export const bootstrapApp = (): void => {
           window.webContents.send('connector:update', event);
         }
       });
+      connectorManager.onTelegramCallUpdate((event: TelegramCallUpdate) => {
+        if (event.kind === 'terminal') {
+          notifiedCallSessions.delete(event.sessionId);
+        }
+        for (const window of BrowserWindow.getAllWindows()) {
+          window.webContents.send('telegram-call:update', event);
+          if (
+            event.kind === 'session' &&
+            event.session?.direction === 'incoming' &&
+            event.session.phase === 'ringing'
+          ) {
+            window.show();
+            window.focus();
+            if (
+              Notification.isSupported() &&
+              !notifiedCallSessions.has(event.session.sessionId)
+            ) {
+              notifiedCallSessions.add(event.session.sessionId);
+              const notification = new Notification({
+                title: `Incoming Telegram ${event.session.isVideo ? 'video' : 'voice'} call`,
+                body: event.session.peerLabel,
+                silent: false,
+              });
+              notification.on('click', () => {
+                window.show();
+                window.focus();
+              });
+              notification.show();
+            }
+          }
+        }
+      });
       void connectorManager.initAll();
 
       mainWindow = createMainWindow();
-      wireNetworkShortcutHandling(mainWindow.webContents, activateNetwork);
 
       app.on('web-contents-created', (_event, contents) => {
         if (contents.getType() !== 'webview') {
           return;
         }
 
-        wireNetworkShortcutHandling(contents, activateNetwork);
+        wireAppShortcutHandling(contents, appConfig.shortcuts, {
+          allowNetworkTargets: ['telegram'],
+          onActivateNetwork: activateNetwork,
+          onOpenCommandPalette: openCommandPalette,
+          onOpenKeyboardHelp: openKeyboardHelp,
+        });
         installWebviewContextMenu(contents);
       });
 
@@ -92,7 +138,6 @@ export const bootstrapApp = (): void => {
         }
 
         mainWindow = createMainWindow();
-        wireNetworkShortcutHandling(mainWindow.webContents, activateNetwork);
       });
     })().catch((error) => {
       console.error('Application startup failed.', error);

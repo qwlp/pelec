@@ -1,5 +1,6 @@
 import { app, protocol } from 'electron';
 import started from 'electron-squirrel-startup';
+import path from 'node:path';
 import { bootstrapApp } from './main/bootstrap';
 import {
   ensureDefaultTelegramCredentials,
@@ -10,6 +11,9 @@ import {
 if (started) {
   app.quit();
 }
+
+app.setName('pelec');
+app.setPath('userData', path.join(app.getPath('appData'), 'pelec'));
 
 protocol.registerSchemesAsPrivileged([
   {

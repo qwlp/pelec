@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildTelegramChatPreview,
   extractTelegramCallInfo,
   extractTelegramMessageText,
+  extractTelegramPollInfo,
   extractTelegramReactions,
+  extractTelegramServiceEvent,
   formatTelegramCallDuration,
 } from './messages';
 
@@ -43,6 +46,229 @@ describe('telegram message helpers', () => {
         contact: { first_name: 'Ada', last_name: 'Lovelace' },
       }),
     ).toBe('Contact: Ada Lovelace');
+
+    expect(
+      extractTelegramMessageText({
+        _: 'messagePoll',
+        poll: {
+          question: 'Best editor?',
+        },
+      }),
+    ).toBe('Poll: Best editor?');
+  });
+
+  it('extracts display metadata for telegram service events', () => {
+    expect(
+      extractTelegramServiceEvent({
+        _: 'messageBasicGroupChatCreate',
+        title: 'DMUC Student Services',
+      }),
+    ).toEqual({
+      source: 'telegram',
+      kind: 'messageBasicGroupChatCreate',
+      title: 'created the group',
+      detail: 'DMUC Student Services',
+    });
+
+    expect(
+      extractTelegramServiceEvent(
+        {
+          _: 'messageChatAddMembers',
+          member_user_ids: [1, 2],
+        },
+        { detail: 'Bruno - Marcom Manager KVL, Ada' },
+      ),
+    ).toEqual({
+      source: 'telegram',
+      kind: 'messageChatAddMembers',
+      title: 'added members',
+      detail: 'Bruno - Marcom Manager KVL, Ada',
+    });
+  });
+
+  it('extracts poll metadata from telegram poll messages', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        poll: {
+          question: 'Best editor?',
+          total_voter_count: 12,
+          is_anonymous: false,
+          is_closed: true,
+          type: {
+            _: 'pollTypeQuiz',
+            correct_option_id: 1,
+          },
+          options: [
+            {
+              text: 'Vim',
+              voter_count: 5,
+              vote_percentage: 42,
+            },
+            {
+              text: 'Helix',
+              voter_count: 7,
+              vote_percentage: 58,
+              is_chosen: true,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'Best editor?',
+      description: undefined,
+      options: [
+        { text: 'Vim', voterCount: 5, votePercentage: 42, chosen: undefined },
+        { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: true },
+      ],
+      totalVoterCount: 12,
+      isAnonymous: false,
+      isClosed: true,
+      allowsMultipleAnswers: undefined,
+      allowsRevoting: undefined,
+      canAddOption: undefined,
+      canSeeResults: undefined,
+      kind: 'quiz',
+      correctOptionIndex: 1,
+    });
+  });
+
+  it('extracts extensible poll metadata from the current TDLib schema', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        description: { text: 'Pick the best time.' },
+        can_add_option: true,
+        poll: {
+          question: { text: 'When are we going?' },
+          total_voter_count: 2,
+          is_anonymous: false,
+          is_closed: false,
+          allows_multiple_answers: true,
+          allows_revoting: true,
+          can_see_results: false,
+          type: { _: 'pollTypeRegular' },
+          options: [
+            {
+              text: { text: 'Friday' },
+              voter_count: 0,
+              vote_percentage: 0,
+            },
+            {
+              text: { text: 'Saturday' },
+              voter_count: 0,
+              vote_percentage: 0,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'When are we going?',
+      description: 'Pick the best time.',
+      options: [
+        { text: 'Friday', voterCount: 0, votePercentage: 0, chosen: undefined },
+        { text: 'Saturday', voterCount: 0, votePercentage: 0, chosen: undefined },
+      ],
+      totalVoterCount: 2,
+      isAnonymous: false,
+      isClosed: false,
+      allowsMultipleAnswers: true,
+      allowsRevoting: true,
+      canAddOption: true,
+      canSeeResults: false,
+      kind: 'regular',
+      correctOptionIndex: undefined,
+    });
+  });
+
+  it('extracts poll text from nested formatted-text-like objects', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        poll: {
+          question: { text: 'Best editor?' },
+          options: [
+            {
+              text: { text: 'Vim' },
+              voter_count: 5,
+              vote_percentage: 42,
+            },
+            {
+              text: { text: 'Helix' },
+              voter_count: 7,
+              vote_percentage: 58,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'Best editor?',
+      description: undefined,
+      options: [
+        { text: 'Vim', voterCount: 5, votePercentage: 42, chosen: undefined },
+        { text: 'Helix', voterCount: 7, votePercentage: 58, chosen: undefined },
+      ],
+      totalVoterCount: undefined,
+      isAnonymous: undefined,
+      isClosed: undefined,
+      allowsMultipleAnswers: undefined,
+      allowsRevoting: undefined,
+      canAddOption: undefined,
+      canSeeResults: undefined,
+      kind: 'regular',
+      correctOptionIndex: undefined,
+    });
+
+    expect(
+      extractTelegramMessageText({
+        _: 'messagePoll',
+        poll: {
+          question: { text: 'Best editor?' },
+        },
+      }),
+    ).toBe('Poll: Best editor?');
+  });
+
+  it('tolerates malformed poll fields without throwing', () => {
+    expect(
+      extractTelegramPollInfo({
+        _: 'messagePoll',
+        poll: {
+          question: 123,
+          options: [
+            {
+              text: { value: 'bad' },
+              voter_count: '7',
+              vote_percentage: '58',
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      question: 'Poll',
+      description: undefined,
+      options: [
+        { text: 'Option 1', voterCount: 7, votePercentage: 58, chosen: undefined },
+      ],
+      totalVoterCount: undefined,
+      isAnonymous: undefined,
+      isClosed: undefined,
+      allowsMultipleAnswers: undefined,
+      allowsRevoting: undefined,
+      canAddOption: undefined,
+      canSeeResults: undefined,
+      kind: 'regular',
+      correctOptionIndex: undefined,
+    });
+
+    expect(
+      extractTelegramMessageText({
+        _: 'messagePoll',
+        poll: {
+          question: 123,
+        },
+      }),
+    ).toBe('Poll');
   });
 
   it('extracts supported reactions and drops empty entries', () => {
@@ -70,5 +296,47 @@ describe('telegram message helpers', () => {
       { value: '🔥', count: 3, chosen: true },
       { value: 'Paid', count: 1, chosen: undefined },
     ]);
+  });
+
+  it('adds sender context for group chat previews and trims usernames', () => {
+    expect(
+      buildTelegramChatPreview({
+        chatTitle: 'Ops Room',
+        includeSender: true,
+        isOutgoing: false,
+        previewText: 'Deploy done',
+        senderLabel: 'Ada Lovelace (@ada)',
+      }),
+    ).toEqual({
+      previewText: 'Deploy done',
+      senderLabel: 'Ada Lovelace',
+    });
+  });
+
+  it('uses You for outgoing group chat previews and suppresses duplicate chat-title senders', () => {
+    expect(
+      buildTelegramChatPreview({
+        chatTitle: 'Ops Room',
+        includeSender: true,
+        isOutgoing: true,
+        previewText: 'Deploy done',
+        senderLabel: 'Ignored',
+      }),
+    ).toEqual({
+      previewText: 'Deploy done',
+      senderLabel: 'You',
+    });
+
+    expect(
+      buildTelegramChatPreview({
+        chatTitle: 'Ops Room',
+        includeSender: true,
+        isOutgoing: false,
+        previewText: 'Announcement',
+        senderLabel: 'Ops Room',
+      }),
+    ).toEqual({
+      previewText: 'Announcement',
+    });
   });
 });

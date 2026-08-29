@@ -1,5 +1,16 @@
 import type { AppActivity } from '../../shared/types';
 
+const STATUS_SUCCESS_CLEAR_MS = 1800;
+const STATUS_ERROR_CLEAR_MS = 4200;
+
+export const getStatusToastClearDelay = (activity?: AppActivity | null): number | null => {
+  if (!activity || activity.state === 'running') {
+    return null;
+  }
+
+  return activity.state === 'success' ? STATUS_SUCCESS_CLEAR_MS : STATUS_ERROR_CLEAR_MS;
+};
+
 export const renderStatusToast = (host: HTMLElement, activity?: AppActivity | null): void => {
   host.replaceChildren();
   host.classList.toggle('hidden', !activity);
@@ -14,50 +25,31 @@ export const renderStatusToast = (host: HTMLElement, activity?: AppActivity | nu
     card.classList.add('indeterminate');
   }
 
-  const eyebrow = document.createElement('div');
-  eyebrow.className = 'status-toast-eyebrow';
-  eyebrow.textContent =
-    activity.state === 'running'
-      ? 'Background task'
-      : activity.state === 'success'
-        ? 'Completed'
-        : 'Attention';
-
-  const header = document.createElement('div');
-  header.className = 'status-toast-header';
+  const icon = document.createElement('div');
+  icon.className = 'status-toast-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  if (activity.state === 'success') {
+    icon.textContent = '✓';
+  } else if (activity.state === 'error') {
+    icon.textContent = '!';
+  }
 
   const label = document.createElement('div');
   label.className = 'status-toast-label';
   label.textContent = activity.label;
 
-  const value = document.createElement('div');
-  value.className = 'status-toast-value';
-  if (typeof activity.progress === 'number' && Number.isFinite(activity.progress)) {
-    value.textContent = `${Math.round(Math.max(0, Math.min(activity.progress, 1)) * 100)}%`;
-  } else if (activity.state === 'running') {
-    value.textContent = 'WORKING';
-  } else {
-    value.textContent = activity.state.toUpperCase();
+  const content = document.createElement('div');
+  content.className = 'status-toast-content';
+  content.append(label);
+
+  const detailText = activity.state === 'error' ? activity.detail?.trim() : '';
+  if (detailText) {
+    const detail = document.createElement('div');
+    detail.className = 'status-toast-detail';
+    detail.textContent = detailText;
+    content.append(detail);
   }
 
-  const detail = document.createElement('div');
-  detail.className = 'status-toast-detail';
-  detail.textContent = activity.detail?.trim() || '\u00a0';
-
-  const track = document.createElement('div');
-  track.className = 'status-toast-track';
-  const bar = document.createElement('div');
-  bar.className = 'status-toast-bar';
-  if (
-    !activity.indeterminate &&
-    typeof activity.progress === 'number' &&
-    Number.isFinite(activity.progress)
-  ) {
-    bar.style.width = `${Math.max(0, Math.min(activity.progress, 1)) * 100}%`;
-  }
-  track.append(bar);
-
-  header.replaceChildren(label, value);
-  card.replaceChildren(eyebrow, header, detail, track);
+  card.replaceChildren(icon, content);
   host.append(card);
 };

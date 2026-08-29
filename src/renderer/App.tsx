@@ -1,5 +1,10 @@
-import { LegacyAppHost } from './LegacyAppHost';
+import { AppShell } from './app/AppShell';
+import { AppStoreProvider } from './state/appStore';
 
 export const App = () => {
-  return <LegacyAppHost />;
+  return (
+    <AppStoreProvider>
+      <AppShell />
+    </AppStoreProvider>
+  );
 };

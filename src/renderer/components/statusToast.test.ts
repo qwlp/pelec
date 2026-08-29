@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { renderStatusToast } from './statusToast';
+import { getStatusToastClearDelay, renderStatusToast } from './statusToast';
 import { installDom } from '../test/dom';
 
 describe('renderStatusToast', () => {
@@ -23,7 +23,20 @@ describe('renderStatusToast', () => {
     expect(host.childElementCount).toBe(0);
   });
 
-  it('renders progress state and clamps the bar width', () => {
+  it('uses a short timeout for success and a longer timeout for errors', () => {
+    expect(getStatusToastClearDelay(null)).toBeNull();
+    expect(
+      getStatusToastClearDelay({ id: 'running', label: 'Opening', state: 'running' }),
+    ).toBeNull();
+    expect(
+      getStatusToastClearDelay({ id: 'success', label: 'Opened', state: 'success' }),
+    ).toBe(1800);
+    expect(
+      getStatusToastClearDelay({ id: 'error', label: 'Open failed', state: 'error' }),
+    ).toBe(4200);
+  });
+
+  it('renders a compact running state without progress chrome', () => {
     const host = document.createElement('div');
 
     renderStatusToast(host, {
@@ -36,9 +49,22 @@ describe('renderStatusToast', () => {
 
     expect(host.classList.contains('hidden')).toBe(false);
     expect(host.querySelector('.status-toast-label')?.textContent).toBe('Syncing chats');
-    expect(host.querySelector('.status-toast-value')?.textContent).toBe('100%');
-    expect(
-      (host.querySelector('.status-toast-bar') as HTMLElement | null)?.style.width,
-    ).toBe('100%');
+    expect(host.querySelector('.status-toast-icon')).not.toBeNull();
+    expect(host.querySelector('.status-toast-detail')).toBeNull();
+    expect(host.querySelector('.status-toast-bar')).toBeNull();
+  });
+
+  it('only renders detail copy for errors', () => {
+    const host = document.createElement('div');
+
+    renderStatusToast(host, {
+      id: 'open',
+      label: 'Open failed',
+      detail: 'Could not open file.pdf.',
+      state: 'error',
+    });
+
+    expect(host.querySelector('.status-toast-label')?.textContent).toBe('Open failed');
+    expect(host.querySelector('.status-toast-detail')?.textContent).toBe('Could not open file.pdf.');
   });
 });

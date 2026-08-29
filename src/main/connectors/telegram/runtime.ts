@@ -32,6 +32,12 @@ const importRuntimeModule = async (relativeToNodeModules: string): Promise<unkno
       'node_modules',
       relativeToNodeModules,
     ),
+    path.join(
+      process.resourcesPath,
+      'app.asar.unpacked',
+      'node_modules',
+      relativeToNodeModules,
+    ),
     path.join(__dirname, '..', 'node_modules', relativeToNodeModules),
     path.join(process.cwd(), 'node_modules', relativeToNodeModules),
   ];

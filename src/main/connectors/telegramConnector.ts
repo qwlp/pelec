@@ -10,20 +10,33 @@ import type {
   ChatMessage,
   ChatSummary,
   Connector,
+  ConnectorProfile,
+  ConnectorProfileUpdate,
   ConnectorUpdateEvent,
   ConnectorStatus,
   ListMessagesOptions,
   OutgoingAttachmentDocument,
   ResolvedDocument,
+  TelegramPickerItem,
+  TelegramPickerQuery,
+  TelegramCallDevice,
+  TelegramCallState,
+  TelegramCallUpdate,
+  TelegramCallVideoFrame,
+  TelegramStickerSetSource,
+  TelegramStickerSetSummary,
 } from '../../shared/connectors';
-import type { NetworkDefinition, TelegramUserConfig } from '../../shared/types';
+import type { NetworkDefinition, NetworkId, TelegramUserConfig } from '../../shared/types';
 import {
+  buildTelegramChatPreview,
   extractTelegramCallInfo,
+  extractTelegramMessageEntities,
+  extractTelegramServiceEvent,
   extractTelegramMessageText,
+  extractTelegramPollInfo,
   extractTelegramReactions,
 } from './telegram/messages';
 import {
-  localPathToDataUrl,
   resolveTdFilePath,
   resolveTdFileUrl,
   resolveTdPlayableFilePath,
@@ -34,17 +47,27 @@ import {
   extractTelegramAnimationSource,
   extractTelegramDocumentMetadata,
   extractTelegramImageDocumentSource,
+  extractTelegramImageName,
+  getTelegramFileSizeBytes,
+  getTelegramImageFile,
   extractTelegramPhotoFiles,
   extractTelegramStickerEmoji,
   extractTelegramStickerSource,
+  extractTelegramVideoDimensions,
   extractTelegramVideoFile,
   extractTelegramVideoMimeType,
+  extractTelegramVideoThumbnailFile,
   extractTelegramVoiceDurationSeconds,
   extractTelegramVoiceNoteFile,
   getTelegramDocument,
+  getTelegramAnimationPreviewFile,
   hasTelegramVideo,
   hasTelegramVoiceNote,
   isTelegramAnimatedSticker,
+  getTelegramStickerPreviewFile,
+  inferTelegramLocalMimeType,
+  mapTelegramAnimationToPickerItem,
+  mapTelegramStickerToPickerItem,
 } from './telegram/media';
 import {
   getFfmpegBinaryPath,
@@ -58,14 +81,21 @@ import {
   resolveUploadFileName,
   TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES,
 } from './telegram/uploads';
+import { TelegramCallService } from './telegram/callService';
 import type {
   AuthorizationState,
+  TdBasicGroup,
   PreparedUploadFile,
   PreparedVoiceNoteUpload,
   TdChat,
   TdClient,
+  TdChatMemberStatus,
+  TdAnimation,
+  TdFileRef,
   TdMessage,
   TdScopeNotificationSettings,
+  TdSticker,
+  TdSupergroup,
   TdUpdateWithChatContext,
 } from './telegram/types';
 
@@ -73,7 +103,21 @@ const TELEGRAM_TDLIB_REQUEST_TIMEOUT_MS = 8000;
 const TELEGRAM_TDLIB_CHAT_SWITCH_TIMEOUT_MS = 2500;
 const TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS = 60000;
 const TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS = 250;
+
 const PELEC_MEDIA_SCHEME = 'pelec-media';
+
+type LegacyConnectorUpdateEvent =
+  | { network: NetworkId; kind: 'status' }
+  | { network: NetworkId; kind: 'chats'; chatId?: string }
+  | { network: NetworkId; kind: 'messages'; chatId?: string };
+
+type TdStickerSet = {
+  id?: number | string;
+  title?: string;
+  name?: string;
+  thumbnail?: { file?: TdFileRef };
+  stickers?: TdSticker[];
+};
 
 export class TelegramConnector implements Connector {
   private status: ConnectorStatus;
@@ -92,6 +136,12 @@ export class TelegramConnector implements Connector {
   private updateListeners = new Set<(event: ConnectorUpdateEvent) => void>();
   private tdlibInitPromise: Promise<void> | null = null;
   private tdlibRecoveryPromise: Promise<void> | null = null;
+  private ownUserId: number | null = null;
+  private readonly callService: TelegramCallService;
+  private readonly callCapabilityCache = new Map<
+    number,
+    { callable: boolean; supportsVideo: boolean }
+  >();
 
   constructor(
     private readonly network: NetworkDefinition,
@@ -110,7 +160,26 @@ export class TelegramConnector implements Connector {
       partition: this.network.partition,
       webUrl: this.network.homeUrl,
       details: 'Preparing Telegram TDLib connector.',
+      qrLink: null,
     };
+    this.callService = new TelegramCallService({
+      config: this.userConfig.calls,
+      getClient: () => this.tdClient,
+      invoke: async <T>(request: Record<string, unknown>, label: string) => {
+        const client = this.tdClient;
+        if (!client) {
+          throw new Error('TDLib client is unavailable.');
+        }
+        return this.invokeWithTimeout<T>(client, request, label);
+      },
+      resolveUserLabel: async (userId) => {
+        const client = this.tdClient;
+        if (!client) {
+          return `User ${userId}`;
+        }
+        return this.resolveUserLabel(client, userId);
+      },
+    });
   }
 
   async init(): Promise<void> {
@@ -126,12 +195,14 @@ export class TelegramConnector implements Connector {
     this.tdLibReady = false;
     this.latestQrLink = null;
     this.activeChatId = null;
+    this.ownUserId = null;
     this.resolveQrWaiters(null);
     for (const timer of this.uploadTempCleanupTimers.values()) {
       clearTimeout(timer);
     }
     const tempDirs = [...this.uploadTempCleanupTimers.keys()];
     this.uploadTempCleanupTimers.clear();
+    await this.callService.shutdown();
     await Promise.allSettled(
       tempDirs.map(async (dir) => rm(dir, { recursive: true, force: true })),
     );
@@ -173,6 +244,68 @@ export class TelegramConnector implements Connector {
     };
   }
 
+  onTelegramCallUpdate(handler: (event: TelegramCallUpdate) => void): () => void {
+    return this.callService.onUpdate(handler);
+  }
+
+  onTelegramCallVideoFrame(handler: (frame: TelegramCallVideoFrame) => void): () => void {
+    return this.callService.onVideoFrame(handler);
+  }
+
+  async getTelegramCallState(): Promise<TelegramCallState> {
+    return this.callService.getState();
+  }
+
+  async startTelegramCall(chatId: string, isVideo: boolean): Promise<TelegramCallState> {
+    return this.callService.startPrivateCall(chatId, isVideo);
+  }
+
+  async answerTelegramCall(isVideo: boolean): Promise<TelegramCallState> {
+    return this.callService.answerPrivateCall(isVideo);
+  }
+
+  async declineTelegramCall(): Promise<TelegramCallState> {
+    return this.callService.decline();
+  }
+
+  async hangUpTelegramCall(): Promise<TelegramCallState> {
+    return this.callService.hangUp();
+  }
+
+  async joinTelegramGroupCall(chatId: string, isVideo: boolean): Promise<TelegramCallState> {
+    return this.callService.joinGroupCall(chatId, isVideo);
+  }
+
+  async leaveTelegramGroupCall(): Promise<TelegramCallState> {
+    return this.callService.leaveGroupCall();
+  }
+
+  async setTelegramCallMuted(muted: boolean): Promise<TelegramCallState> {
+    return this.callService.setMuted(muted);
+  }
+
+  async setTelegramCallVideoEnabled(enabled: boolean): Promise<TelegramCallState> {
+    return this.callService.setVideoEnabled(enabled);
+  }
+
+  async setTelegramCallDevice(
+    kind: TelegramCallDevice['kind'],
+    deviceId: string,
+  ): Promise<TelegramCallState> {
+    return this.callService.setDevice(kind, deviceId);
+  }
+
+  async setTelegramParticipantVolume(
+    participantId: string,
+    volume: number,
+  ): Promise<TelegramCallState> {
+    return this.callService.setParticipantVolume(participantId, volume);
+  }
+
+  async setTelegramVisibleVideoEndpoints(endpointIds: string[]): Promise<void> {
+    this.callService.setVisibleVideoEndpoints(endpointIds);
+  }
+
   async startAuth(): Promise<AuthStartResult> {
     if (this.tdlibRecoveryPromise) {
       await this.tdlibRecoveryPromise;
@@ -193,10 +326,10 @@ export class TelegramConnector implements Connector {
 
     this.status.authState = 'authenticating';
     this.status.details = 'Requesting Telegram QR code from TDLib...';
+    this.status.qrLink = this.latestQrLink;
 
-    const previousQrLink = this.latestQrLink;
     await this.requestQrCodeAuthentication();
-    const qrLink = await this.waitForQrLink(10000, previousQrLink);
+    const qrLink = this.latestQrLink;
 
     if (qrLink) {
       this.status.details =
@@ -215,7 +348,7 @@ export class TelegramConnector implements Connector {
       network: this.network.id,
       mode: 'qr',
       instructions:
-        'Waiting for QR from TDLib. Try again in a moment if QR is not visible yet.',
+        'Waiting for QR from TDLib. It will appear as soon as Telegram returns it.',
       requiresTwoFactor: true,
     };
   }
@@ -252,6 +385,135 @@ export class TelegramConnector implements Connector {
     }
 
     return this.status;
+  }
+
+  async resetAuth(): Promise<ConnectorStatus> {
+    await this.callService.shutdown();
+    if (!this.tdClient) {
+      this.status.authState = 'unauthenticated';
+      this.status.details = 'Telegram auth was reset. Start auth again to log in.';
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return this.status;
+    }
+
+    try {
+      await this.tdClient.invoke({ _: 'logOut' });
+      this.activeChatId = null;
+      this.latestQrLink = null;
+      this.status.authState = 'unauthenticated';
+      this.status.details = 'Telegram auth was reset. Start auth again to log in.';
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return this.status;
+    } catch (error) {
+      this.status.authState = 'degraded';
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Telegram logout error';
+      this.status.details = `Telegram logout failed: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return this.status;
+    }
+  }
+
+  async getProfile(): Promise<ConnectorProfile | null> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return null;
+    }
+
+    try {
+      return await this.fetchOwnProfile(this.tdClient);
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'Unknown Telegram profile error';
+      this.status.details = `Failed loading Telegram profile: ${this.status.lastError}`;
+      return null;
+    }
+  }
+
+  async updateProfile(profile: ConnectorProfileUpdate): Promise<ConnectorProfile | null> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return null;
+    }
+
+    const client = this.tdClient;
+    let tempDir: string | null = null;
+
+    try {
+      if (profile.avatarDataUrl) {
+        const upload = await this.prepareUploadFile(
+          'pelec-telegram-profile-',
+          profile.avatarDataUrl,
+          profile.avatarFileName,
+          (_fullMimeType, essenceMimeType) => essenceMimeType === 'image/jpeg',
+          'profile-photo',
+        );
+        if (!upload) {
+          throw new Error(this.status.lastError || 'Failed preparing Telegram profile photo.');
+        }
+
+        tempDir = upload.tempDir;
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'setProfilePhoto',
+            photo: {
+              _: 'inputChatPhotoStatic',
+              photo: {
+                _: 'inputFileLocal',
+                path: upload.filePath,
+              },
+            },
+          },
+          'setProfilePhoto',
+        );
+      }
+
+      const nextFirstName = profile.firstName?.trim();
+      const nextLastName = profile.lastName?.trim() ?? '';
+      if (nextFirstName !== undefined) {
+        if (!nextFirstName) {
+          throw new Error('Telegram profile first name cannot be empty.');
+        }
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'setName',
+            first_name: nextFirstName,
+            last_name: nextLastName,
+          },
+          'setName',
+        );
+      }
+
+      if (profile.username !== undefined) {
+        await this.invokeWithTimeout(
+          client,
+          {
+            _: 'setUsername',
+            username: profile.username.trim().replace(/^@+/u, ''),
+          },
+          'setUsername',
+        );
+      }
+
+      this.userLabelCache.clear();
+      this.userAvatarCache.clear();
+      if (tempDir) {
+        this.scheduleUploadTempCleanup(tempDir);
+      }
+      this.emitUpdate({ network: this.network.id, kind: 'chats' });
+      return await this.fetchOwnProfile(client);
+    } catch (error) {
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {
+          // Best-effort temp cleanup after failed profile update.
+        });
+      }
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram profile update error';
+      this.status.details = `Failed updating Telegram profile: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return null;
+    }
   }
 
   async listChats(): Promise<ChatSummary[]> {
@@ -292,7 +554,8 @@ export class TelegramConnector implements Connector {
 
       const chatIds = (chatsResult.chat_ids ?? []).slice(0, 80);
       const scopeMuteForByType = new Map<string, number>();
-      const summaries = await Promise.all(
+      const ownUserId = await this.resolveOwnUserId(client);
+      const summaryResults = await Promise.allSettled(
         chatIds.map(async (chatId) => {
           const chat = await this.invokeWithTimeout<TdChat>(
             client,
@@ -303,34 +566,77 @@ export class TelegramConnector implements Connector {
             'getChat',
           );
           const isMuted = await this.isChatMuted(client, chat, scopeMuteForByType);
+          const lastMessageOutgoing = this.isTdMessageOutgoing(chat.last_message, ownUserId);
+          const previewText = extractTelegramMessageText(chat.last_message?.content, {
+            outgoing: lastMessageOutgoing,
+          });
+          const preview = buildTelegramChatPreview({
+            chatTitle: chat.title,
+            includeSender: this.shouldIncludeSenderInChatPreview(chat),
+            isOutgoing: lastMessageOutgoing,
+            previewText,
+            senderLabel:
+              chat.last_message?.sender_id
+                ? await this.resolveSenderLabel(client, chat.last_message.sender_id)
+                : undefined,
+          });
 
           return {
             id: String(chat.id ?? chatId),
             title: chat.title ?? 'Untitled chat',
             unreadCount: chat.unread_count ?? 0,
-            lastMessagePreview: extractTelegramMessageText(chat.last_message?.content, {
-              outgoing: chat.last_message?.is_outgoing === true,
-            }),
+            lastMessagePreview: preview.previewText,
+            lastMessageSender: preview.senderLabel,
             lastMessageTimestamp: (chat.last_message?.date ?? 0) * 1000 || undefined,
+            lastMessageOutgoing,
+            lastMessageReadByPeer:
+              lastMessageOutgoing
+                ? this.isMessageReadByPeer(chat.last_message.id, chat.last_read_outbox_message_id)
+                : undefined,
             avatarUrl: await this.resolveChatAvatar(client, Number(chat.id ?? chatId)),
             isMuted,
+            canSend: await this.canSendToChat(client, chat),
+            telegramCallCapabilities: await this.resolveCallCapabilities(client, chat),
           } as ChatSummary;
         }),
       );
+
+      const summaries: ChatSummary[] = [];
+      let firstError: Error | null = null;
+      for (const result of summaryResults) {
+        if (result.status === 'fulfilled') {
+          summaries.push(result.value);
+          continue;
+        }
+        if (!firstError) {
+          firstError =
+            result.reason instanceof Error
+              ? result.reason
+              : new Error(String(result.reason ?? 'Unknown Telegram chat summary error'));
+        }
+      }
+
+      if (summaries.length < 1 && firstError) {
+        throw firstError;
+      }
+
+      if (firstError) {
+        this.status.lastError = firstError.message;
+        this.status.details = `Some Telegram chats could not be loaded: ${this.status.lastError}`;
+      } else {
+        this.status.lastError = undefined;
+      }
 
       return summaries;
     } catch (error) {
       this.status.lastError =
         error instanceof Error ? error.message : 'Unknown getChats error';
       this.status.details = `Failed loading Telegram chats: ${this.status.lastError}`;
-      return [];
+      throw error instanceof Error ? error : new Error(this.status.lastError);
     }
   }
 
-  async listMessages(
-    chatId: string,
-    _options?: ListMessagesOptions,
-  ): Promise<ChatMessage[]> {
+  async listMessages(chatId: string, options?: ListMessagesOptions): Promise<ChatMessage[]> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return [];
     }
@@ -347,42 +653,25 @@ export class TelegramConnector implements Connector {
         'getChat',
       );
       const lastReadOutboxMessageId = chat.last_read_outbox_message_id;
+      const ownUserId = await this.resolveOwnUserId(client);
 
-      const pageLimit = 50;
-      const maxPages = 4;
-      let cursor: number | string | bigint = 0;
-      const collected: TdMessage[] = [];
-
-      for (let page = 0; page < maxPages; page += 1) {
-        const history: { messages?: TdMessage[] } = await this.invokeWithTimeout<{
-          messages?: TdMessage[];
-        }>(
-          client,
-          {
-            _: 'getChatHistory',
-            chat_id: Number(chatId),
-            from_message_id: cursor,
-            offset: cursor === 0 ? 0 : -1,
-            limit: pageLimit,
-            only_local: false,
-          },
-          'getChatHistory',
-        );
-
-        const messages: TdMessage[] = history.messages ?? [];
-        if (messages.length < 1) {
-          break;
-        }
-
-        collected.push(...messages);
-        const oldestId: number | string | bigint | undefined = messages[messages.length - 1]?.id;
-
-        if (!oldestId || String(oldestId) === String(cursor) || messages.length < pageLimit) {
-          break;
-        }
-
-        cursor = oldestId;
-      }
+      const pageLimit = Math.max(1, Math.min(100, Math.floor(options?.limit ?? 80)));
+      const beforeMessageId = this.toTdMessageId(options?.beforeMessageId);
+      const history: { messages?: TdMessage[] } = await this.invokeWithTimeout<{
+        messages?: TdMessage[];
+      }>(
+        client,
+        {
+          _: 'getChatHistory',
+          chat_id: Number(chatId),
+          from_message_id: beforeMessageId ?? 0,
+          offset: beforeMessageId ? -1 : 0,
+          limit: pageLimit,
+          only_local: false,
+        },
+        'getChatHistory',
+      );
+      const collected: TdMessage[] = history.messages ?? [];
 
       const uniqueById = new Map<string, TdMessage>();
       for (const message of collected) {
@@ -412,10 +701,11 @@ export class TelegramConnector implements Connector {
       for (const replyTargetId of replyTargetIds) {
         const localMessage = uniqueById.get(replyTargetId);
         if (localMessage) {
+          const localMessageOutgoing = this.isTdMessageOutgoing(localMessage, ownUserId);
           replyContextById.set(replyTargetId, {
             sender: await this.resolveSenderLabel(client, localMessage.sender_id),
             text: extractTelegramMessageText(localMessage.content, {
-              outgoing: localMessage.is_outgoing === true,
+              outgoing: localMessageOutgoing,
             }),
           });
           continue;
@@ -425,29 +715,35 @@ export class TelegramConnector implements Connector {
         if (!remoteMessage) {
           continue;
         }
+        const remoteMessageOutgoing = this.isTdMessageOutgoing(remoteMessage, ownUserId);
         replyContextById.set(replyTargetId, {
           sender: await this.resolveSenderLabel(client, remoteMessage.sender_id),
           text: extractTelegramMessageText(remoteMessage.content, {
-            outgoing: remoteMessage.is_outgoing === true,
+            outgoing: remoteMessageOutgoing,
           }),
         });
       }
 
-      const parsed = await Promise.all(
+      const parsedResults = await Promise.allSettled(
         [...uniqueById.values()].map(async (message) => {
           const replyTargetId = this.extractReplyTargetId(message);
           const replyContext = replyTargetId ? replyContextById.get(replyTargetId) : undefined;
+          const videoDimensions = extractTelegramVideoDimensions(message.content);
+          const serviceEventDetail = await this.resolveServiceEventDetail(client, message.content);
+          const outgoing = this.isTdMessageOutgoing(message, ownUserId);
           return {
             id: String(message.id ?? ''),
             mediaAlbumId: message.media_album_id ? String(message.media_album_id) : undefined,
             sender: await this.resolveSenderLabel(client, message.sender_id),
             text: extractTelegramMessageText(message.content, {
-              outgoing: message.is_outgoing === true,
+              outgoing,
             }),
+            textEntities: extractTelegramMessageEntities(message.content),
             timestamp: (message.date ?? 0) * 1000,
-            outgoing: Boolean(message.is_outgoing),
+            outgoing,
+            canBeEdited: message.can_be_edited,
             readByPeer:
-              message.is_outgoing === true
+              outgoing
                 ? this.isMessageReadByPeer(message.id, lastReadOutboxMessageId)
                 : undefined,
             forwardedFrom: await this.resolveForwardOriginLabel(client, message.forward_info),
@@ -456,7 +752,22 @@ export class TelegramConnector implements Connector {
             replyToText: replyContext?.text,
             hasAudio: hasTelegramVoiceNote(message.content),
             hasVideo: hasTelegramVideo(message.content),
-            imageUrl: await this.extractImageUrl(client, message.content),
+            imageUrl:
+              (getTelegramFileSizeBytes(getTelegramImageFile(message.content)) ?? 0) >
+              10 * 1024 * 1024
+                ? undefined
+                : await this.extractImageUrl(client, message.content),
+            imageName: extractTelegramImageName(
+              message.content,
+              message.id === undefined ? undefined : String(message.id),
+            ),
+            imageSizeBytes: getTelegramFileSizeBytes(getTelegramImageFile(message.content)),
+            imageDeferred:
+              (getTelegramFileSizeBytes(getTelegramImageFile(message.content)) ?? 0) >
+              10 * 1024 * 1024,
+            videoThumbnailUrl: await this.extractVideoThumbnailUrl(client, message.content),
+            videoWidth: videoDimensions?.width,
+            videoHeight: videoDimensions?.height,
             videoMimeType: extractTelegramVideoMimeType(message.content),
             animationUrl: await this.extractAnimationUrl(client, message.content),
             animationMimeType: extractTelegramAnimationMimeType(message.content),
@@ -468,9 +779,37 @@ export class TelegramConnector implements Connector {
             senderAvatarUrl: await this.resolveSenderAvatar(client, message.sender_id),
             document: extractTelegramDocumentMetadata(message.content),
             call: extractTelegramCallInfo(message.content),
+            poll: extractTelegramPollInfo(message.content),
+            serviceEvent: extractTelegramServiceEvent(message.content, {
+              detail: serviceEventDetail,
+            }),
           };
         }),
       );
+
+      const parsed: ChatMessage[] = [];
+      let firstError: Error | null = null;
+      for (const result of parsedResults) {
+        if (result.status === 'fulfilled') {
+          parsed.push(result.value);
+          continue;
+        }
+        if (!firstError) {
+          firstError =
+            result.reason instanceof Error
+              ? result.reason
+              : new Error(String(result.reason ?? 'Unknown Telegram message parse error'));
+        }
+      }
+
+      if (parsed.length < 1 && firstError) {
+        throw firstError;
+      }
+
+      if (firstError) {
+        this.status.lastError = firstError.message;
+        this.status.details = `Some Telegram messages could not be loaded: ${this.status.lastError}`;
+      }
 
       return parsed.sort((a, b) => {
         if (a.timestamp !== b.timestamp) {
@@ -511,7 +850,11 @@ export class TelegramConnector implements Connector {
 
     const readableMessageIds = (messageIds ?? [])
       .map((messageId) => this.toTdMessageId(messageId))
-      .filter((messageId): messageId is number => typeof messageId === 'number');
+      .filter(
+        (
+          messageId,
+        ): messageId is number | bigint => typeof messageId === 'number' || typeof messageId === 'bigint',
+      );
 
     await this.acknowledgeViewedMessageIds(this.tdClient, chatId, readableMessageIds);
   }
@@ -570,6 +913,96 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async editMessage(chatId: string, messageId: string, text: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    const messageText = text.trim();
+    if (!tdMessageId || !messageText) {
+      return false;
+    }
+
+    try {
+      const message = await this.loadMessageById(this.tdClient, chatId, messageId);
+      const canEdit =
+        message?.can_be_edited === true ||
+        (message?.can_be_edited === undefined && message?.is_outgoing === true);
+      if (!canEdit) {
+        this.status.lastError = 'Only your editable messages can be edited';
+        this.status.details = `Failed editing message: ${this.status.lastError}`;
+        return false;
+      }
+
+      await this.tdClient.invoke({
+        _: 'editMessageText',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        input_message_content: {
+          _: 'inputMessageText',
+          text: {
+            _: 'formattedText',
+            text: messageText,
+          },
+        },
+      });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown editMessage error';
+      this.status.details = `Failed editing message: ${this.status.lastError}`;
+      return false;
+    }
+  }
+
+  async setReaction(chatId: string, messageId: string, reaction: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    const emoji = reaction.trim();
+    if (!tdMessageId || !emoji) {
+      return false;
+    }
+
+    const reactionType = {
+      _: 'reactionTypeEmoji',
+      emoji,
+    };
+
+    try {
+      const message = await this.loadMessageById(this.tdClient, chatId, messageId);
+      const chosen = extractTelegramReactions(message?.interaction_info)?.some(
+        (candidate) => candidate.value === emoji && candidate.chosen === true,
+      );
+
+      await this.tdClient.invoke({
+        _: chosen ? 'removeMessageReaction' : 'addMessageReaction',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        reaction_type: reactionType,
+        ...(chosen
+          ? {}
+          : {
+              is_big: false,
+              update_recent_reactions: true,
+            }),
+      });
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'messages', chatId });
+      this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown reaction error';
+      this.status.details = `Failed updating reaction: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return false;
+    }
+  }
+
   async sendImageMessage(
     chatId: string,
     dataUrl: string,
@@ -599,12 +1032,17 @@ export class TelegramConnector implements Connector {
         input_message_content: {
           _: 'inputMessagePhoto',
           photo: {
-            _: 'inputFileLocal',
-            path: upload.filePath,
+            _: 'inputPhoto',
+            photo: {
+              _: 'inputFileLocal',
+              path: upload.filePath,
+            },
+            thumbnail: null,
           },
           caption: {
             _: 'formattedText',
             text: caption?.trim() ?? '',
+            entities: [],
           },
         },
       } as Record<string, unknown>;
@@ -624,6 +1062,88 @@ export class TelegramConnector implements Connector {
         await rm(upload.tempDir, { recursive: true, force: true }).catch(() => {
           // Best-effort temp cleanup.
         });
+      }
+    }
+  }
+
+  async sendImageAlbumMessage(
+    chatId: string,
+    images: OutgoingAttachmentDocument[],
+    caption?: string,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const albumImages = images.filter((image) => image.dataUrl.trim());
+    if (albumImages.length < 1) {
+      return false;
+    }
+    if (albumImages.length === 1) {
+      return this.sendImageMessage(chatId, albumImages[0].dataUrl, caption, replyToMessageId);
+    }
+
+    const uploads: Array<{ filePath: string; tempDir: string }> = [];
+    let shouldCleanupImmediately = true;
+    try {
+      for (const image of albumImages) {
+        const upload = await this.prepareUploadFile(
+          'pelec-telegram-image-',
+          image.dataUrl,
+          image.fileName,
+          (mimeType) => mimeType.startsWith('image/'),
+          'clipboard-image',
+        );
+        if (!upload) {
+          return false;
+        }
+        uploads.push(upload);
+      }
+
+      const trimmedCaption = caption?.trim() ?? '';
+      const baseRequest = {
+        _: 'sendMessageAlbum',
+        chat_id: Number(chatId),
+        input_message_contents: uploads.map<Record<string, unknown>>((upload, index) => ({
+          _: 'inputMessagePhoto',
+          photo: {
+            _: 'inputPhoto',
+            photo: {
+              _: 'inputFileLocal',
+              path: upload.filePath,
+            },
+            thumbnail: null,
+          },
+          caption: {
+            _: 'formattedText',
+            text: index === 0 ? trimmedCaption : '',
+            entities: [],
+          },
+        })),
+      } as Record<string, unknown>;
+
+      await this.sendTdMessage(baseRequest, replyToMessageId);
+
+      shouldCleanupImmediately = false;
+      for (const upload of uploads) {
+        this.scheduleUploadTempCleanup(upload.tempDir);
+      }
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown sendImageAlbumMessage error';
+      this.status.details = `Failed sending image album: ${this.status.lastError}`;
+      return false;
+    } finally {
+      if (shouldCleanupImmediately) {
+        await Promise.all(
+          uploads.map((upload) =>
+            rm(upload.tempDir, { recursive: true, force: true }).catch(() => {
+              // Best-effort temp cleanup.
+            }),
+          ),
+        );
       }
     }
   }
@@ -657,12 +1177,18 @@ export class TelegramConnector implements Connector {
         input_message_content: {
           _: 'inputMessageDocument',
           document: {
-            _: 'inputFileLocal',
-            path: upload.filePath,
+            _: 'inputDocument',
+            document: {
+              _: 'inputFileLocal',
+              path: upload.filePath,
+            },
+            thumbnail: null,
+            disable_content_type_detection: false,
           },
           caption: {
             _: 'formattedText',
             text: caption?.trim() ?? '',
+            entities: [],
           },
         },
       } as Record<string, unknown>;
@@ -832,6 +1358,26 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async resolveImageUrl(chatId: string, messageId: string): Promise<string | undefined> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return undefined;
+    }
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return undefined;
+    }
+    try {
+      const message = (await this.tdClient.invoke({
+        _: 'getMessage',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+      })) as { content?: unknown };
+      return this.extractImageUrl(this.tdClient, message.content);
+    } catch {
+      return undefined;
+    }
+  }
+
   async resolveVideoUrl(chatId: string, messageId: string): Promise<string | undefined> {
     if (!this.tdClient || this.status.authState !== 'authenticated') {
       return undefined;
@@ -876,6 +1422,246 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  async answerPoll(chatId: string, messageId: string, optionIds: number[]): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    if (!tdMessageId) {
+      return false;
+    }
+
+    try {
+      await this.tdClient.invoke({
+        _: 'setPollAnswer',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        option_ids: optionIds
+          .map((value) => Math.floor(Number(value)))
+          .filter((value) => Number.isFinite(value) && value >= 0),
+      });
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'messages', chatId });
+      this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown poll answer error';
+      this.status.details = `Failed voting in poll: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return false;
+    }
+  }
+
+  async addPollOption(chatId: string, messageId: string, text: string): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const tdMessageId = this.toTdMessageId(messageId);
+    const normalizedText = text.trim();
+    if (!tdMessageId || !normalizedText || normalizedText.length > 100) {
+      return false;
+    }
+
+    try {
+      await this.tdClient.invoke({
+        _: 'addPollOption',
+        chat_id: Number(chatId),
+        message_id: tdMessageId,
+        option: {
+          _: 'inputPollOption',
+          text: {
+            _: 'formattedText',
+            text: normalizedText,
+            entities: [],
+          },
+        },
+      });
+      this.status.lastError = undefined;
+      this.emitUpdate({ network: this.network.id, kind: 'messages', chatId });
+      this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown poll option error';
+      this.status.details = `Failed adding poll option: ${this.status.lastError}`;
+      this.emitUpdate({ network: this.network.id, kind: 'status' });
+      return false;
+    }
+  }
+
+  async listTelegramStickerSets(
+    source: TelegramStickerSetSource,
+  ): Promise<TelegramStickerSetSummary[]> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return [];
+    }
+
+    try {
+      if (source === 'recent' || source === 'favorite') {
+        const stickers = source === 'favorite'
+          ? await this.getFavoriteTelegramStickers(this.tdClient, 24)
+          : await this.getRecentTelegramStickers(this.tdClient, 24);
+        const thumbnailUrl = (await this.resolveStickerPreview(this.tdClient, stickers[0]))?.url;
+        return [
+          {
+            id: source,
+            title: source === 'favorite' ? 'Favorites' : 'Recent',
+            source,
+            thumbnailUrl,
+            stickerCount: stickers.length,
+          },
+        ];
+      }
+
+      const result = await this.invokeWithTimeout<{ sets?: TdStickerSet[] }>(
+        this.tdClient,
+        {
+          _: 'getInstalledStickerSets',
+          sticker_type: { _: 'stickerTypeRegular' },
+        },
+        'getInstalledStickerSets',
+      );
+
+      const summaries = await Promise.all(
+        (result.sets ?? []).slice(0, 32).map(async (set): Promise<TelegramStickerSetSummary | null> => {
+          const setId = String(set.id ?? '').trim();
+          const title = set.title?.trim() || set.name?.trim() || 'Sticker set';
+          const thumbnailUrl = await this.resolveTdFileRefPreviewUrl(this.tdClient as TdClient, set.thumbnail?.file);
+          return setId
+            ? {
+                id: setId,
+                title,
+                name: set.name?.trim() || undefined,
+                source,
+                thumbnailUrl,
+                stickerCount: set.stickers?.length,
+              }
+            : null;
+        }),
+      );
+
+      return summaries.filter((set): set is TelegramStickerSetSummary => set !== null);
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram sticker-set error';
+      this.status.details = `Failed loading Telegram sticker sets: ${this.status.lastError}`;
+      return [];
+    }
+  }
+
+  async listTelegramPickerItems(query: TelegramPickerQuery): Promise<TelegramPickerItem[]> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return [];
+    }
+
+    const limit = Math.max(1, Math.min(80, Math.floor(query.limit ?? 48)));
+
+    try {
+      if (query.kind === 'gif') {
+        const animations = query.query?.trim()
+          ? await this.searchTelegramAnimations(this.tdClient, query.query.trim(), limit)
+          : await this.getSavedTelegramAnimations(this.tdClient, limit);
+        return this.mapTelegramAnimationsForPicker(this.tdClient, animations, limit);
+      }
+
+      let stickers: TdSticker[] = [];
+      let setTitle: string | undefined;
+      if (query.setId?.trim() && !['recent', 'favorite'].includes(query.setId.trim())) {
+        const set = await this.getTelegramStickerSet(this.tdClient, query.setId.trim());
+        stickers = set?.stickers ?? [];
+        setTitle = set?.title;
+      } else if (query.query?.trim() || query.emoji?.trim()) {
+        stickers = await this.searchTelegramStickers(
+          this.tdClient,
+          query.emoji?.trim() || query.query?.trim() || '',
+          query.query?.trim() || '',
+          limit,
+        );
+      } else if (query.setId?.trim() === 'favorite') {
+        stickers = await this.getFavoriteTelegramStickers(this.tdClient, limit);
+        setTitle = 'Favorites';
+      } else {
+        stickers = await this.getRecentTelegramStickers(this.tdClient, limit);
+        setTitle = 'Recent';
+        if (stickers.length < 1) {
+          stickers = await this.getFavoriteTelegramStickers(this.tdClient, limit);
+          setTitle = 'Favorites';
+        }
+      }
+
+      return this.mapTelegramStickersForPicker(this.tdClient, stickers, limit, setTitle);
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram picker item error';
+      this.status.details = `Failed loading Telegram picker items: ${this.status.lastError}`;
+      return [];
+    }
+  }
+
+  async sendTelegramPickerItem(
+    chatId: string,
+    item: TelegramPickerItem,
+    replyToMessageId?: string,
+  ): Promise<boolean> {
+    if (!this.tdClient || this.status.authState !== 'authenticated') {
+      return false;
+    }
+
+    const fileId = Number(item.id);
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+      return false;
+    }
+
+    try {
+      const inputFile = {
+        _: 'inputFileId',
+        id: fileId,
+      };
+      const baseRequest = {
+        _: 'sendMessage',
+        chat_id: Number(chatId),
+        input_message_content:
+          item.kind === 'gif'
+            ? {
+                _: 'inputMessageAnimation',
+                animation: {
+                  _: 'inputAnimation',
+                  animation: inputFile,
+                  thumbnail: null,
+                  added_sticker_file_ids: [],
+                  duration: 0,
+                  width: item.width ?? 0,
+                  height: item.height ?? 0,
+                },
+                caption: {
+                  _: 'formattedText',
+                  text: '',
+                  entities: [],
+                },
+              }
+            : {
+                _: 'inputMessageSticker',
+                sticker: inputFile,
+                thumbnail: null,
+                emoji: item.emoji ?? '',
+                width: item.width ?? 0,
+                height: item.height ?? 0,
+              },
+      } as Record<string, unknown>;
+
+      await this.sendTdMessage(baseRequest, replyToMessageId);
+      return true;
+    } catch (error) {
+      this.status.lastError =
+        error instanceof Error ? error.message : 'Unknown Telegram picker send error';
+      this.status.details = `Failed sending Telegram media: ${this.status.lastError}`;
+      return false;
+    }
+  }
+
   private resolveQrWaiters(link: string | null): void {
     for (const resolve of this.qrWaiters) {
       resolve(link);
@@ -883,47 +1669,247 @@ export class TelegramConnector implements Connector {
     this.qrWaiters = [];
   }
 
-  private toTdMessageId(value: string | undefined): number | undefined {
+  private async getRecentTelegramStickers(client: TdClient, limit: number): Promise<TdSticker[]> {
+    const result = await this.invokeWithTimeout<{ stickers?: TdSticker[] }>(
+      client,
+      {
+        _: 'getRecentStickers',
+        is_attached: false,
+      },
+      'getRecentStickers',
+    );
+    return (result.stickers ?? []).slice(0, limit);
+  }
+
+  private async getFavoriteTelegramStickers(client: TdClient, limit: number): Promise<TdSticker[]> {
+    const result = await this.invokeWithTimeout<{ stickers?: TdSticker[] }>(
+      client,
+      {
+        _: 'getFavoriteStickers',
+      },
+      'getFavoriteStickers',
+    );
+    return (result.stickers ?? []).slice(0, limit);
+  }
+
+  private async getTelegramStickerSet(
+    client: TdClient,
+    setId: string,
+  ): Promise<TdStickerSet | undefined> {
+    const numericSetId = Number(setId);
+    if (!Number.isFinite(numericSetId) || numericSetId <= 0) {
+      return undefined;
+    }
+
+    return this.invokeWithTimeout<TdStickerSet>(
+      client,
+      {
+        _: 'getStickerSet',
+        set_id: numericSetId,
+      },
+      'getStickerSet',
+    );
+  }
+
+  private async searchTelegramStickers(
+    client: TdClient,
+    emoji: string,
+    query: string,
+    limit: number,
+  ): Promise<TdSticker[]> {
+    const requests: Array<Record<string, unknown>> = [
+      {
+        _: 'searchStickers',
+        sticker_type: { _: 'stickerTypeRegular' },
+        emojis: emoji,
+        query,
+        limit,
+      },
+      {
+        _: 'searchStickers',
+        emoji,
+        limit,
+      },
+    ];
+
+    for (const request of requests) {
+      try {
+        const result = await this.invokeWithTimeout<{ stickers?: TdSticker[] }>(
+          client,
+          request,
+          'searchStickers',
+        );
+        const stickers = result.stickers ?? [];
+        if (stickers.length > 0) {
+          return stickers.slice(0, limit);
+        }
+      } catch {
+        // Try the next TDLib shape; searchStickers changed over TDLib versions.
+      }
+    }
+
+    return [];
+  }
+
+  private async getSavedTelegramAnimations(client: TdClient, limit: number): Promise<TdAnimation[]> {
+    const result = await this.invokeWithTimeout<{ animations?: TdAnimation[] }>(
+      client,
+      {
+        _: 'getSavedAnimations',
+      },
+      'getSavedAnimations',
+    );
+    return (result.animations ?? []).slice(0, limit);
+  }
+
+  private async searchTelegramAnimations(
+    client: TdClient,
+    query: string,
+    limit: number,
+  ): Promise<TdAnimation[]> {
+    const requests: Array<Record<string, unknown>> = [
+      {
+        _: 'searchAnimations',
+        query,
+        limit,
+      },
+      {
+        _: 'getAnimationSearchResults',
+        query,
+        offset: '',
+        limit,
+      },
+    ];
+
+    for (const request of requests) {
+      try {
+        const result = await this.invokeWithTimeout<{
+          animations?: TdAnimation[];
+          results?: TdAnimation[];
+        }>(
+          client,
+          request,
+          String(request._),
+        );
+        const animations = result.animations ?? result.results ?? [];
+        if (animations.length > 0) {
+          return animations.slice(0, limit);
+        }
+      } catch {
+        // Try the next Telegram animation search method name.
+      }
+    }
+
+    return [];
+  }
+
+  private async mapTelegramStickersForPicker(
+    client: TdClient,
+    stickers: TdSticker[],
+    limit: number,
+    setTitle?: string,
+  ): Promise<TelegramPickerItem[]> {
+    const items = await Promise.all(
+      stickers.slice(0, limit).map(async (sticker) => {
+        const preview = await this.resolveStickerPreview(client, sticker);
+        return mapTelegramStickerToPickerItem(
+          sticker,
+          preview?.url,
+          preview?.mimeType,
+          setTitle,
+        );
+      }),
+    );
+    return items.filter((item): item is TelegramPickerItem => item !== undefined);
+  }
+
+  private async mapTelegramAnimationsForPicker(
+    client: TdClient,
+    animations: TdAnimation[],
+    limit: number,
+  ): Promise<TelegramPickerItem[]> {
+    const items = await Promise.all(
+      animations.slice(0, limit).map(async (animation) => {
+        const preview = await this.resolveAnimationPreview(client, animation);
+        return mapTelegramAnimationToPickerItem(animation, preview?.url, preview?.mimeType);
+      }),
+    );
+    return items.filter((item): item is TelegramPickerItem => item !== undefined);
+  }
+
+  private async resolveStickerPreview(
+    client: TdClient,
+    sticker: TdSticker | undefined,
+  ): Promise<{ url: string; mimeType: string } | undefined> {
+    const previewFile = getTelegramStickerPreviewFile(sticker);
+    return this.resolveTdFileRefPreview(client, previewFile);
+  }
+
+  private async resolveAnimationPreview(
+    client: TdClient,
+    animation: TdAnimation | undefined,
+  ): Promise<{ url: string; mimeType: string } | undefined> {
+    return this.resolveTdFileRefPreview(client, getTelegramAnimationPreviewFile(animation));
+  }
+
+  private async resolveTdFileRefPreviewUrl(
+    client: TdClient,
+    file: TdFileRef | undefined,
+  ): Promise<string | undefined> {
+    return (await this.resolveTdFileRefPreview(client, file))?.url;
+  }
+
+  private async resolveTdFileRefPreview(
+    client: TdClient,
+    file: TdFileRef | undefined,
+  ): Promise<{ url: string; mimeType: string } | undefined> {
+    if (!file) {
+      return undefined;
+    }
+
+    const localPath = await resolveTdFilePath({
+      client,
+      file,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+    });
+    if (!localPath) {
+      return undefined;
+    }
+
+    const mimeType = inferTelegramLocalMimeType(localPath);
+    return {
+      url: buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME, mimeType),
+      mimeType,
+    };
+  }
+
+  private toTdMessageId(value: string | undefined): number | bigint | undefined {
     if (!value) {
       return undefined;
     }
-    const asNumber = Number(value);
-    if (!Number.isFinite(asNumber) || asNumber <= 0) {
+
+    const trimmed = value.trim();
+    if (!trimmed) {
       return undefined;
     }
-    return asNumber;
-  }
 
-  private waitForQrLink(timeoutMs: number, previousLink?: string | null): Promise<string | null> {
-    if (this.latestQrLink && this.latestQrLink !== previousLink) {
-      return Promise.resolve(this.latestQrLink);
+    try {
+      const asBigInt = BigInt(trimmed);
+      if (asBigInt <= 0n) {
+        return undefined;
+      }
+      if (asBigInt <= BigInt(Number.MAX_SAFE_INTEGER)) {
+        return Number(asBigInt);
+      }
+      return asBigInt;
+    } catch {
+      const asNumber = Number(trimmed);
+      if (!Number.isFinite(asNumber) || asNumber <= 0) {
+        return undefined;
+      }
+      return asNumber;
     }
-
-    return new Promise<string | null>((resolve) => {
-      let settled = false;
-      const timeout = setTimeout(() => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        this.qrWaiters = this.qrWaiters.filter((entry) => entry !== wrappedResolve);
-        resolve(null);
-      }, timeoutMs);
-
-      const wrappedResolve = (value: string | null) => {
-        if (settled) {
-          return;
-        }
-        if (value && value === previousLink) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        resolve(value);
-      };
-
-      this.qrWaiters.push(wrappedResolve);
-    });
   }
 
   private async requestQrCodeAuthentication(): Promise<void> {
@@ -946,6 +1932,7 @@ export class TelegramConnector implements Connector {
       const link = typeof state.link === 'string' ? state.link : null;
       if (link) {
         this.latestQrLink = link;
+        this.status.qrLink = link;
         this.status.authState = 'authenticating';
         this.status.details =
           'QR generated. Scan with Telegram app. Enter password if 2FA is requested.';
@@ -965,6 +1952,7 @@ export class TelegramConnector implements Connector {
       this.status.mode = 'native';
       this.status.details = 'Telegram authenticated with TDLib.';
       this.status.lastError = undefined;
+      this.status.qrLink = null;
       this.latestQrLink = null;
       return;
     }
@@ -977,10 +1965,12 @@ export class TelegramConnector implements Connector {
     }
 
     if (state._ === 'authorizationStateClosed') {
+      void this.callService.shutdown();
       this.status.authState = 'unauthenticated';
       this.status.details = 'TDLib authorization state is closed. Reinitializing Telegram...';
       this.status.lastError = undefined;
       this.activeChatId = null;
+      this.status.qrLink = null;
       this.latestQrLink = null;
       this.resolveQrWaiters(null);
       void this.recoverTdlib();
@@ -1013,6 +2003,7 @@ export class TelegramConnector implements Connector {
       const client = this.tdClient;
       this.tdClient = null;
       this.tdLibReady = false;
+      this.status.qrLink = null;
       this.latestQrLink = null;
       this.activeChatId = null;
       this.resolveQrWaiters(null);
@@ -1069,7 +2060,7 @@ export class TelegramConnector implements Connector {
   private async acknowledgeViewedMessageIds(
     client: TdClient,
     chatId: string,
-    messageIds: number[],
+    messageIds: Array<number | bigint>,
   ): Promise<void> {
     if (messageIds.length < 1) {
       return;
@@ -1153,6 +2144,78 @@ export class TelegramConnector implements Connector {
     return undefined;
   }
 
+  private async resolveOwnUserId(client: TdClient): Promise<number | null> {
+    if (this.ownUserId !== null) {
+      return this.ownUserId;
+    }
+
+    try {
+      const user = await this.invokeWithTimeout<{ id?: number }>(
+        client,
+        {
+          _: 'getMe',
+        },
+        'getMe',
+      );
+      const userId = Number(user.id ?? 0);
+      this.ownUserId = Number.isFinite(userId) && userId > 0 ? userId : null;
+      return this.ownUserId;
+    } catch {
+      return null;
+    }
+  }
+
+  private isTdMessageOutgoing(
+    message:
+      | {
+          is_outgoing?: boolean;
+          sender_id?: { user_id?: number; _?: string };
+        }
+      | undefined,
+    ownUserId: number | null,
+  ): boolean {
+    if (!message) {
+      return false;
+    }
+    if (typeof message.is_outgoing === 'boolean') {
+      return message.is_outgoing;
+    }
+    return (
+      ownUserId !== null &&
+      message.sender_id?._ === 'messageSenderUser' &&
+      message.sender_id.user_id === ownUserId
+    );
+  }
+
+  private async resolveServiceEventDetail(client: TdClient, content: unknown): Promise<string | undefined> {
+    if (!content || typeof content !== 'object') {
+      return undefined;
+    }
+
+    const event = content as {
+      _?: string;
+      member_user_ids?: unknown[];
+      user_id?: number;
+    };
+
+    if (event._ === 'messageChatAddMembers') {
+      const userIds = (Array.isArray(event.member_user_ids) ? event.member_user_ids : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      if (userIds.length < 1) {
+        return undefined;
+      }
+      const labels = await Promise.all(userIds.map((userId) => this.resolveUserLabel(client, userId)));
+      return labels.map((label) => label.trim()).filter(Boolean).join(', ') || undefined;
+    }
+
+    if (event._ === 'messageChatDeleteMember' && event.user_id) {
+      return this.resolveUserLabel(client, event.user_id);
+    }
+
+    return undefined;
+  }
+
   private async resolveForwardOriginLabel(
     client: TdClient,
     forwardInfo:
@@ -1194,6 +2257,53 @@ export class TelegramConnector implements Connector {
     }
 
     return undefined;
+  }
+
+  private async fetchOwnProfile(client: TdClient): Promise<ConnectorProfile> {
+    const user = await this.invokeWithTimeout<{
+      id?: number;
+      first_name?: string;
+      last_name?: string;
+      username?: string;
+      usernames?: { active_usernames?: string[] };
+      profile_photo?: { small?: { id?: number; local?: { path?: string } } };
+    }>(
+      client,
+      {
+        _: 'getMe',
+      },
+      'getMe',
+    );
+
+    const firstName = user.first_name?.trim() ?? '';
+    const lastName = user.last_name?.trim() ?? '';
+    const username =
+      user.usernames?.active_usernames?.[0]?.trim() ??
+      user.username?.trim() ??
+      undefined;
+    const displayName = `${firstName} ${lastName}`.trim() || 'Telegram user';
+    const avatarUrl = await resolveTdFileUrl({
+      client,
+      file: user.profile_photo?.small,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+      mediaDataUrlCache: this.mediaDataUrlCache,
+    }).catch((): string | undefined => undefined);
+
+    if (user.id && displayName) {
+      this.ownUserId = user.id;
+      const label = username ? `${displayName} (@${username})` : displayName;
+      this.userLabelCache.set(user.id, label);
+      this.userAvatarCache.set(user.id, avatarUrl);
+    }
+
+    return {
+      displayName,
+      firstName,
+      lastName,
+      username,
+      avatarUrl,
+    };
   }
 
   private async resolveUserLabel(client: TdClient, userId: number): Promise<string> {
@@ -1323,6 +2433,15 @@ export class TelegramConnector implements Connector {
     }
   }
 
+  private shouldIncludeSenderInChatPreview(chat: TdChat): boolean {
+    const chatType = chat.type?._;
+    if (chatType === 'chatTypeBasicGroup') {
+      return true;
+    }
+
+    return chatType === 'chatTypeSupergroup' && chat.type?.is_channel !== true;
+  }
+
   private compareMessageIds(a: string, b: string): number {
     try {
       const ai = BigInt(a);
@@ -1366,14 +2485,13 @@ export class TelegramConnector implements Connector {
   private async extractImageUrl(client: TdClient, content: unknown): Promise<string | undefined> {
     const imageDocument = extractTelegramImageDocumentSource(content);
     if (imageDocument) {
-      return resolveTdFileUrl({
+      const localPath = await resolveTdFilePath({
         client,
         file: imageDocument.file,
-        preferredMimeType: imageDocument.mimeType,
         invokeWithTimeout: this.invokeWithTimeout.bind(this),
         downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
-        mediaDataUrlCache: this.mediaDataUrlCache,
       });
+      return localPath ? buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME) : undefined;
     }
 
     const photos = extractTelegramPhotoFiles(content);
@@ -1384,7 +2502,7 @@ export class TelegramConnector implements Connector {
     for (let i = photos.length - 1; i >= 0; i -= 1) {
       const localPath = photos[i]?.local?.path?.trim();
       if (localPath) {
-        return localPathToDataUrl(localPath, this.mediaDataUrlCache);
+        return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
       }
     }
 
@@ -1397,7 +2515,25 @@ export class TelegramConnector implements Connector {
     if (!localPath) {
       return undefined;
     }
-    return localPathToDataUrl(localPath, this.mediaDataUrlCache);
+    return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
+  }
+
+  private async extractVideoThumbnailUrl(
+    client: TdClient,
+    content: unknown,
+  ): Promise<string | undefined> {
+    const thumbnail = extractTelegramVideoThumbnailFile(content);
+    if (!thumbnail) {
+      return undefined;
+    }
+
+    const localPath = await resolveTdFilePath({
+      client,
+      file: thumbnail,
+      invokeWithTimeout: this.invokeWithTimeout.bind(this),
+      downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+    });
+    return localPath ? buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME) : undefined;
   }
 
   private async extractStickerUrl(
@@ -1407,6 +2543,21 @@ export class TelegramConnector implements Connector {
     const sticker = extractTelegramStickerSource(content);
     if (!sticker) {
       return undefined;
+    }
+
+    if (sticker.animated && sticker.format === 'stickerFormatWebm') {
+      const localPath = await resolveTdPlayableFilePath({
+        client,
+        file: sticker.sticker,
+        invokeWithTimeout: this.invokeWithTimeout.bind(this),
+        downloadTimeoutMs: TELEGRAM_TDLIB_DOWNLOAD_TIMEOUT_MS,
+        downloadPollIntervalMs: TELEGRAM_TDLIB_DOWNLOAD_POLL_INTERVAL_MS,
+      });
+      if (!localPath) {
+        return undefined;
+      }
+
+      return buildTelegramLocalMediaUrl(localPath, PELEC_MEDIA_SCHEME);
     }
 
     if (sticker.animated) {
@@ -1840,6 +2991,14 @@ export class TelegramConnector implements Connector {
           'linux-x64-glibc',
           'libtdjson.so',
         ),
+        path.join(
+          process.resourcesPath,
+          'app.asar.unpacked',
+          'node_modules',
+          '@prebuilt-tdlib',
+          'linux-x64-glibc',
+          'libtdjson.so',
+        ),
       ];
       tdjsonPath = packagedCandidates.find((candidate) => existsSync(candidate));
 
@@ -1893,6 +3052,26 @@ export class TelegramConnector implements Connector {
           return;
         }
 
+        if (update._ === 'updateCall' && update.call) {
+          void this.callService.handleTdCall(update.call);
+          return;
+        }
+
+        if (update._ === 'updateNewCallSignalingData') {
+          this.callService.handleSignalingData(update.call_id, update.data);
+          return;
+        }
+
+        if (update._ === 'updateGroupCall' && update.group_call) {
+          void this.callService.handleGroupCall(update.group_call);
+          return;
+        }
+
+        if (update._ === 'updateGroupCallParticipant' && update.participant) {
+          void this.callService.handleGroupParticipant(update.participant);
+          return;
+        }
+
         if (update._ === 'updateNewMessage' || update._ === 'updateMessageContent') {
           this.emitUpdate({
             network: this.network.id,
@@ -1903,12 +3082,22 @@ export class TelegramConnector implements Connector {
           return;
         }
 
+        if (update._ === 'updateChatReadOutbox') {
+          this.emitUpdate({
+            network: this.network.id,
+            kind: 'messages-invalidated',
+            chatId,
+            reason: 'read-state',
+          });
+          this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
+          return;
+        }
+
         if (
           update._ === 'updateDeleteMessages' ||
           update._ === 'updateMessageEdited' ||
           update._ === 'updateMessageSendSucceeded' ||
-          update._ === 'updateMessageSendFailed' ||
-          update._ === 'updateChatReadOutbox'
+          update._ === 'updateMessageSendFailed'
         ) {
           this.emitUpdate({
             network: this.network.id,
@@ -1924,7 +3113,8 @@ export class TelegramConnector implements Connector {
           update._ === 'updateChatTitle' ||
           update._ === 'updateChatPhoto' ||
           update._ === 'updateChatReadInbox' ||
-          update._ === 'updateChatDraftMessage'
+          update._ === 'updateChatDraftMessage' ||
+          update._ === 'updateChatVideoChat'
         ) {
           this.emitUpdate({ network: this.network.id, kind: 'chats', chatId });
         }
@@ -1954,8 +3144,10 @@ export class TelegramConnector implements Connector {
 
       this.tdLibReady = true;
       this.status.mode = 'native';
-      this.status.authState = 'unauthenticated';
-      this.status.details = 'TDLib initialized. Start auth to open QR login.';
+      if (this.status.authState !== 'authenticated' && this.status.authState !== 'authenticating') {
+        this.status.authState = 'unauthenticated';
+        this.status.details = 'TDLib initialized. Start auth to open QR login.';
+      }
       this.status.lastError = undefined;
     } catch (error) {
       this.tdLibReady = false;
@@ -1968,9 +3160,37 @@ export class TelegramConnector implements Connector {
     }
   }
 
-  private emitUpdate(event: ConnectorUpdateEvent): void {
+  private emitUpdate(event: ConnectorUpdateEvent | LegacyConnectorUpdateEvent): void {
+    const nextEvent =
+      event.kind === 'status'
+        ? {
+            network: this.network.id,
+            kind: 'status-changed' as const,
+            authState: this.status.authState,
+            mode: this.status.mode,
+            details: this.status.details,
+          }
+        : event.kind === 'chats'
+          ? {
+              network: this.network.id,
+              kind: 'chat-list-invalidated' as const,
+              changedChatIds: event.chatId ? [event.chatId] : undefined,
+            }
+          : event.kind === 'messages'
+            ? {
+                network: this.network.id,
+                kind: 'messages-invalidated' as const,
+                chatId: event.chatId ?? '',
+                reason: 'history' as const,
+              }
+            : event;
+
+    if (nextEvent.kind === 'messages-invalidated' && !nextEvent.chatId) {
+      return;
+    }
+
     for (const listener of this.updateListeners) {
-      listener(event);
+      listener(nextEvent);
     }
   }
 
@@ -2024,5 +3244,159 @@ export class TelegramConnector implements Connector {
       return 'notificationSettingsScopeGroupChats';
     }
     return null;
+  }
+
+  private async canSendToChat(client: TdClient, chat: TdChat): Promise<boolean> {
+    const chatType = chat.type?._;
+    if (chatType === 'chatTypePrivate' || chatType === 'chatTypeSecret') {
+      return true;
+    }
+
+    const nonAdminCanSend = chat.permissions?.can_send_basic_messages === true;
+
+    if (chatType === 'chatTypeBasicGroup') {
+      if (chat.permissions && typeof chat.permissions.can_send_basic_messages === 'boolean') {
+        return nonAdminCanSend;
+      }
+
+      const basicGroupId = chat.type?.basic_group_id;
+      if (!basicGroupId) {
+        return true;
+      }
+
+      try {
+        const group = await this.invokeWithTimeout<TdBasicGroup>(
+          client,
+          {
+            _: 'getBasicGroup',
+            basic_group_id: basicGroupId,
+          },
+          'getBasicGroup',
+        );
+        return this.canSendForMemberStatus(group.status, false);
+      } catch {
+        return true;
+      }
+    }
+
+    if (chatType === 'chatTypeSupergroup') {
+      const isChannel = chat.type?.is_channel === true;
+      if (!isChannel && chat.permissions && typeof chat.permissions.can_send_basic_messages === 'boolean') {
+        return nonAdminCanSend;
+      }
+      if (isChannel && nonAdminCanSend) {
+        return true;
+      }
+
+      const supergroupId = chat.type?.supergroup_id;
+      if (!supergroupId) {
+        return !isChannel;
+      }
+
+      try {
+        const supergroup = await this.invokeWithTimeout<TdSupergroup>(
+          client,
+          {
+            _: 'getSupergroup',
+            supergroup_id: supergroupId,
+          },
+          'getSupergroup',
+        );
+        return this.canSendForMemberStatus(
+          supergroup.status,
+          isChannel || supergroup.is_channel === true || supergroup.is_broadcast_group === true,
+          supergroup.is_direct_messages_group === true,
+        );
+      } catch {
+        return !isChannel;
+      }
+    }
+
+    return true;
+  }
+
+  private async resolveCallCapabilities(
+    client: TdClient,
+    chat: TdChat,
+  ): Promise<ChatSummary['telegramCallCapabilities']> {
+    const groupCallId = chat.video_chat?.group_call_id;
+    if (groupCallId && this.userConfig.calls.group) {
+      return {
+        callable: false,
+        supportsVideo: false,
+        activeGroupCallId: groupCallId,
+      };
+    }
+
+    const userId = chat.type?._ === 'chatTypePrivate' ? chat.type.user_id : undefined;
+    if (!userId || !this.userConfig.calls.privateVoice) {
+      return {
+        callable: false,
+        supportsVideo: false,
+      };
+    }
+
+    const cached = this.callCapabilityCache.get(userId);
+    if (cached) {
+      return { ...cached };
+    }
+
+    try {
+      const fullInfo = await this.invokeWithTimeout<{
+        can_be_called?: boolean;
+        supports_video_calls?: boolean;
+        has_private_calls?: boolean;
+      }>(
+        client,
+        { _: 'getUserFullInfo', user_id: userId },
+        'getUserFullInfo for call capabilities',
+      );
+      const capabilities = {
+        callable: Boolean(fullInfo.can_be_called && !fullInfo.has_private_calls),
+        supportsVideo: Boolean(
+          this.userConfig.calls.privateVideo && fullInfo.supports_video_calls,
+        ),
+      };
+      this.callCapabilityCache.set(userId, capabilities);
+      return { ...capabilities };
+    } catch {
+      return {
+        callable: false,
+        supportsVideo: false,
+      };
+    }
+  }
+
+  private canSendForMemberStatus(
+    status: TdChatMemberStatus | undefined,
+    isChannel: boolean,
+    isDirectMessagesGroup = false,
+  ): boolean {
+    const kind = status?._;
+    if (!kind) {
+      return true;
+    }
+
+    if (kind === 'chatMemberStatusCreator') {
+      return status.is_member !== false;
+    }
+
+    if (kind === 'chatMemberStatusAdministrator') {
+      return !isChannel || isDirectMessagesGroup || status.rights?.can_post_messages === true;
+    }
+
+    if (kind === 'chatMemberStatusMember') {
+      return !isChannel || isDirectMessagesGroup;
+    }
+
+    if (kind === 'chatMemberStatusRestricted') {
+      return (
+        status.is_member === true &&
+        (!isChannel || isDirectMessagesGroup) &&
+        status.permissions?.can_send_basic_messages === true
+      );
+    }
+
+    return false;
   }
 }
